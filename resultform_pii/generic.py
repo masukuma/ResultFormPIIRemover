@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+from . import masking
 from . import ocr as ocr_mod
 from . import stamps as stamps_mod
 from . import structure
@@ -57,8 +58,9 @@ LABEL_RE = re.compile(r"(?<!di)date|signature|name|officer|polling|station|const
 DECL_RE = re.compile(r"^\s*declaration", re.I)
 RESULTS_RE = re.compile(r"valid\s*votes|votes\s*cast|votes\s*obtained|registered\s*voters|rejected", re.I)
 # handwriting in free text: "ID 25039403", "1D: 2503940 3", "07xx xxx xxx", "+254 7.."
-FREE_ID_RE = re.compile(r"(?:(?<![a-z])[I1l]\s?\.?\s?D\s*(?:no\.?|number)?\s*[:.,;#-]?\s*)?"
-                        r"(?<![\d/-])((?:\d\s?){6,8}\d)(?![\d/-])", re.I)  # with or without "ID"
+FREE_ID_RE = re.compile(r"(?<![\d/-])((?:\d\s?){6,8}\d)(?![\d/-])")  # 7-9 digits
+# "ID: 2503..." -- whatever follows the label, however OCR garbled the digits
+ID_PREFIX_RE = re.compile(r"(?<![a-z])(?:[I1l|]\s?\.?\s?D|ID\s*no|ID\s*number)\s*\.?\s*[:.,;#-]?\s*(\S.{4,15})", re.I)
 FREE_PHONE_RE = re.compile(r"(?<!\d)((?:\+\s?254|0)\s?[17](?:\s?\d){8})(?!\d)")
 
 
@@ -190,8 +192,7 @@ def _rules(gray: np.ndarray, stamp_list=()):
     """Printed rules. Vertical rules must be longer than any handwritten
     stroke: table rules run the height of the table. Stamps are erased
     first (the sides of a ring look like short vertical rules)."""
-    c = cv2.GaussianBlur(gray, (3, 3), 0)
-    bw = cv2.adaptiveThreshold(c, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, 8)
+    bw = _binary(gray)
     for st in stamp_list:
         cv2.circle(bw, (int(st.cx), int(st.cy)), int(st.r * 1.1 + 4), 0, -1)
     hor = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (60, 1)))
@@ -201,6 +202,27 @@ def _rules(gray: np.ndarray, stamp_list=()):
     vs = [l for l in _merge(structure._segments(ver, False), 1.5 * TEXT_H) if l.length >= 2.5 * TEXT_H
           and abs(l.slope) < 0.1]
     return hs, vs
+
+
+def _binary(gray: np.ndarray) -> np.ndarray:
+    return cv2.adaptiveThreshold(cv2.GaussianBlur(gray, (3, 3), 0), 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                                 cv2.THRESH_BINARY_INV, 31, 8)
+
+
+def _hidden_rule(gray: np.ndarray, x0: float, x1: float, y0: float, y1: float) -> float | None:
+    """x of a column rule between x0 and x1 that writing breaks in every row
+    (digits run into it), found as the x where the page is dark in most rows
+    from y0 to y1. Handwriting falls at random x and doesn't line up."""
+    a, b = int(max(0, x0)), int(min(gray.shape[1], x1))
+    ya, yb = int(max(0, y0)), int(min(gray.shape[0], y1))
+    if b - a < 3 or yb - ya < 2 * TEXT_H:
+        return None
+    bw = _binary(gray[ya:yb, a:b])
+    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 7)))
+    prof = (bw > 0).mean(axis=0)
+    prof = np.convolve(prof, np.ones(3) / 3, mode="same")
+    k = int(np.argmax(prof))
+    return a + k if prof[k] >= 0.45 else None
 
 
 def _column(hs, vs, x0: float, x1: float, cy: float):
@@ -295,6 +317,30 @@ def _tables(L: Layout, hs, vs) -> set[int]:
             if any(k == kind and abs(a - xl) < TEXT_H and abs(c - ln.cy) < 4 * TEXT_H
                    for k, a, b, c in seen):
                 continue  # "Tel." / "Contact" on two lines of one header cell
+            # Another header inside the column: the rule between them is
+            # broken in every row (writing runs into it). Look for it by
+            # projection; without it the page goes to review.
+            others = [o for o in L.lines if o is not ln and abs(o.cy - ln.cy) < TEXT_H
+                      and (o.find(ID_RE) or o.find(TEL_RE) or o.find(SIG_RE) or o.find(DATE_RE))
+                      and xl + 3 < (o.box[0] + o.box[2]) / 2 < xr - 3
+                      and not (sp[0] - TEXT_H <= (o.box[0] + o.box[2]) / 2 <= sp[1] + TEXT_H)]
+            bottom_y = max(lv.hi, rv.hi)
+            for o in others:
+                if (o.box[0] + o.box[2]) / 2 > sp[1]:  # to the right: find the right rule
+                    x = _hidden_rule(L.gray, sp[1], o.box[0], ln.cy + TEXT_H, bottom_y)
+                    if x is not None:
+                        rv = structure.Line(x, 0.0, rv.lo, rv.hi)
+                else:
+                    x = _hidden_rule(L.gray, o.box[2], sp[0], ln.cy + TEXT_H, bottom_y)
+                    if x is not None:
+                        lv = structure.Line(x, 0.0, lv.lo, lv.hi)
+                if x is None:
+                    break
+            xl, xr = lv.at(ln.cy), rv.at(ln.cy)
+            if others and x is None:
+                L.problems.append(f"'{ln.text}' column also holds '{others[0].text}': a column rule is missing")
+                used.add(i)
+                continue
             rows = _rows(hs, lv, rv, ln.cy, TEXT_H)
             if not rows:
                 L.problems.append(f"'{ln.text}' header at y={ln.cy:.0f}: no table rows found under it")
@@ -418,8 +464,11 @@ def _declaration(L: Layout, top: float, bottom: float) -> set[int]:
         if x1 - x0 < 1.5 * h:
             L.problems.append(f"declaration line at y={cy:.0f}: no room for a signature before 'Date'")
             continue
-        z = Zone(f"signature@{x0:.0f},{cy:.0f}", (x0, cy - 0.9 * h, x1 - x0, 1.5 * h), "signature",
-                 search=(0.8 * h, 0.4 * h))
+        # The field band is the officer's line; writing centred in it is the
+        # signature (masked whole, however far it reaches up or down), writing
+        # centred above or below belongs to the neighbouring lines.
+        z = Zone(f"signature@{x0:.0f},{cy:.0f}", (x0, cy - 0.75 * h, x1 - x0, 1.3 * h), "signature",
+                 search=(0.9 * h, 0.5 * h))
         L.fields.append(Field("signature", [z], "declaration", how, (x0, cy - 0.5 * h, x1, cy + 0.5 * h)))
     named = [r for r in rows if r.get("officer")]
     if len(officer_rows) < min(2, len(named)):
@@ -485,21 +534,111 @@ def _covered(L: Layout, x: float, y: float, h: float) -> bool:
     return bool(same_row) and min(a for a, _ in same_row) - 4 * h <= x <= max(b for _, b in same_row) + 4 * h
 
 
+def _date_digits(d: str) -> bool:
+    """Digits that read as a date written without separators (15122020)."""
+    for day, mon, yr in ((d[:2], d[2:4], d[4:]), (d[:1], d[1:3], d[3:])):
+        if len(yr) in (2, 4) and day.isdigit() and mon.isdigit() and yr.isdigit():
+            y = int(yr) % 100
+            if 1 <= int(day) <= 31 and 1 <= int(mon) <= 12 and y <= 40:
+                return True
+    return False
+
+
 def _free_text(L: Layout, used: set[int], top: float) -> None:
     for i, ln in enumerate(L.lines):
         if i in used or ln.cy < top:
             continue
+        hits = []
+        for m in ID_PREFIX_RE.finditer(ln.text):
+            if sum(c.isdigit() for c in m.group(1)) >= 4:
+                hits.append(("id", m.start(1), m.end(1), m.group(0)))
         for kind, rx in (("id", FREE_ID_RE), ("phone", FREE_PHONE_RE)):
             for m in rx.finditer(ln.text):
-                x0, x1 = ln.span(m.start(1), m.end(1))
-                h = ln.height
-                if _covered(L, (x0 + x1) / 2, ln.cy, h):
+                digits = re.sub(r"\D", "", m.group(1))
+                if kind == "id" and _date_digits(digits):
                     continue
-                rect = (x0 - 0.3 * h, ln.cy - 0.7 * h, x1 - x0 + 0.6 * h, 1.4 * h)
-                z = Zone(f"{kind}-text@{x0:.0f},{ln.cy:.0f}", rect, "partial", 10 if kind == "phone" else 8,
-                         rule=kind, search=(0.2 * h, 0.2 * h))
-                L.fields.append(Field(kind, [z], "free-text", m.group(0), ln.box))
-                L.notes.append(f"{kind} number in free text ('{m.group(0)}') partially masked")
+                hits.append((kind, m.start(1), m.end(1), m.group(0)))
+        for kind, a, b, text in hits:
+            x0, x1 = ln.span(a, b)
+            h = ln.height
+            if _covered(L, (x0 + x1) / 2, ln.cy, h):
+                continue
+            rect = (x0 - 0.3 * h, ln.cy - 0.7 * h, x1 - x0 + 0.6 * h, 1.4 * h)
+            z = Zone(f"{kind}-text@{x0:.0f},{ln.cy:.0f}", rect, "partial", 10 if kind == "phone" else 8,
+                     rule=kind, search=(0.2 * h, 0.2 * h))
+            L.fields.append(Field(kind, [z], "free-text", text, ln.box))
+            L.notes.append(f"{kind} number written in free text ('{text}') partially masked")
+
+
+CAPS_WORD = re.compile(r"[A-Z]{4,}")
+
+
+def _free_signatures(L: Layout, top: float) -> None:
+    """Signatures written outside any labelled field (an officer signing off
+    under the comments: name, ID, signature, date).
+
+    Writing is told from signing by its strokes: block capitals and digits
+    are many separate strokes; a signature is a few long joined ones. A
+    blob that OCR reads as a word in capitals is a name or a comment, not a
+    signature, whatever its strokes."""
+    h = TEXT_H
+    W, H = L.frame.size
+    y0 = int(max(0, top))
+    if H - y0 < h:
+        return
+    # pen ink, without rules, strike lines or the security print
+    ink = masking.ink_mask(L.gray[y0:], h, signature=True)
+    rules = cv2.morphologyEx(ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (int(3 * h), 1)))
+    ink = cv2.subtract(ink, cv2.dilate(rules, np.ones((3, 3), np.uint8)))
+    segs = cv2.HoughLinesP(ink, 1, np.pi / 180, 60, minLineLength=int(4 * h), maxLineGap=6)
+    for x1, y1, x2, y2 in (segs.reshape(-1, 4) if segs is not None else ()):  # strike lines
+        cv2.line(ink, (int(x1), int(y1)), (int(x2), int(y2)), 0, 7)
+    for st in L.stamps:
+        cv2.circle(ink, (int(st.cx), int(st.cy - y0)), int(st.r * 1.1 + 4), 0, -1)
+    vetoed, read = [], []
+    for ln in L.lines:
+        if ln.cy < top:
+            continue
+        printed_label = re.search(r"refus|comment|presiding\s*officer", ln.text, re.I) or PRINTED_LINE.match(ln.text)
+        if printed_label:
+            q = ln.quad - np.float32([0, y0])
+            cv2.fillPoly(ink, [np.round(q).astype(np.int32)], 0)
+            continue
+        read.append(ln.box)
+        if re.fullmatch(r"\W*(?:n\s*/\s*a|nil|none|na)\W*", ln.text, re.I):
+            vetoed.append(ln.box)  # "N/A", "NONE" under refusals or comments
+        elif CAPS_WORD.search(re.sub(r"[^A-Za-z]", "", ln.text)) or _date_ish(ln.text) is not None \
+                or sum(c.isdigit() for c in ln.text) >= 5:
+            vetoed.append(ln.box)
+    ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(ink)
+    words = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (int(0.5 * h), 1)))
+    m, wlab, wst, _ = cv2.connectedComponentsWithStats(words)
+
+    def inside(cx, cy, boxes):
+        return any(bx0 - 4 <= cx <= bx1 + 4 and by0 - 4 <= cy <= by1 + 4 for bx0, by0, bx1, by1 in boxes)
+
+    for k in range(1, m):
+        x, y, w, hh, _ = wst[k]
+        if w < 1.2 * h or hh < 0.5 * h:
+            continue
+        parts = [j for j in np.unique(lab[y:y + hh, x:x + w][wlab[y:y + hh, x:x + w] == k]) if j and st[j][4] >= 20]
+        if not parts:
+            continue
+        box = (x, y + y0, x + w, y + y0 + hh)
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        if inside(cx, cy, vetoed) or _covered(L, cx, cy, h):
+            continue  # a name or comment in capitals, a date, a number; or masked already
+        widest = max(st[j][2] for j in parts)
+        joined = len(parts) <= 0.9 * (w / h) + 1 and widest >= 0.5 * w
+        unread = not inside(cx, cy, read)
+        if not (joined or unread):
+            continue  # separate letters that OCR reads: writing, not a signature
+        z = Zone(f"signature-text@{x:.0f},{cy:.0f}", (box[0] - 4, box[1] - 4, w + 8, hh + 8), "signature",
+                 search=(0.3 * h, 0.3 * h))
+        why = "joined strokes" if joined else "handwriting OCR can't read"
+        L.fields.append(Field("signature", [z], "free-text", f"unlabelled signature ({why})", box))
+        L.notes.append(f"unlabelled handwriting at y={cy:.0f} taken for a signature ({why})")
 
 
 # --- printed text inside fields -----------------------------------------------------------
@@ -585,7 +724,13 @@ def analyze(img: np.ndarray, o: ocr_mod.Ocr | None = None) -> Layout | str:
     L.lines = L.lines + _read_band(o, work, boundary, decl_bottom)
     used |= _declaration(L, boundary, decl_bottom)
     _labels(L, used, boundary)
+    # Free text below the tables: re-read it (as the declaration), then look
+    # for numbers and signatures written there.
+    bottoms = [z.rect[1] + z.rect[3] for fl in L.fields if fl.source == "table" for z in fl.zones]
+    free_top = max(bottoms) if bottoms else decl_bottom
+    L.lines = L.lines + _read_band(o, work, free_top, H)
     _free_text(L, used, boundary)
+    _free_signatures(L, free_top)
     kinds = {fl.kind for fl in L.fields if fl.source == "table"}
     if kinds and kinds != {"id", "phone", "signature"}:
         L.problems.append(f"agents table: found only {', '.join(sorted(kinds))} columns")

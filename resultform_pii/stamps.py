@@ -154,18 +154,48 @@ def _candidates(ink: np.ndarray, r_range: tuple[float, float], param2: float) ->
     return np.float64(found).reshape(-1, 3)
 
 
-def _rings(maps: dict, r_range, param2, limits, how, offset=(0, 0)) -> list[Stamp]:
+def _measure(maps: dict, r_range, param2: float, offset=(0, 0)) -> list[tuple[str, float, float, float, tuple]]:
+    """Every ring candidate, refined and measured: (map, cx, cy, r, (continuity,
+    density, outside)). Thresholds are applied by the callers."""
     out = []
     for kind, ink in maps.items():
-        min_cont, min_dens, max_out = limits[kind]
+        tried: list[tuple[float, float, float]] = []
         for cx, cy, r in _candidates(ink, r_range, param2):
+            # Hough returns many near-copies of each circle: refine one per place
+            if any(np.hypot(cx - a, cy - b) < 0.3 * max(r, c) and abs(r - c) < 0.3 * max(r, c) for a, b, c in tried):
+                continue
+            tried.append((cx, cy, r))
+            quick = ring(ink, cx, cy, r)
+            if quick is None or quick[0] < 0.3:
+                continue  # nothing ring-like here even roughly
             cx, cy, r = refine(ink, cx, cy, r)
             if not r_range[0] * 0.8 <= r <= r_range[1] * 1.2:
                 continue
             m = ring(ink, cx, cy, r)
-            if m and m[0] >= min_cont and m[1] >= min_dens and m[2] <= max_out * m[1]:
-                out.append(Stamp(cx + offset[0], cy + offset[1], r, m[0], how))
+            if m:
+                out.append((kind, cx + offset[0], cy + offset[1], r, m))
     return out
+
+
+def _passing(measured, limits, how) -> list[Stamp]:
+    out = []
+    for kind, cx, cy, r, (cont, dens, outside) in measured:
+        min_cont, min_dens, max_out = limits[kind]
+        if cont >= min_cont and dens >= min_dens and outside <= max_out * dens:
+            out.append(Stamp(cx, cy, r, cont, how))
+    return out
+
+
+def _rings(maps: dict, r_range, param2, limits, how, offset=(0, 0)) -> list[Stamp]:
+    return _passing(_measure(maps, r_range, param2, offset), limits, how)
+
+
+class Maps:
+    """Working copies of a page (dark and coloured ink), shared by ``find``
+    and ``near``."""
+
+    def __init__(self, img: np.ndarray):
+        self.scale, self.maps = _maps(img)
 
 
 def _dedupe(stamps: list[Stamp]) -> list[Stamp]:
@@ -185,6 +215,10 @@ def _dedupe(stamps: list[Stamp]) -> list[Stamp]:
     return out
 
 
+def ink_maps(img: np.ndarray) -> Maps:
+    return Maps(img)
+
+
 def _maps(img: np.ndarray) -> tuple[float, dict]:
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
     s = min(1.0, WORK / max(gray.shape))
@@ -195,10 +229,12 @@ def _maps(img: np.ndarray) -> tuple[float, dict]:
     return s, maps
 
 
-def find(img: np.ndarray, r_range: tuple[float, float], text_lines=()) -> list[Stamp]:
+def find(img: np.ndarray, r_range: tuple[float, float], text_lines=(), maps=None) -> list[Stamp]:
     """Stamps on a page. ``r_range``: plausible stamp radius in image px.
-    ``text_lines``: OCR lines (ocr.Line, image coords) to look for stamp text."""
-    s, maps = _maps(img)
+    ``text_lines``: OCR lines (ocr.Line, image coords) to look for stamp text.
+    ``maps``: from ``ink_maps(img)``, to share the work with ``near``."""
+    M = maps or Maps(img)
+    s, maps = M.scale, M.maps
     rr = (r_range[0] * s, r_range[1] * s)
     stamps = _rings(maps, rr, 30, STRICT, "ring")
     for ln in text_lines:
@@ -220,22 +256,25 @@ def find(img: np.ndarray, r_range: tuple[float, float], text_lines=()) -> list[S
     return [Stamp(t.cx / s, t.cy / s, t.r / s, t.coverage, t.how) for t in _dedupe(stamps)]
 
 
-def near(img: np.ndarray, hide: np.ndarray, r_range: tuple[float, float], known: list[Stamp]) -> list[Stamp]:
+def near(img: np.ndarray, hide: np.ndarray, r_range: tuple[float, float], known: list[Stamp],
+         maps=None) -> list[Stamp]:
     """Permissive ring search around everything about to be masked (``hide``:
     bool mask, image px). A stamp under a mask is the costly miss, so here a
     ring needs less support."""
-    s, maps = _maps(img)
+    M = maps or Maps(img)
+    s, maps = M.scale, M.maps
     shape = maps["dark"].shape
     hs = cv2.resize(hide.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST)
     rr = (r_range[0] * s, r_range[1] * s)
-    n, _, st, _ = cv2.connectedComponentsWithStats(cv2.dilate(hs, np.ones((15, 15), np.uint8)))
+    pad = int(1.2 * rr[1])
+    # one window per cluster of masks (masks closer than a stamp's size share one)
+    n, _, st, _ = cv2.connectedComponentsWithStats(cv2.dilate(hs, np.ones((pad, pad), np.uint8)))
     found: list[Stamp] = []
     yy, xx = np.ogrid[:shape[0], :shape[1]]
     for i in range(1, n):
         x, y, w, h, _ = st[i]
-        pad = int(1.2 * rr[1])
-        X0, Y0 = max(0, x - pad), max(0, y - pad)
-        sub = {k: m[Y0:y + h + pad, X0:x + w + pad] for k, m in maps.items()}
+        X0, Y0 = max(0, x - pad // 2), max(0, y - pad // 2)
+        sub = {k: m[Y0:y + h + pad // 2, X0:x + w + pad // 2] for k, m in maps.items()}
         for t in _rings(sub, rr, 22, LOOSE, "near-mask", (X0, Y0)):
             if not hs[(xx - t.cx) ** 2 + (yy - t.cy) ** 2 <= (t.r * 1.05) ** 2].any():
                 continue  # only rings that reach the mask matter here

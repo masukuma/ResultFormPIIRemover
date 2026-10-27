@@ -94,10 +94,18 @@ def ink_mask(strip: np.ndarray, row_h: float, signature: bool = False) -> np.nda
     # ~4 rows long are erased: shorter ones can be chance alignments of digit
     # strokes in stacked rows, and erasing those would hide digits from the
     # masking. Horizontal rules are already gone; vertical strokes are digits.
-    segs = cv2.HoughLinesP(ink, 1, np.pi / 180, 40, minLineLength=max(120, int(4 * rh)), maxLineGap=8)
+    # Signature columns: a line drawn across many empty rows can be nearly
+    # flat, and blobs of it would be masked as signatures; there the lines
+    # are found before the rules are taken out (that cuts them into pieces at
+    # every rule they cross). Digit columns keep to clearly sloped lines: on
+    # a curled page a printed rule can be tilted a few degrees in the strip.
+    if signature:
+        segs, lo = cv2.HoughLinesP(bw, 1, np.pi / 180, 40, minLineLength=max(120, int(4 * rh)), maxLineGap=8), 2.5
+    else:
+        segs, lo = cv2.HoughLinesP(ink, 1, np.pi / 180, 40, minLineLength=max(120, int(4 * rh)), maxLineGap=8), 8
     for x1, y1, x2, y2 in (segs.reshape(-1, 4) if segs is not None else ()):
         ang = abs(np.degrees(np.arctan2(int(y2) - int(y1), int(x2) - int(x1))))
-        if 8 <= min(ang, 180 - ang) <= 60:
+        if lo <= min(ang, 180 - ang) <= 60:
             cv2.line(ink, (int(x1), int(y1)), (int(x2), int(y2)), 0, 7)
     ink[:, :4] = 0  # column rules at the edges
     ink[:, -4:] = 0
@@ -559,7 +567,7 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=Non
         P = _ref_crop(255 - printed, origin, strip.shape) < 128
         blobs = [b for b in blobs if (P[b[1]:b[3], b[0]:b[2]] & (ink[b[1]:b[3], b[0]:b[2]] > 0)).sum() < 0.6 * b[4]]
     if centered:
-        lo, hi = bands[0][0] - 0.15 * row_h, bands[-1][1] + 0.15 * row_h
+        lo, hi = bands[0][0], bands[-1][1]
         blobs = [b for b in blobs if lo <= (b[1] + b[3]) / 2 <= hi]
     return blobs, origin, bands, cells
 

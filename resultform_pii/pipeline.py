@@ -75,16 +75,20 @@ def _apply(img: np.ndarray, canvas: np.ndarray, keep: np.ndarray | None = None) 
 STAMP_MARGIN = 6.0  # px kept clear around a stamp, plus 4% of its radius
 
 
-def protect_stamps(img: np.ndarray, canvas: np.ndarray, found: list, r_range) -> tuple[list, np.ndarray, list[str]]:
+def protect_stamps(img: np.ndarray, canvas: np.ndarray, found: list, r_range,
+                   maps=None) -> tuple[list, np.ndarray, list[str]]:
     """Add stamps found around the masks (a permissive search: a stamp under a
     mask is the miss that matters), and lift the masks off every stamp.
     Returns (stamps, keep mask, notes)."""
     hide = canvas == 0
-    extra = stamps.near(img, hide, r_range, found) if hide.any() else []
+    extra = stamps.near(img, hide, r_range, found, maps) if hide.any() else []
     found = list(found) + extra
     keep = np.zeros(canvas.shape, np.uint8)
     for st in found:
         cv2.fillPoly(keep, [np.round(st.polygon(STAMP_MARGIN + 0.04 * st.r)).astype(np.int32)], 255)
+    # Masks are applied in whole 8x8 blocks, so what stays clear is every
+    # block touching a stamp; the checks must allow for exactly that.
+    keep = proof.to_pixels(proof.to_blocks(keep > 0), canvas.shape).astype(np.uint8) * 255
     notes = []
     covered = int((hide & (keep > 0)).sum())
     if covered:
@@ -203,7 +207,8 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
     tw, th = t.size
     k = _scale(a.H, (tw / 2, th / 2)) * (t.page_long_side or max(tw, th)) / 2340.0
     r_range = (40 * k, 135 * k)  # stamp radius: 40-135 px on a 2340 px page
-    found, keep, stamp_notes = protect_stamps(img, canvas, stamps.find(img, r_range), r_range)
+    maps = stamps.ink_maps(img)
+    found, keep, stamp_notes = protect_stamps(img, canvas, stamps.find(img, r_range, maps=maps), r_range, maps)
     notes += stamp_notes
     blocks, out = _apply(img, canvas, keep)
 
