@@ -50,14 +50,15 @@ STAMP_R = (1.6 * TEXT_H, 4.2 * TEXT_H)  # round stamps measure 2.2-2.9 text line
 ID_RE = re.compile(r"passport|(?<![a-z])[I1l]\s?\.?\s?D\s*\.?\s*(?:/|no\b|no\.|num|number)|national\s*id", re.I)
 TEL_RE = re.compile(r"(?<![a-z])tel(?![a-z])|telephone|contact|phone|mobile", re.I)
 SIG_RE = re.compile(r"signature|(?<![a-z])sign(?![a-z])", re.I)
-DATE_RE = re.compile(r"(?<!candi)date", re.I)
+DATE_RE = re.compile(r"(?<!di)date", re.I)  # not "Candidate"
 REFUSAL_RE = re.compile(r"refus", re.I)
-LABEL_RE = re.compile(r"(?<!candi)date|signature|name|officer|polling|station|constituency|county|ward|"
+LABEL_RE = re.compile(r"(?<!di)date|signature|name|officer|polling|station|constituency|county|ward|"
                       r"passport|(?<![a-z])tel(?![a-z])|contact|(?<![a-z])I\.?D(?![a-z])", re.I)
 DECL_RE = re.compile(r"^\s*declaration", re.I)
 RESULTS_RE = re.compile(r"valid\s*votes|votes\s*cast|votes\s*obtained|registered\s*voters|rejected", re.I)
 # handwriting in free text: "ID 25039403", "1D: 2503940 3", "07xx xxx xxx", "+254 7.."
-FREE_ID_RE = re.compile(r"(?<![a-z])[I1l]\s?\.?\s?D\s*(?:no\.?|number)?\s*[:.,;#-]?\s*((?:\d\s?){7,9})(?!\d)", re.I)
+FREE_ID_RE = re.compile(r"(?:(?<![a-z])[I1l]\s?\.?\s?D\s*(?:no\.?|number)?\s*[:.,;#-]?\s*)?"
+                        r"(?<![\d/-])((?:\d\s?){6,8}\d)(?![\d/-])", re.I)  # with or without "ID"
 FREE_PHONE_RE = re.compile(r"(?<!\d)((?:\+\s?254|0)\s?[17](?:\s?\d){8})(?!\d)")
 
 
@@ -223,8 +224,8 @@ def _column(hs, vs, x0: float, x1: float, cy: float):
     right = [v for v in span if x_at(v) >= x1 - 0.3 * h]
     if not left or not right:
         return None
-    lv = max(left, key=x_at)
-    rv = min(right, key=x_at)
+    lv = _extend(vs, max(left, key=x_at), cy)
+    rv = _extend(vs, min(right, key=x_at), cy)
     if x_at(rv) - x_at(lv) < (x1 - x0) * 0.9:
         return None
     if abs(lv.lo - rv.lo) > 3.5 * h or abs(lv.hi - rv.hi) > 6 * h:
@@ -232,31 +233,43 @@ def _column(hs, vs, x0: float, x1: float, cy: float):
     return lv, rv
 
 
+def _extend(vs, v, cy: float):
+    """The rule extended down over the pieces in line with it below (a rule
+    broken where handwriting crosses it, even across a wide gap). Not
+    upwards: a table above may have a rule at the same x."""
+    pieces = [u for u in vs if abs(u.at(cy) - v.at(cy)) < 5 and abs(u.slope - v.slope) < 0.03
+              and u.lo >= v.lo - 0.5 * TEXT_H]
+    return structure.Line(v.pos, v.slope, v.lo, max(u.hi for u in pieces + [v]))
+
+
 def _rows(hs, lv, rv, cy: float, h: float) -> list[tuple[float, float]]:
-    """Row bands (top, bottom) under a header: horizontal rules crossing the
-    column, from the header's bottom rule down while the spacing stays even
-    and the column's rules still run."""
+    """Row bands (top, bottom) under a header: the table's horizontal rules,
+    from the header's bottom rule down to where the column's rules end. Row
+    rules run the width of the table, so one broken in this column (writing
+    across it) is still found in the neighbouring columns; a row rule missing
+    altogether is filled in from the row pitch."""
     xm = (lv.at(cy) + rv.at(cy)) / 2
-    ys = sorted(l.at(xm) for l in hs if l.lo - 0.2 * h <= xm <= l.hi + 0.2 * h and l.at(xm) > cy + 0.3 * h)
-    merged = []
-    for y in ys:  # double-drawn rules
+    bottom = max(lv.hi, rv.hi) + 0.5 * h  # the column's rules end with the table
+    near = [l for l in hs if l.lo - 6 * h <= xm <= l.hi + 6 * h]
+    ys = sorted(l.at(xm) for l in near if cy + 0.3 * h < l.at(xm) <= bottom)
+    merged: list[float] = []
+    for y in ys:  # double-drawn rules, or one rule found twice
         if merged and y - merged[-1] < 0.35 * h:
             continue
         merged.append(y)
     if len(merged) < 2:
         return []
-    bottom = max(lv.hi, rv.hi) + 0.5 * h  # the column's rules end with the table
-    merged = [y for y in merged if y <= bottom]
     gaps = np.diff(merged)
-    if len(gaps) == 0:
-        return []
-    pitch = float(np.median(gaps[: max(3, len(gaps) // 2)]))
+    pitch = float(np.median(gaps))
     rows = []
     for a, b in zip(merged, merged[1:]):
-        if b - a > 1.8 * pitch:
+        n = int(round((b - a) / pitch))
+        if n > 4:
             break
-        rows.append((a, b))
-    return rows
+        n = max(n, 1)
+        rows += [(a + (b - a) * k / n, a + (b - a) * (k + 1) / n) for k in range(n)]
+    # slivers: a stray line just under the table
+    return [(a, b) for a, b in rows if b - a >= 0.5 * pitch and b <= max(lv.hi, rv.hi) + 0.3 * h]
 
 
 def _tables(L: Layout, hs, vs) -> set[int]:
@@ -323,31 +336,17 @@ def _sig_labels(ln) -> list[tuple[int, int]]:
     return out
 
 
-def _date_labels(ln) -> list[tuple[int, int]]:
-    """"Date" labels; a misread one ("Pate", "bate") only if a date follows it."""
+def _date_labels(ln, misread: bool = False) -> list[tuple[int, int]]:
+    """"Date" labels. A misread one ("Pate", "bate", "Dat") counts if a date
+    follows it, or with ``misread`` (asked for on a line already known to be
+    an officer's line, where "GATE" in a station name can't be meant)."""
     out = [(m.start(), m.end()) for m in DATE_RE.finditer(ln.text)]
     for i, j, d in ln.fuzzy("date", 1):
-        if d == 0 or ln.text[max(0, i - 5):i].lower().endswith("candi"):
+        if ln.text[max(0, i - 2):i].lower() == "di":
             continue
-        if _date_ish(ln.text[j:]) is not None and all(j <= a or i >= b for a, b in out):
+        if (misread or _date_ish(ln.text[j:]) is not None) and all(j <= a or i >= b for a, b in out):
             out.append((i, j))
     return out
-
-
-def _underlines(gray: np.ndarray, cy: float, x_max: float) -> list[tuple[float, float]]:
-    """Printed underline segments (x0, x1) just under a text line, dotted
-    ones included."""
-    h = TEXT_H
-    y0, y1 = int(max(0, cy - 0.2 * h)), int(min(gray.shape[0], cy + 1.0 * h))
-    band = gray[y0:y1, :int(x_max)]
-    if band.size == 0:
-        return []
-    bw = cv2.adaptiveThreshold(cv2.GaussianBlur(band, (3, 3), 0), 255, cv2.ADAPTIVE_THRESH_MEAN_C,
-                               cv2.THRESH_BINARY_INV, 31, 8)
-    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (int(0.35 * h), 1)))
-    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (int(2 * h), 1)))
-    n, _, st, _ = cv2.connectedComponentsWithStats(bw)
-    return sorted((float(x), float(x + w)) for x, y, w, hh, _ in st[1:] if w >= 2 * h and hh <= 0.4 * h)
 
 
 def _declaration(L: Layout, top: float, bottom: float) -> set[int]:
@@ -370,7 +369,7 @@ def _declaration(L: Layout, top: float, bottom: float) -> set[int]:
         for r in rows:
             if abs(r["cy"] - cy) < 0.6 * h:
                 return r
-        rows.append({"cy": cy, "labels": [], "values": [], "sigs": []})
+        rows.append({"cy": cy, "labels": [], "values": [], "sigs": [], "misread": []})
         return rows[-1]
 
     used = set()
@@ -384,43 +383,47 @@ def _declaration(L: Layout, top: float, bottom: float) -> set[int]:
         for a, b in _sig_labels(ln):
             row(ln.cy)["sigs"].append(ln.span(a, b)[1])
             used.add(i)
-    officer_rows = [r for r in rows if r["labels"] or r["values"]]
+        for a, b in _date_labels(ln, misread=True):
+            row(ln.cy)["misread"].append(ln.span(a, b)[0])
+        if re.search(r"presid|officer|deputy", ln.text, re.I) and not stamps_mod.is_stamp_text(ln.text):
+            row(ln.cy)["officer"] = True
+    # An officer's line has a "Signature" or "Date" label on it; a date
+    # alone counts only on a line that names an officer.
+    officer_rows = [r for r in rows if r["sigs"] or r["labels"] or (r["values"] and r.get("officer"))]
     label_x = [x for r in officer_rows for x in r["labels"]]
     sig_x = [x for r in officer_rows for x in r["sigs"]]
     for r in sorted(officer_rows, key=lambda r: r["cy"]):
         cy = r["cy"]
-        if r["labels"]:
-            vals = r["values"]
-            left = [x for x in r["labels"] if not vals or x < max(vals)]
-            dx0 = max(left) if left else max(r["labels"])
-        elif label_x:
-            dx0 = float(np.median(label_x))
+        if r["sigs"]:
+            start, how = max(r["sigs"]), "'Signature' label"
+        elif sig_x:
+            start, how = float(np.median(sig_x)), "'Signature' label on the other officer line"
         else:
-            dx0 = min(r["values"]) - 2.6 * h  # "Date" printed just before the date
-        same = [x for x in r["sigs"] if x < dx0]
-        other = [x for x in sig_x if x < dx0 and x not in r["sigs"]]
-        if same:
-            start, how = max(same), "'Signature' label"
-        elif other:
-            start, how = float(np.median(other)), "'Signature' label on the other officer line"
+            L.problems.append(f"declaration line at y={cy:.0f}: no 'Signature' label read")
+            continue
+        right = [x for x in r["labels"] if x > start]
+        maybe = [x for x in r["misread"] if x > start + 1.5 * h] if r["sigs"] else []
+        if right:
+            end = min(right)
+        elif maybe:
+            end, how = min(maybe), how + "; 'Date' read approximately"
+        elif [x for x in label_x if x > start]:
+            end = float(np.median([x for x in label_x if x > start]))
+        elif [x for x in r["values"] if x > start]:
+            end = min(x for x in r["values"] if x > start) - 2.6 * h  # "Date" printed just before the date
         else:
-            segs = [sg for sg in _underlines(L.gray, cy, dx0 + 0.3 * h) if sg[1] >= dx0 - 2.5 * h]
-            prev = [sg for sg in _underlines(L.gray, cy, dx0 + 0.3 * h) if segs and sg[1] < segs[-1][0] - 1.5 * h]
-            if not segs or not prev:
-                L.problems.append(f"declaration line at y={cy:.0f}: can't find where the signature field starts")
-                continue
-            start, how = segs[-1][0], "underline in front of 'Date'"
-        x0, x1 = start + 0.15 * h, dx0 - 0.15 * h
+            end = start + 9 * h
+            how += "; no 'Date' label: field taken as 9 text heights"
+        x0, x1 = start + 0.15 * h, end - 0.15 * h
         if x1 - x0 < 1.5 * h:
             L.problems.append(f"declaration line at y={cy:.0f}: no room for a signature before 'Date'")
             continue
         z = Zone(f"signature@{x0:.0f},{cy:.0f}", (x0, cy - 0.9 * h, x1 - x0, 1.5 * h), "signature",
                  search=(0.8 * h, 0.4 * h))
         L.fields.append(Field("signature", [z], "declaration", how, (x0, cy - 0.5 * h, x1, cy + 0.5 * h)))
-    officers = {round(ln.cy / h) for _, ln in region if re.search(r"presid|officer", ln.text, re.I)
-                and not stamps_mod.is_stamp_text(ln.text)}
-    if len(officer_rows) < min(2, len(officers)):
-        L.problems.append(f"declaration: officers named but {len(officer_rows)} officer line(s) with a date found")
+    named = [r for r in rows if r.get("officer")]
+    if len(officer_rows) < min(2, len(named)):
+        L.problems.append(f"declaration: {len(named)} officer(s) named but {len(officer_rows)} signature line(s) found")
     return used
 
 
@@ -497,6 +500,32 @@ def _free_text(L: Layout, used: set[int], top: float) -> None:
                          rule=kind, search=(0.2 * h, 0.2 * h))
                 L.fields.append(Field(kind, [z], "free-text", m.group(0), ln.box))
                 L.notes.append(f"{kind} number in free text ('{m.group(0)}') partially masked")
+
+
+# --- printed text inside fields -----------------------------------------------------------
+
+PRINTED_LINE = re.compile(r"^[\s.:,/()_-]*(?:no|name\s*of\s*candidate(?:\s*or\s*agent)?|or\s*agent|agent|"
+                          r"id\s*/?\s*passport(?:\s*no)?|passport|party\s*name|independent(?:\s*candidate)?|"
+                          r"candidate|tel\.?(?:\s*contact)?|contact|signature|date)[\s.:,/()_-]*$", re.I)
+
+
+def _x_fill(text: str) -> bool:
+    """Typed "XXXXXXXX" that form generators put in unused rows."""
+    t = re.sub(r"\s", "", text)
+    return len(t) >= 5 and sum(c in "xX×*" for c in t) >= 0.8 * len(t)
+
+
+def printed(L: Layout) -> tuple[np.ndarray, np.ndarray]:
+    """What OCR shows to be print, not writing, where a field could reach it:
+    typed "XXXX" fill and lines that are nothing but a printed label. Returns
+    (mask, reference image: the page's own pixels there, white elsewhere),
+    both in the working frame. Masking leaves this text alone."""
+    mask = np.zeros(L.gray.shape, np.uint8)
+    for ln in L.lines:
+        if _x_fill(ln.text) or PRINTED_LINE.match(ln.text):
+            q = ln.quad + np.float32([[-2, -2], [2, -2], [2, 2], [-2, 2]])
+            cv2.fillPoly(mask, [np.round(q).astype(np.int32)], 255)
+    return mask, np.where(mask > 0, L.gray, 255).astype(np.uint8)
 
 
 # --- whole page --------------------------------------------------------------------------------

@@ -106,7 +106,7 @@ def cmd_redact(a) -> int:
     cfg = Config(a.templates, a.out, a.review,
                  AlignSettings(min_score=a.min_score, min_inliers=a.min_inliers),
                  MaskSettings(hide=a.hide, phone_tail=a.phone_tail), vs, a.vlm_audit, a.vlm_fallback,
-                 a.strict_structure)
+                 a.strict_structure, not a.no_generic)
     key = mf.load_private(a.sign_key) if a.sign_key else None
     if not key:
         print("warning: no --sign-key; manifests will be unsigned", file=sys.stderr)
@@ -265,6 +265,8 @@ def main(argv=None) -> int:
     r.add_argument("--min-inliers", type=int, default=AlignSettings.min_inliers)
     r.add_argument("--strict-structure", action="store_true",
                    help="send pages whose tables can't be matched to review instead of masking with wide margins")
+    r.add_argument("--no-generic", action="store_true",
+                   help="send pages no template matches to review instead of reading their layout (local OCR)")
     r.add_argument("--vlm-audit", action="store_true", help="have a VLM check every redacted page before publishing")
     r.add_argument("--vlm-fallback", action="store_true",
                    help="VLM-redact pages no template matches, into review/vlm/ for approval")

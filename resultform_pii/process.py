@@ -37,6 +37,7 @@ class Config:
     vlm_audit: bool = False
     vlm_fallback: bool = False
     strict_structure: bool = False
+    generic: bool = True  # read pages no template matches (needs the OCR extra)
 
 
 def tool_info() -> dict:
@@ -52,6 +53,11 @@ def tool_info() -> dict:
     except Exception:
         pass
     return info
+
+
+def _ocr_info() -> dict:
+    from .ocr import Ocr
+    return Ocr.info()
 
 
 def document_rules(doc: DocResult, templates: list[Template]) -> list[str]:
@@ -115,7 +121,7 @@ def process_document(src: str, rel: str, templates: list[Template], cfg: Config,
     report.update(meta)
 
     doc: DocResult = redact_pages([p.pixels for p in pages], templates, cfg.align, cfg.mask, form,
-                                  cfg.strict_structure, rng)
+                                  cfg.strict_structure, rng, cfg.generic)
     problems = [f"page {i + 1}: {p.reason}" for i, p in enumerate(doc.pages) if not p.ok]
     if mismatch := kiems.check(name, qr):
         problems.append(mismatch)
@@ -173,6 +179,7 @@ def process_document(src: str, rel: str, templates: list[Template], cfg: Config,
                           "H": np.round(p.H, 8).tolist() if p.H is not None else None},
             "notes": p.notes,
             "masks": p.masks,  # rules and hidden positions only, never the characters
+            **({"layout": p.layout} if p.layout else {}),
         })
     out_path = Path(cfg.out) / Path(rel).with_suffix(".pdf")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -186,8 +193,9 @@ def process_document(src: str, rel: str, templates: list[Template], cfg: Config,
         "output": {"file": str(Path(rel).with_suffix(".pdf")), "pdf_sha256": proof.sha256(pdf)},
         "seed": format(seed, "x"),
         "settings": {"hide": cfg.mask.hide, "phone_tail": cfg.mask.phone_tail,
-                     "strict_structure": cfg.strict_structure},
+                     "strict_structure": cfg.strict_structure, "generic": cfg.generic},
         "templates": {t.name: t.fingerprint for t in templates if t.name in used},
+        **({"ocr": _ocr_info()} if "generic" in used else {}),
         "pages": mpages,
         "vlm_audit": audits or None,
     }

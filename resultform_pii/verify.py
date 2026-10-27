@@ -60,7 +60,8 @@ def _overlay(img: np.ndarray, blocks: np.ndarray, protected: list[dict]) -> np.n
     red[m] = (0, 0, 255)
     out = cv2.addWeighted(red, 0.55, out, 0.45, 0)
     for p in protected:
-        cv2.polylines(out, [np.round(np.float64(p["polygon"])).astype(np.int32)], True, (0, 170, 0), 3)
+        color = (200, 0, 200) if p.get("kind") == "stamp" else (0, 170, 0)  # stamps magenta, results green
+        cv2.polylines(out, [np.round(np.float64(p["polygon"])).astype(np.int32)], True, color, 3)
     return out
 
 
@@ -118,8 +119,10 @@ def verify(redacted: str | Path, manifest_path: str | Path | None = None, origin
         for p in pm["protected"]:
             cv2.fillPoly(prot, [np.round(np.float64(p["polygon"])).astype(np.int32)], 255)
         hits = int((declared & proof.to_blocks(prot)).sum())
-        r.add(hits == 0, f"page {n}: no blacked block touches the {len(pm['protected'])} protected results "
-                         f"region(s)" if not hits else f"page {n}: {hits} blacked blocks inside results regions")
+        n_stamps = sum(1 for p in pm["protected"] if p.get("kind") == "stamp")
+        what = f"{len(pm['protected']) - n_stamps} protected results region(s) and {n_stamps} stamp(s)"
+        r.add(hits == 0, f"page {n}: no blacked block touches the {what}" if not hits
+              else f"page {n}: {hits} blacked blocks inside protected results regions or stamps")
         if src_pages is None:
             dark = red_px[proof.to_pixels(declared, red_px.shape[:2])]
             r.add(dark.size == 0 or dark.max() <= 8, f"page {n}: all {int(declared.sum())} listed blocks are black")
@@ -160,7 +163,7 @@ def verify(redacted: str | Path, manifest_path: str | Path | None = None, origin
             region = np.zeros(a.shape[:2], np.uint8)
             cv2.fillPoly(region, [np.round(np.float64(p["polygon"])).astype(np.int32)], 255)
             same = np.array_equal(a[region > 0], b[region > 0])
-        r.add(same, f"page {n}: results regions decode to identical pixels in original and redacted"
+        r.add(same, f"page {n}: results regions and stamps decode to identical pixels in original and redacted"
                     + (" (luminance)" if pm["proof"] == "jpeg-dct" else ""))
         if overlay_dir:
             _save(overlay_dir, redacted, n, _overlay(orig_px, cmp.changed_blocks, pm["protected"]))
@@ -173,7 +176,10 @@ def verify(redacted: str | Path, manifest_path: str | Path | None = None, origin
         st = m["settings"]
         cfg = Config(str(rerun_templates), str(Path(overlay_dir or ".") / "_rerun"), str(Path(overlay_dir or ".")),
                      AlignSettings(), MaskSettings(hide=st["hide"], phone_tail=st["phone_tail"]),
-                     strict_structure=st.get("strict_structure", False))
+                     strict_structure=st.get("strict_structure", False), generic=st.get("generic", False))
+        if "ocr" in m:
+            from .ocr import Ocr
+            r.add(Ocr.info()["models"] == m["ocr"]["models"], "OCR models are the versions recorded")
         templates = [prepare(t, cfg.align) for t in load_templates(rerun_templates)]
         fp = {t.name: t.fingerprint for t in templates}
         r.add(all(fp.get(k) == v for k, v in m["templates"].items()), "templates are the versions recorded")

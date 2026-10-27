@@ -130,10 +130,14 @@ def ring(ink: np.ndarray, cx: float, cy: float, r: float, bins: int = 180) -> tu
     return float(hit[valid].any(1).mean()), float(hit[valid].mean()), out
 
 
-# (min continuity, min density, max outside/density) per ink map. Coloured ink
-# has little else on it, so a faint stamp's broken ring is enough there.
-STRICT = {"dark": (0.75, 0.45, 0.45), "color": (0.45, 0.25, 0.25)}
-LOOSE = {"dark": (0.6, 0.35, 0.5), "color": (0.4, 0.25, 0.35)}
+# (min continuity, min density, max outside/density) per ink map. Measured on
+# the sample forms: real rings in dark ink have density >= 0.64 and continuity
+# >= 0.84, while text, table rules and handwriting that happen to fall on a
+# circle reach density 0.53 at most. Coloured ink has little else on it, so a
+# faint stamp's broken ring is enough there (seen: continuity 0.48, density
+# 0.28, nothing outside).
+STRICT = {"dark": (0.8, 0.6, 0.4), "color": (0.45, 0.25, 0.25)}
+LOOSE = {"dark": (0.7, 0.5, 0.45), "color": (0.4, 0.22, 0.3)}
 
 
 def _candidates(ink: np.ndarray, r_range: tuple[float, float], param2: float) -> np.ndarray:
