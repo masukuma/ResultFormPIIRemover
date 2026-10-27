@@ -207,12 +207,15 @@ part of a signature or a number visible under it.
 - **Finding stamps.** Two ink maps are made: dark ink, and coloured ink (any
   colour that stands out from the paper's own, so faded violet or blue stamps
   count; the green security print doesn't). Circles found by a Hough transform
-  in three radius bands are refined by least squares. They are kept only if
-  ink runs around the ring: continuously, densely, and with little ink just
-  outside it. Those thresholds were measured on the sample forms. The radius
-  range comes from the page: 40–135 px on a 2340 px KIEMS page, or
-  1.6–4.2 × the printed text height on a form read without a template. That
-  keeps a looped signature from passing as a stamp. A line OCR reads as stamp
+  in three radius bands are refined by least squares, each from three
+  starting radii: a stamp's lettering forms circles of its own just inside
+  the ring, and the fit must not settle on one of those. A circle is kept
+  only if ink runs around it: continuously, densely, and with little ink
+  just outside it. Those thresholds were measured on the sample forms. The
+  radius range comes from the page: 60–135 px on a 2340 px KIEMS page (the
+  stamps there measure 70–110 px; loops in signatures and dates come out at
+  30–60 and must stay masked), or 1.6–4.2 × the printed text height on a form
+  read without a template. A line OCR reads as stamp
   lettering ("PRESIDING OFFICER", "I.E.B.C.") starts a second, more permissive
   search around it.
 - **A second look where masks are about to go.** A faint stamp under a

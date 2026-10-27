@@ -159,18 +159,14 @@ def _measure(maps: dict, r_range, param2: float, offset=(0, 0)) -> list[tuple[st
     density, outside)). Thresholds are applied by the callers."""
     out = []
     for kind, ink in maps.items():
-        tried: list[tuple[float, float, float]] = []
+        fits: list[tuple[float, float, float]] = []
         for cx, cy, r in _candidates(ink, r_range, param2):
-            # Hough returns many near-copies of each circle: refine one per place
-            if any(np.hypot(cx - a, cy - b) < 0.3 * max(r, c) and abs(r - c) < 0.3 * max(r, c) for a, b, c in tried):
-                continue
-            tried.append((cx, cy, r))
-            # A stamp's lettering makes circles of its own, a little inside
-            # the ring and off centre, and Hough may return one of those
-            # instead of the ring (which then counts as a near-copy). So the
-            # fit also starts from a smaller and a larger radius; every
-            # distinct fit is measured and the thresholds decide.
-            fits: list[tuple[float, float, float]] = []
+            # Hough returns near-copies of each circle; each is fitted, since
+            # they converge differently and only one may pass. A stamp's
+            # lettering makes circles of its own, a little inside the ring
+            # and off centre, and Hough may return one of those instead of
+            # the ring, so the fit also starts from a smaller and a larger
+            # radius. Every distinct fit is measured; the thresholds decide.
             for k in (1.0, 0.85, 1.2):
                 quick = ring(ink, cx, cy, k * r)
                 if quick is None or quick[0] < 0.3:

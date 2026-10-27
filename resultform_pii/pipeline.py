@@ -206,7 +206,9 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
     t = a.template
     tw, th = t.size
     k = _scale(a.H, (tw / 2, th / 2)) * (t.page_long_side or max(tw, th)) / 2340.0
-    r_range = (40 * k, 135 * k)  # stamp radius: 40-135 px on a 2340 px page
+    # stamp radius: 60-135 px on a 2340 px page (stamps measure 70-110; loops
+    # in signatures and dates, which must stay masked, come out at 30-60)
+    r_range = (60 * k, 135 * k)
     maps = stamps.ink_maps(img)
     found, keep, stamp_notes = protect_stamps(img, canvas, stamps.find(img, r_range, maps=maps), r_range, maps)
     notes += stamp_notes
