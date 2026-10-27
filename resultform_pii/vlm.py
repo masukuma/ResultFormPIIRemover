@@ -66,14 +66,17 @@ Black rectangles are intentional redactions. Each ID/passport number has 3 of it
 characters covered by black boxes, and each phone number keeps its first 4 digits
 (e.g. 0734) and has 3 of its remaining 6 digits covered. So most digits of these
 numbers are meant to be visible; what must never be visible is a COMPLETE number.
-Names of officials and agents are allowed to be visible.
+Names of officials and agents are allowed to be visible. Official stamps (the round
+"I.E.B.C. PRESIDING OFFICER" stamp) must never be covered, so writing that lies inside
+a stamp is left visible on purpose: ignore anything inside a stamp.
 
 Look at the whole page, including tables, margins, stamps and handwritten comments.
 Answer:
 - id_number_visible: is any national ID or passport number fully readable, with no black box hiding any of its characters?
 - phone_number_visible: is any phone number (07XXXXXXXX, 01XXXXXXXX, +254...) fully readable, with no black box hiding any digit?
-- signature_visible: is any handwritten signature visible that is not covered by black?
-- details: one short sentence naming where, if anything is visible."""
+- signature_visible: is any handwritten signature visible that is not covered by black (outside stamps)?
+- stamp_covered: does any black box cover part of an official stamp?
+- details: one short sentence naming where, if anything is wrong."""
 
 LOCATE_PROMPT = """This image is {w}x{h} pixels and shows a Kenyan election results form.
 Find every handwritten signature, every national ID or passport number, and every
@@ -87,9 +90,10 @@ AUDIT_SCHEMA = {
         "id_number_visible": {"type": "boolean"},
         "phone_number_visible": {"type": "boolean"},
         "signature_visible": {"type": "boolean"},
+        "stamp_covered": {"type": "boolean"},
         "details": {"type": "string"},
     },
-    "required": ["id_number_visible", "phone_number_visible", "signature_visible", "details"],
+    "required": ["id_number_visible", "phone_number_visible", "signature_visible", "stamp_covered", "details"],
 }
 
 LOCATE_SCHEMA = {
@@ -194,7 +198,8 @@ class Ollama:
         """Audit a *redacted* page (safe to send anywhere)."""
         small, _ = self._resize(img)
         f, sent = self.ask(AUDIT_PROMPT, small, AUDIT_SCHEMA)
-        leak = any(bool(f.get(k)) for k in ("id_number_visible", "phone_number_visible", "signature_visible"))
+        leak = any(bool(f.get(k)) for k in ("id_number_visible", "phone_number_visible", "signature_visible",
+                                            "stamp_covered"))
         record = {"model": self.s.model, "host": urllib.parse.urlparse(self.s.host).hostname,
                   "prompt_sha256": hashlib.sha256(AUDIT_PROMPT.encode()).hexdigest(),
                   "image_sent_sha256": sent, "verdict": f}

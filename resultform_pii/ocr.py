@@ -31,6 +31,7 @@ class Line:
     text: str
     score: float
     pos: list[float] = field(default_factory=list)  # per character: centre as a share of the line's width
+    probs: list[float] = field(default_factory=list)  # per character: recognition confidence
 
     @property
     def box(self) -> tuple[float, float, float, float]:
@@ -45,6 +46,13 @@ class Line:
     @property
     def cy(self) -> float:
         return float(self.quad[:, 1].mean())
+
+    def chars_in(self, x0: float, x1: float) -> list[tuple[str, float]]:
+        """(character, confidence) of the characters centred between image x0 and x1."""
+        if not self.pos or len(self.pos) != len(self.text):
+            return []
+        return [(c, p) for c, s, p in zip(self.text, self.pos, self.probs or [self.score] * len(self.text))
+                if x0 <= self.x_at(s) <= x1]
 
     def x_at(self, share: float) -> float:
         """Image x of a point ``share`` of the way along the line."""
@@ -141,15 +149,15 @@ class Ocr:
         quads.sort(key=lambda q: (float(q[:, 1].mean()), float(q[:, 0].min())))
         crops = self.engine.get_crop_img_list(img, quads)
         lines = []
-        for q, crop, (text, score, pos) in zip(quads, crops, self._recognize(crops)):
+        for q, crop, (text, score, pos, probs) in zip(quads, crops, self._recognize(crops)):
             if text.strip() and score >= min_score:
-                lines.append(Line(q, text, score, pos))
+                lines.append(Line(q, text, score, pos, probs))
         return lines
 
     def _recognize(self, crops: list[np.ndarray], batch: int = 8):
         c, H, _ = self.rec.rec_image_shape
         order = np.argsort([cr.shape[1] / max(cr.shape[0], 1) for cr in crops])
-        out: list = [("", 0.0, [])] * len(crops)
+        out: list = [("", 0.0, [], [])] * len(crops)
         for b in range(0, len(order), batch):
             idx = order[b:b + batch]
             ratio = max(crops[i].shape[1] / max(crops[i].shape[0], 1) for i in idx)
@@ -183,7 +191,7 @@ class Ocr:
                 probs.append(float(prob[t:u + 1].max()))
                 pos.append(min(1.0, ((t + u) / 2 + 0.5) * stride / width))
             t = u + 1
-        return "".join(text), float(np.mean(probs)) if probs else 0.0, pos
+        return "".join(text), float(np.mean(probs)) if probs else 0.0, pos, probs
 
 
 @lru_cache(maxsize=1)

@@ -105,7 +105,7 @@ def ink_mask(strip: np.ndarray, row_h: float, signature: bool = False) -> np.nda
         segs, lo = cv2.HoughLinesP(ink, 1, np.pi / 180, 40, minLineLength=max(120, int(4 * rh)), maxLineGap=8), 8
     for x1, y1, x2, y2 in (segs.reshape(-1, 4) if segs is not None else ()):
         ang = abs(np.degrees(np.arctan2(int(y2) - int(y1), int(x2) - int(x1))))
-        if lo <= min(ang, 180 - ang) <= 60:
+        if lo <= min(ang, 180 - ang) <= 80:  # steeper is a column rule, or digits that line up
             cv2.line(ink, (int(x1), int(y1)), (int(x2), int(y2)), 0, 7)
     ink[:, :4] = 0  # column rules at the edges
     ink[:, -4:] = 0
@@ -567,8 +567,16 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=Non
         P = _ref_crop(255 - printed, origin, strip.shape) < 128
         blobs = [b for b in blobs if (P[b[1]:b[3], b[0]:b[2]] & (ink[b[1]:b[3], b[0]:b[2]] > 0)).sum() < 0.6 * b[4]]
     if centered:
-        lo, hi = bands[0][0], bands[-1][1]
-        blobs = [b for b in blobs if lo <= (b[1] + b[3]) / 2 <= hi]
+        # A blob belongs to the field when a good share of its ink is on the
+        # field's line: tails and loops (a "g", a flourish) reach far above
+        # or below, so the box's centre can't tell. When in doubt it's masked.
+        lo, hi = int(bands[0][0]), int(np.ceil(bands[-1][1]))
+        def share(b):
+            sub = ink[b[1]:b[3], b[0]:b[2]] > 0
+            rows = np.arange(b[1], b[3])
+            inside = sub[(rows >= lo) & (rows < hi)].sum()
+            return inside / max(sub.sum(), 1)
+        blobs = [b for b in blobs if share(b) >= 0.3]
     return blobs, origin, bands, cells
 
 

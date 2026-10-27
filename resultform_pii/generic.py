@@ -105,6 +105,7 @@ class Layout:
     stamps: list = field(default_factory=list)  # stamps.Stamp, working frame
     problems: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    officer_names: set = field(default_factory=set)  # words of the officers' names, as written in the declaration
 
 
 def _quad_dims(q: np.ndarray) -> tuple[float, float]:
@@ -436,6 +437,22 @@ def _declaration(L: Layout, top: float, bottom: float) -> set[int]:
     # An officer's line has a "Signature" or "Date" label on it; a date
     # alone counts only on a line that names an officer.
     officer_rows = [r for r in rows if r["sigs"] or r["labels"] or (r["values"] and r.get("officer"))]
+    # The officers' names, as written on their lines (left of "Signature"):
+    # their sign-off under the comments is found by them.
+    for r in officer_rows:
+        end = min(r["sigs"]) if r["sigs"] else min(r["labels"] + r["values"], default=None)
+        for _, ln in region:
+            if abs(ln.cy - r["cy"]) >= 0.6 * h:
+                continue
+            # names are written in capitals; OCR runs label and name together
+            # ("PresidingOfficerMAYGLADYS"), so take the runs of capitals
+            for mm in re.finditer(r"[A-Z]{3,}", ln.text):
+                word = mm.group(0)
+                if re.fullmatch(r"PRESIDING|DEPUTY|OFFICERS?|SIGNATURE|SIGN|DATE", word):
+                    continue
+                if end is not None and ln.span(*mm.span())[0] >= end:
+                    continue
+                L.officer_names.add(word)
     label_x = [x for r in officer_rows for x in r["labels"]]
     sig_x = [x for r in officer_rows for x in r["sigs"]]
     for r in sorted(officer_rows, key=lambda r: r["cy"]):
@@ -535,12 +552,17 @@ def _covered(L: Layout, x: float, y: float, h: float) -> bool:
 
 
 def _date_digits(d: str) -> bool:
-    """Digits that read as a date written without separators (15122020)."""
-    for day, mon, yr in ((d[:2], d[2:4], d[4:]), (d[:1], d[1:3], d[3:])):
-        if len(yr) in (2, 4) and day.isdigit() and mon.isdigit() and yr.isdigit():
-            y = int(yr) % 100
-            if 1 <= int(day) <= 31 and 1 <= int(mon) <= 12 and y <= 40:
-                return True
+    """Digits that read as a date written without separators (15122020,
+    1512020 for 15/1/2020)."""
+    for dl in (1, 2):
+        for ml in (1, 2):
+            for yl in (2, 4):
+                if dl + ml + yl != len(d):
+                    continue
+                day, mon, yr = int(d[:dl]), int(d[dl:dl + ml]), int(d[dl + ml:])
+                year_ok = 1990 <= yr <= 2040 if yl == 4 else yr <= 40
+                if 1 <= day <= 31 and 1 <= mon <= 12 and year_ok:
+                    return True
     return False
 
 
@@ -574,13 +596,13 @@ CAPS_WORD = re.compile(r"[A-Z]{4,}")
 
 
 def _free_signatures(L: Layout, top: float) -> None:
-    """Signatures written outside any labelled field (an officer signing off
-    under the comments: name, ID, signature, date).
+    """Signatures written outside any labelled field: an officer signing off
+    under the comments (name, ID, signature, date).
 
-    Writing is told from signing by its strokes: block capitals and digits
-    are many separate strokes; a signature is a few long joined ones. A
-    blob that OCR reads as a word in capitals is a name or a comment, not a
-    signature, whatever its strokes."""
+    Next to the officer's own name (as written in the declaration) every
+    piece of writing that OCR can't read confidently is taken for a
+    signature: names, dates and numbers read well, signatures don't. Away
+    from it, only joined-up writing next to a name, a date or an ID is."""
     h = TEXT_H
     W, H = L.frame.size
     y0 = int(max(0, top))
@@ -590,37 +612,58 @@ def _free_signatures(L: Layout, top: float) -> None:
     ink = masking.ink_mask(L.gray[y0:], h, signature=True)
     rules = cv2.morphologyEx(ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (int(3 * h), 1)))
     ink = cv2.subtract(ink, cv2.dilate(rules, np.ones((3, 3), np.uint8)))
-    segs = cv2.HoughLinesP(ink, 1, np.pi / 180, 60, minLineLength=int(4 * h), maxLineGap=6)
-    for x1, y1, x2, y2 in (segs.reshape(-1, 4) if segs is not None else ()):  # strike lines
-        cv2.line(ink, (int(x1), int(y1)), (int(x2), int(y2)), 0, 7)
     for st in L.stamps:
         cv2.circle(ink, (int(st.cx), int(st.cy - y0)), int(st.r * 1.1 + 4), 0, -1)
-    vetoed, read = [], []
-    for ln in L.lines:
-        if ln.cy < top:
-            continue
-        printed_label = re.search(r"refus|comment|presiding\s*officer", ln.text, re.I) or PRINTED_LINE.match(ln.text)
-        if printed_label:
+    lines = [ln for ln in L.lines if ln.cy >= top and not stamps_mod.is_stamp_text(ln.text)]
+    vetoed, cues, zones = [], [], []
+    for ln in lines:
+        if re.search(r"refus|comment|presiding\s*officer", ln.text, re.I) or PRINTED_LINE.match(ln.text):
             q = ln.quad - np.float32([0, y0])
-            cv2.fillPoly(ink, [np.round(q).astype(np.int32)], 0)
+            cv2.fillPoly(ink, [np.round(q).astype(np.int32)], 0)  # printed labels
             continue
-        read.append(ln.box)
+        # Stretches OCR reads as a name in capitals, a number or "N/A" are
+        # writing, not signatures -- only those stretches, not the whole line,
+        # which may run on into a signature.
+        spans = [m.span() for m in re.finditer(r"[A-Z][A-Z.'-]{3,}", ln.text)]
+        spans += [m.span() for m in re.finditer(r"\d[\d\s/.-]{3,}\d", ln.text)]
         if re.fullmatch(r"\W*(?:n\s*/\s*a|nil|none|na)\W*", ln.text, re.I):
-            vetoed.append(ln.box)  # "N/A", "NONE" under refusals or comments
-        elif CAPS_WORD.search(re.sub(r"[^A-Za-z]", "", ln.text)) or _date_ish(ln.text) is not None \
-                or sum(c.isdigit() for c in ln.text) >= 5:
-            vetoed.append(ln.box)
+            spans.append((0, len(ln.text)))
+        for a, b in spans:
+            probs = ln.probs[a:b] if len(ln.probs) == len(ln.text) else [ln.score]
+            if float(np.mean(probs)) < 0.7:
+                continue  # OCR guessing (a signature read as "1015"): no proof of writing
+            x0, x1 = ln.span(a, b)
+            vetoed.append((x0, ln.box[1], x1, ln.box[3]))
+        if (re.search(r"[A-Z]{4,}|\d{4,}", ln.text) or re.search(r"sign|(?<![a-z])I\.?D(?![a-z])", ln.text, re.I)) \
+                and not re.fullmatch(r"\W*(?:n\s*/\s*a|nil|none|na)\W*", ln.text, re.I):
+            cues.append(ln.box)  # a name, a number or date, "sign", "ID"
+        words = re.findall(r"[A-Z]{3,}", ln.text.upper())
+        if any(_name_match(w, n) for w in words for n in L.officer_names):
+            bx0, by0, bx1, by1 = ln.box
+            zones.append((bx0 - 2 * h, by0 - 0.5 * h, bx1 + 10 * h, by1 + 3.5 * h))
     ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     n, lab, st, _ = cv2.connectedComponentsWithStats(ink)
-    words = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (int(0.5 * h), 1)))
-    m, wlab, wst, _ = cv2.connectedComponentsWithStats(words)
+    groups = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (int(0.3 * h), 1)))
+    m, wlab, wst, _ = cv2.connectedComponentsWithStats(groups)
 
     def inside(cx, cy, boxes):
         return any(bx0 - 4 <= cx <= bx1 + 4 and by0 - 4 <= cy <= by1 + 4 for bx0, by0, bx1, by1 in boxes)
 
+    def near(box, boxes, dx, dy):
+        x0, y0_, x1, y1 = box
+        return any(bx0 - dx <= x1 and x0 <= bx1 + dx and by0 - dy <= y1 and y0_ <= by1 + dy
+                   for bx0, by0, bx1, by1 in boxes)
+
+    def read_well(box) -> bool:
+        x0, y0_, x1, y1 = box
+        cy = (y0_ + y1) / 2
+        chars = [p for ln in lines if ln.box[1] - 0.3 * h <= cy <= ln.box[3] + 0.3 * h
+                 for _, p in ln.chars_in(x0, x1)]
+        return len(chars) >= max(2, 0.4 * (x1 - x0) / h) and float(np.mean(chars)) >= 0.8
+
     for k in range(1, m):
         x, y, w, hh, _ = wst[k]
-        if w < 1.2 * h or hh < 0.5 * h:
+        if w < 1.0 * h or hh < 0.5 * h:
             continue
         parts = [j for j in np.unique(lab[y:y + hh, x:x + w][wlab[y:y + hh, x:x + w] == k]) if j and st[j][4] >= 20]
         if not parts:
@@ -628,17 +671,31 @@ def _free_signatures(L: Layout, top: float) -> None:
         box = (x, y + y0, x + w, y + y0 + hh)
         cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
         if inside(cx, cy, vetoed) or _covered(L, cx, cy, h):
-            continue  # a name or comment in capitals, a date, a number; or masked already
-        widest = max(st[j][2] for j in parts)
-        joined = len(parts) <= 0.9 * (w / h) + 1 and widest >= 0.5 * w
-        unread = not inside(cx, cy, read)
-        if not (joined or unread):
-            continue  # separate letters that OCR reads: writing, not a signature
+            continue  # a name in capitals, a date, a number; or masked already
+        if inside(cx, cy, zones):
+            if read_well(box):
+                continue
+            why = "next to the officer's name, not legible as text"
+        else:
+            widest = max(st[j][2] for j in parts)
+            joined = len(parts) <= 0.9 * (w / h) + 1 and widest >= 0.6 * w and w >= 1.5 * h
+            if not (joined and near(box, cues, 8 * h, 2.5 * h)):
+                continue
+            why = "joined strokes next to a name, date or ID"
         z = Zone(f"signature-text@{x:.0f},{cy:.0f}", (box[0] - 4, box[1] - 4, w + 8, hh + 8), "signature",
                  search=(0.3 * h, 0.3 * h))
-        why = "joined strokes" if joined else "handwriting OCR can't read"
         L.fields.append(Field("signature", [z], "free-text", f"unlabelled signature ({why})", box))
         L.notes.append(f"unlabelled handwriting at y={cy:.0f} taken for a signature ({why})")
+
+
+def _name_match(word: str, name: str) -> bool:
+    """Same name, allowing for OCR misreading it in both places."""
+    a, b = word.upper(), name.upper()
+    if min(len(a), len(b)) < 4:
+        return False
+    if len(a) >= 6 and len(b) >= 6 and (a in b or b in a):
+        return True
+    return ocr_mod._edits(a, b) <= (1 if min(len(a), len(b)) < 5 else 2 if min(len(a), len(b)) < 8 else 3)
 
 
 # --- printed text inside fields -----------------------------------------------------------
