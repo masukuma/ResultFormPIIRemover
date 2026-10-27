@@ -553,19 +553,19 @@ def _sig_window(cells: list[Zone], s: MaskSettings, margin=(0.0, 0.0), more_belo
 
 def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=None, centered=False):
     """Signature blobs in a column. ``printed`` (template space, nonzero =
-    printed text known to be there, e.g. typed "XXXX" in unused rows): blobs
-    lying mostly on it are not signatures. ``centered``: only blobs centred
+    printed text known to be there, e.g. typed "XXXX" in unused rows, or a
+    label an officer signed next to): its ink is no part of any signature.
+    ``centered``: only blobs centred
     within the cells, not ones reaching in from the search margins (a field
     on a text line, where the margins hold the neighbouring lines)."""
     above, below = _sig_window(cells, s, margin, more_below)
     strip, origin, bands, cells = _column_strip(gray, f, cells, above, below, SIG_OVERRUN)
     row_h = float(np.median([z.rect[3] for z in cells]))
     ink = ink_mask(strip, row_h, signature=True)
+    if printed is not None:
+        ink[_ref_crop(255 - printed, origin, strip.shape) < 128] = 0
     stamps = _remove_stamp_rings(ink)
     blobs = _signature_blobs(strip, ink, SIG_OVERRUN, cells[0].rect[2], SIG_MIN_INK, bands, stamps)
-    if printed is not None:
-        P = _ref_crop(255 - printed, origin, strip.shape) < 128
-        blobs = [b for b in blobs if (P[b[1]:b[3], b[0]:b[2]] & (ink[b[1]:b[3], b[0]:b[2]] > 0)).sum() < 0.6 * b[4]]
     if centered:
         # A blob belongs to the field when a good share of its ink is on the
         # field's line: tails and loops (a "g", a flourish) reach far above

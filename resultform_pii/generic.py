@@ -659,6 +659,9 @@ def _free_signatures(L: Layout, top: float, band: list = ()) -> None:
             bx0, by0, bx1, by1 = ln.box
             zones.append((bx0 - 2 * h, by0 - 0.5 * h, bx1 + 10 * h, by1 + 3.5 * h))
             strong.append(ln.box)
+    stamped = [(c.cx - c.r, c.cy - c.r, c.cx + c.r, c.cy + c.r) for c in L.stamps]  # officers sign by it
+    for bx0, by0, bx1, by1 in vetoed:  # names and numbers read well: what's left of a group is judged on its own
+        cv2.rectangle(ink, (int(bx0) - 2, int(by0 - y0) - 2), (int(math.ceil(bx1)) + 2, int(math.ceil(by1 - y0)) + 2), 0, -1)
     ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     n, lab, st, _ = cv2.connectedComponentsWithStats(ink)
     groups = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (int(0.3 * h), 1)))
@@ -678,69 +681,77 @@ def _free_signatures(L: Layout, top: float, band: list = ()) -> None:
         return any(bx0 - dx <= x1 and x0 <= bx1 + dx and min(y1, by1) - max(y0_, by0) >= 0.5 * min(y1 - y0_, by1 - by0)
                    for bx0, by0, bx1, by1 in boxes)
 
-    def pieces(k):
-        """Group k's ink outside the stretches read as names or numbers: a
-        signature written on into a name is judged on its own."""
-        x, y, w, hh, _ = wst[k]
-        free = np.ones(w, bool)
-        for bx0, by0, bx1, by1 in vetoed:
-            if min(y + y0 + hh, by1) - max(y + y0, by0) >= 0.5 * min(hh, by1 - by0):
-                free[max(0, int(bx0) - 4 - x):max(0, int(bx1) + 5 - x)] = False
-        mine = (wlab[y:y + hh, x:x + w] == k) & (ink[y:y + hh, x:x + w] > 0)
-        edges = np.flatnonzero(np.diff(np.r_[0, free.astype(np.int8), 0]))
-        for a, b in zip(edges[::2], edges[1::2]):
-            ys, xs = np.nonzero(mine[:, a:b])
-            if len(xs):
-                yield (x + a + xs.min(), y + ys.min(), xs.max() - xs.min() + 1, ys.max() - ys.min() + 1,
-                       np.unique(lab[y:y + hh, x + a:x + b][mine[:, a:b]]))
-
     for k in range(1, m):
-        for x, y, w, hh, labels in pieces(k):
-            if w < 1.0 * h or hh < 0.5 * h:
-                continue
-            parts = [j for j in labels if j and st[j][4] >= 20]
-            if not parts:
-                continue
-            box = (x, y + y0, x + w, y + y0 + hh)
-            cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-            if _covered(L, cx, cy, h) or _legible(passes, box):
-                continue  # a word, a number; or masked already
-            widest = max(st[j][2] for j in parts)
-            joined = len(parts) <= 0.9 * (w / h) + 1 and widest >= 0.6 * w and w >= 2 * h
-            if inside(cx, cy, zones):
-                why = "next to the officer's name, not legible as text"
-            elif on_line(box, strong, 8 * h):
-                why = "on a sign-off line, not legible as text"
-            elif joined and (near(box, strong, 8 * h, 2.5 * h) or on_line(box, weak, 8 * h)):
-                why = "joined strokes next to a name, date or ID"
-            else:
-                continue
-            z = Zone(f"signature-text@{x:.0f},{cy:.0f}", (box[0] - 4, box[1] - 4, w + 8, hh + 8), "signature",
-                     search=(0.3 * h, 0.3 * h))
-            L.fields.append(Field("signature", [z], "free-text", f"unlabelled signature ({why})", box))
-            L.notes.append(f"unlabelled handwriting at y={cy:.0f} taken for a signature ({why})")
+        x, y, w, hh, _ = wst[k]
+        if w < 1.0 * h or hh < 0.5 * h:
+            continue
+        parts = [j for j in np.unique(lab[y:y + hh, x:x + w][wlab[y:y + hh, x:x + w] == k]) if j and st[j][4] >= 20]
+        if not parts:
+            continue
+        box = (x, y + y0, x + w, y + y0 + hh)
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        if _covered(L, cx, cy, h):
+            continue  # masked already
+        reads = _readings(passes, box)
+        signing = inside(cx, cy, zones) or near(box, strong, 8 * h, 2.5 * h)
+        if _legible(reads, w) and not (signing and _cursive(reads)):
+            continue  # a word, a name, a number
+        few = len(parts) <= 0.9 * (w / h) + 1 and w >= 2 * h  # strokes, not a row of letters
+        joined = few and max(st[j][2] for j in parts) >= 0.6 * w
+        if inside(cx, cy, zones):
+            why = "next to the officer's name, not legible as text"
+        elif on_line(box, strong, 8 * h):
+            why = "on a sign-off line, not legible as text"
+        elif signing and (joined or _cursive(reads)):
+            why = "joined strokes next to a name, date or ID"
+        elif joined and on_line(box, weak, 8 * h):
+            why = "joined strokes next to a word in capitals"
+        elif few and (joined or not any(t for t, _ in reads)) and on_line(box, stamped, 3 * h):
+            why = "unreadable strokes beside the stamp"
+        else:
+            continue
+        z = Zone(f"signature-text@{x:.0f},{cy:.0f}", (box[0] - 4, box[1] - 4, w + 8, hh + 8), "signature",
+                 search=(0.3 * h, 0.3 * h))
+        L.fields.append(Field("signature", [z], "free-text", f"unlabelled signature ({why})", box))
+        L.notes.append(f"unlabelled handwriting at y={cy:.0f} taken for a signature ({why})")
 
 
-def _legible(passes: list[list], box) -> bool:
-    """Does OCR read the writing in ``box`` as text? Either confidently, or
-    the same way in two readings (``passes``: lines read at two scales). A
-    signature is read as nothing, as noise, or differently each time."""
-    h = TEXT_H
+def _readings(passes: list[list], box) -> list[tuple[str, list[float]]]:
+    """What each OCR pass reads in ``box``: (text, per-character confidence)."""
     x0, y0, x1, y1 = box
     cy = (y0 + y1) / 2
-    need = max(1, 0.3 * (x1 - x0) / h)
-    reads = []
+    out = []
     for lines in passes:
-        cs = [c for ln in lines if ln.box[1] - 0.3 * h <= cy <= ln.box[3] + 0.3 * h for c in ln.chars_in(x0, x1)]
-        text = "".join(c for c, _ in cs)
+        cs = [c for ln in lines if ln.box[1] - 0.3 * TEXT_H <= cy <= ln.box[3] + 0.3 * TEXT_H
+              for c in ln.chars_in(x0, x1)]
+        out.append(("".join(c for c, _ in cs), [p for _, p in cs]))
+    return out
+
+
+def _legible(reads: list[tuple[str, list[float]]], width: float) -> bool:
+    """Is the writing read as text? Either confidently, or the same way in
+    two readings (lines read at two scales). A signature is read as nothing,
+    as noise, or differently each time."""
+    need = max(1, 0.3 * width / TEXT_H)
+    texts = []
+    for text, probs in reads:
         if any(ord(c) > 0x2FF for c in text):
             return False  # read as CJK or symbols: strokes, not letters
         text = re.sub(r"\W", "", text.upper())
-        if len(text) >= need and float(np.mean([p for _, p in cs])) >= 0.8:
+        if len(text) >= need and float(np.mean(probs)) >= 0.8:
             return True
-        reads.append(text)
-    a, b = reads
+        texts.append(text)
+    a, b = texts
     return min(len(a), len(b)) >= need and 1 - ocr_mod._edits(a, b) / max(len(a), len(b)) >= 0.5
+
+
+def _cursive(reads: list[tuple[str, list[float]]]) -> bool:
+    """Read as joined-up lower case: on a form, names are written in
+    capitals, so this next to a sign-off is a signature ("Kahenya")."""
+    found = [[c for c in text if c.isalpha()] for text, _ in reads]
+    found = [f for f in found if f]
+    return bool(found) and max(map(len, found)) >= 4 and \
+        all(sum(c.islower() for c in f) >= 0.6 * len(f) for f in found)
 
 
 def _name_match(word: str, name: str) -> bool:
@@ -760,6 +771,10 @@ PRINTED_LINE = re.compile(r"^[\s.:,/()_-]*(?:no|name\s*of\s*candidate(?:\s*or\s*
                           r"candidate|tel\.?(?:\s*contact)?|contact|signature|date)[\s.:,/()_-]*$", re.I)
 
 
+FREE_LABEL = re.compile(r"presiding\s*officer'?s?\s*comments?\s*:?|reasons?\s*for\s*refus[ae]l\s*to\s*sign"
+                        r"(?:\s*\(?\s*if\s*any\s*\)?)?", re.I)
+
+
 def _x_fill(text: str) -> bool:
     """Typed "XXXXXXXX" that form generators put in unused rows."""
     t = re.sub(r"\s", "", text)
@@ -776,6 +791,9 @@ def printed(L: Layout) -> tuple[np.ndarray, np.ndarray]:
         if _x_fill(ln.text) or PRINTED_LINE.match(ln.text):
             q = ln.quad + np.float32([[-2, -2], [2, -2], [2, 2], [-2, 2]])
             cv2.fillPoly(mask, [np.round(q).astype(np.int32)], 255)
+        for m in FREE_LABEL.finditer(ln.text):  # where officers sign off, often right beside it
+            x0, x1 = ln.span(*m.span())
+            cv2.rectangle(mask, (int(x0) - 2, int(ln.box[1]) - 2), (int(x1) + 2, int(ln.box[3]) + 2), 255, -1)
     return mask, np.where(mask > 0, L.gray, 255).astype(np.uint8)
 
 

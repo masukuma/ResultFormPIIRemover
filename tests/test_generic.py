@@ -108,4 +108,10 @@ def _read(text, x0, x1, p):
 def test_signatures_are_what_ocr_cannot_read(page, band, legible):
     passes = [[_read(page, 0, 120, 0.95 if page == "ID" else 0.5)] if page else [],
               [_read(band, 0, 120, 0.5)] if band else []]
-    assert generic._legible(passes, (0, 0, 120, 34)) == legible
+    assert generic._legible(generic._readings(passes, (0, 0, 120, 34)), 120) == legible
+
+
+def test_cursive_reading():
+    assert generic._cursive([("Kaagd", [0.8] * 5), ("Kaad", [0.8] * 4)])
+    assert not generic._cursive([("MAPOA", [0.6] * 5), ("MAoA", [0.6] * 4)])
+    assert not generic._cursive([("15-12-2020", [0.9] * 10), ("", [])])
