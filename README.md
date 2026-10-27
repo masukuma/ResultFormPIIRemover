@@ -7,7 +7,8 @@ that **nothing but the personal data was touched**.
 - **Signatures** are blacked out, each on its own box.
 - **ID and passport numbers** have 3 random characters hidden.
 - **Phone numbers** keep their first digits; 3 of the last 6 are hidden.
-- **Names, results, stamps and QR codes** stay readable.
+- **Names, results, stamps and QR codes** stay readable. A stamp is never
+  masked, even where it lies over a signature or a number.
 
 The only edit ever made is replacing 8×8 blocks with solid black. On KIEMS
 JPEGs this is done at coefficient level, so every other block is the same
@@ -19,7 +20,10 @@ result was changed. See [VERIFYING.md](VERIFYING.md).
 Templates: Form 34A (2022) and Form 34B (2022, the system-printed layout,
 multi-page). Forms are aligned to a template, tables are snapped to their printed rules,
 and each page passes geometric, protected-region and leak checks before it is
-published. Anything uncertain goes to a review folder. An optional vision
+published. Forms with no template (2017 Forms 34A, 2021 by-election Forms
+35A/36A/38A and other printings) are read without one: OCR finds the labels,
+the printed rules give the columns, and everything above the declaration is
+protected. Anything uncertain goes to a review folder. An optional vision
 model on Ollama Cloud or a local Ollama audits pages. See
 [DESIGN.md](DESIGN.md).
 
@@ -27,6 +31,7 @@ model on Ollama Cloud or a local Ollama audits pages. See
 
 ```bash
 pip install -e '.[test]'
+pip install -e '.[generic]'   # older forms without a template (OCR runs locally)
 ```
 
 ## Run
@@ -71,6 +76,8 @@ Useful flags:
 - `--strict-structure`: withhold pages whose table rules can't be matched,
   instead of masking them with widened zones.
 - `--workers`: number of worker processes.
+- `--no-generic`: send forms with no template to review instead of reading
+  them without one.
 
 ## Adding a form type
 

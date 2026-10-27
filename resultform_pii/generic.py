@@ -342,7 +342,14 @@ def _tables(L: Layout, hs, vs) -> set[int]:
                 L.problems.append(f"'{ln.text}' column also holds '{others[0].text}': a column rule is missing")
                 used.add(i)
                 continue
-            rows = _rows(hs, lv, rv, ln.cy, TEXT_H)
+            # The header may run on below the label ("Tel." / "Contact"): rows
+            # start under all of it.
+            top = ln.cy
+            for o in sorted(L.lines, key=lambda o: o.cy):
+                if top < o.cy <= top + 1.5 * TEXT_H and PRINTED_LINE.match(o.text) \
+                        and xl < (o.box[0] + o.box[2]) / 2 < xr:
+                    top = o.cy
+            rows = _rows(hs, lv, rv, top, TEXT_H)
             if not rows:
                 L.problems.append(f"'{ln.text}' header at y={ln.cy:.0f}: no table rows found under it")
                 continue
@@ -595,14 +602,18 @@ def _free_text(L: Layout, used: set[int], top: float) -> None:
 CAPS_WORD = re.compile(r"[A-Z]{4,}")
 
 
-def _free_signatures(L: Layout, top: float) -> None:
+def _free_signatures(L: Layout, top: float, band: list = ()) -> None:
     """Signatures written outside any labelled field: an officer signing off
     under the comments (name, ID, signature, date).
 
-    Next to the officer's own name (as written in the declaration) every
-    piece of writing that OCR can't read confidently is taken for a
-    signature: names, dates and numbers read well, signatures don't. Away
-    from it, only joined-up writing next to a name, a date or an ID is."""
+    What is writing and what is a signature is told by OCR: names, numbers
+    and words are read, confidently or the same way at two scales (the page,
+    and ``band``, the free area re-read on its own); a signature is read as
+    nothing, as noise, or differently each time. Writing that isn't read is
+    taken for a signature next to the officer's own name (as written in the
+    declaration) and on a sign-off line: one with a number, a date, an ID or
+    "sign" on it. On any other line, only joined-up writing next to a word
+    in capitals is; comments are left alone, even when OCR can't read them."""
     h = TEXT_H
     W, H = L.frame.size
     y0 = int(max(0, top))
@@ -615,15 +626,17 @@ def _free_signatures(L: Layout, top: float) -> None:
     for st in L.stamps:
         cv2.circle(ink, (int(st.cx), int(st.cy - y0)), int(st.r * 1.1 + 4), 0, -1)
     lines = [ln for ln in L.lines if ln.cy >= top and not stamps_mod.is_stamp_text(ln.text)]
-    vetoed, cues, zones = [], [], []
+    in_band = {id(ln) for ln in band}
+    passes = [[ln for ln in lines if id(ln) not in in_band], [ln for ln in lines if id(ln) in in_band]]
+    vetoed, strong, weak, zones = [], [], [], []
     for ln in lines:
         if re.search(r"refus|comment|presiding\s*officer", ln.text, re.I) or PRINTED_LINE.match(ln.text):
             q = ln.quad - np.float32([0, y0])
             cv2.fillPoly(ink, [np.round(q).astype(np.int32)], 0)  # printed labels
             continue
-        # Stretches OCR reads as a name in capitals, a number or "N/A" are
-        # writing, not signatures -- only those stretches, not the whole line,
-        # which may run on into a signature.
+        # Stretches OCR reads confidently as a name in capitals, a number or
+        # "N/A" are writing -- only those stretches, not the whole line, which
+        # may run on into a signature.
         spans = [m.span() for m in re.finditer(r"[A-Z][A-Z.'-]{3,}", ln.text)]
         spans += [m.span() for m in re.finditer(r"\d[\d\s/.-]{3,}\d", ln.text)]
         if re.fullmatch(r"\W*(?:n\s*/\s*a|nil|none|na)\W*", ln.text, re.I):
@@ -634,13 +647,18 @@ def _free_signatures(L: Layout, top: float) -> None:
                 continue  # OCR guessing (a signature read as "1015"): no proof of writing
             x0, x1 = ln.span(a, b)
             vetoed.append((x0, ln.box[1], x1, ln.box[3]))
-        if (re.search(r"[A-Z]{4,}|\d{4,}", ln.text) or re.search(r"sign|(?<![a-z])I\.?D(?![a-z])", ln.text, re.I)) \
-                and not re.fullmatch(r"\W*(?:n\s*/\s*a|nil|none|na)\W*", ln.text, re.I):
-            cues.append(ln.box)  # a name, a number or date, "sign", "ID"
+        if re.fullmatch(r"\W*(?:n\s*/\s*a|nil|none|na)\W*", ln.text, re.I):
+            continue
+        if re.search(r"\d{4,}|\d{1,2}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{2}", ln.text) or \
+                re.search(r"sign|(?<![a-z])I\.?D(?![a-z])", ln.text, re.I):
+            strong.append(ln.box)  # a number or date, "sign", "ID"
+        elif re.search(r"[A-Z]{4,}", ln.text):
+            weak.append(ln.box)  # a word in capitals: a name, or a comment
         words = re.findall(r"[A-Z]{3,}", ln.text.upper())
         if any(_name_match(w, n) for w in words for n in L.officer_names):
             bx0, by0, bx1, by1 = ln.box
             zones.append((bx0 - 2 * h, by0 - 0.5 * h, bx1 + 10 * h, by1 + 3.5 * h))
+            strong.append(ln.box)
     ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     n, lab, st, _ = cv2.connectedComponentsWithStats(ink)
     groups = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (int(0.3 * h), 1)))
@@ -654,38 +672,75 @@ def _free_signatures(L: Layout, top: float) -> None:
         return any(bx0 - dx <= x1 and x0 <= bx1 + dx and by0 - dy <= y1 and y0_ <= by1 + dy
                    for bx0, by0, bx1, by1 in boxes)
 
-    def read_well(box) -> bool:
+    def on_line(box, boxes, dx):
+        """On the same written line as one of ``boxes``, within dx of it."""
         x0, y0_, x1, y1 = box
-        cy = (y0_ + y1) / 2
-        chars = [p for ln in lines if ln.box[1] - 0.3 * h <= cy <= ln.box[3] + 0.3 * h
-                 for _, p in ln.chars_in(x0, x1)]
-        return len(chars) >= max(2, 0.4 * (x1 - x0) / h) and float(np.mean(chars)) >= 0.8
+        return any(bx0 - dx <= x1 and x0 <= bx1 + dx and min(y1, by1) - max(y0_, by0) >= 0.5 * min(y1 - y0_, by1 - by0)
+                   for bx0, by0, bx1, by1 in boxes)
+
+    def pieces(k):
+        """Group k's ink outside the stretches read as names or numbers: a
+        signature written on into a name is judged on its own."""
+        x, y, w, hh, _ = wst[k]
+        free = np.ones(w, bool)
+        for bx0, by0, bx1, by1 in vetoed:
+            if min(y + y0 + hh, by1) - max(y + y0, by0) >= 0.5 * min(hh, by1 - by0):
+                free[max(0, int(bx0) - 4 - x):max(0, int(bx1) + 5 - x)] = False
+        mine = (wlab[y:y + hh, x:x + w] == k) & (ink[y:y + hh, x:x + w] > 0)
+        edges = np.flatnonzero(np.diff(np.r_[0, free.astype(np.int8), 0]))
+        for a, b in zip(edges[::2], edges[1::2]):
+            ys, xs = np.nonzero(mine[:, a:b])
+            if len(xs):
+                yield (x + a + xs.min(), y + ys.min(), xs.max() - xs.min() + 1, ys.max() - ys.min() + 1,
+                       np.unique(lab[y:y + hh, x + a:x + b][mine[:, a:b]]))
 
     for k in range(1, m):
-        x, y, w, hh, _ = wst[k]
-        if w < 1.0 * h or hh < 0.5 * h:
-            continue
-        parts = [j for j in np.unique(lab[y:y + hh, x:x + w][wlab[y:y + hh, x:x + w] == k]) if j and st[j][4] >= 20]
-        if not parts:
-            continue
-        box = (x, y + y0, x + w, y + y0 + hh)
-        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-        if inside(cx, cy, vetoed) or _covered(L, cx, cy, h):
-            continue  # a name in capitals, a date, a number; or masked already
-        if inside(cx, cy, zones):
-            if read_well(box):
+        for x, y, w, hh, labels in pieces(k):
+            if w < 1.0 * h or hh < 0.5 * h:
                 continue
-            why = "next to the officer's name, not legible as text"
-        else:
+            parts = [j for j in labels if j and st[j][4] >= 20]
+            if not parts:
+                continue
+            box = (x, y + y0, x + w, y + y0 + hh)
+            cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+            if _covered(L, cx, cy, h) or _legible(passes, box):
+                continue  # a word, a number; or masked already
             widest = max(st[j][2] for j in parts)
-            joined = len(parts) <= 0.9 * (w / h) + 1 and widest >= 0.6 * w and w >= 1.5 * h
-            if not (joined and near(box, cues, 8 * h, 2.5 * h)):
+            joined = len(parts) <= 0.9 * (w / h) + 1 and widest >= 0.6 * w and w >= 2 * h
+            if inside(cx, cy, zones):
+                why = "next to the officer's name, not legible as text"
+            elif on_line(box, strong, 8 * h):
+                why = "on a sign-off line, not legible as text"
+            elif joined and (near(box, strong, 8 * h, 2.5 * h) or on_line(box, weak, 8 * h)):
+                why = "joined strokes next to a name, date or ID"
+            else:
                 continue
-            why = "joined strokes next to a name, date or ID"
-        z = Zone(f"signature-text@{x:.0f},{cy:.0f}", (box[0] - 4, box[1] - 4, w + 8, hh + 8), "signature",
-                 search=(0.3 * h, 0.3 * h))
-        L.fields.append(Field("signature", [z], "free-text", f"unlabelled signature ({why})", box))
-        L.notes.append(f"unlabelled handwriting at y={cy:.0f} taken for a signature ({why})")
+            z = Zone(f"signature-text@{x:.0f},{cy:.0f}", (box[0] - 4, box[1] - 4, w + 8, hh + 8), "signature",
+                     search=(0.3 * h, 0.3 * h))
+            L.fields.append(Field("signature", [z], "free-text", f"unlabelled signature ({why})", box))
+            L.notes.append(f"unlabelled handwriting at y={cy:.0f} taken for a signature ({why})")
+
+
+def _legible(passes: list[list], box) -> bool:
+    """Does OCR read the writing in ``box`` as text? Either confidently, or
+    the same way in two readings (``passes``: lines read at two scales). A
+    signature is read as nothing, as noise, or differently each time."""
+    h = TEXT_H
+    x0, y0, x1, y1 = box
+    cy = (y0 + y1) / 2
+    need = max(1, 0.3 * (x1 - x0) / h)
+    reads = []
+    for lines in passes:
+        cs = [c for ln in lines if ln.box[1] - 0.3 * h <= cy <= ln.box[3] + 0.3 * h for c in ln.chars_in(x0, x1)]
+        text = "".join(c for c, _ in cs)
+        if any(ord(c) > 0x2FF for c in text):
+            return False  # read as CJK or symbols: strokes, not letters
+        text = re.sub(r"\W", "", text.upper())
+        if len(text) >= need and float(np.mean([p for _, p in cs])) >= 0.8:
+            return True
+        reads.append(text)
+    a, b = reads
+    return min(len(a), len(b)) >= need and 1 - ocr_mod._edits(a, b) / max(len(a), len(b)) >= 0.5
 
 
 def _name_match(word: str, name: str) -> bool:
@@ -785,9 +840,10 @@ def analyze(img: np.ndarray, o: ocr_mod.Ocr | None = None) -> Layout | str:
     # for numbers and signatures written there.
     bottoms = [z.rect[1] + z.rect[3] for fl in L.fields if fl.source == "table" for z in fl.zones]
     free_top = max(bottoms) if bottoms else decl_bottom
-    L.lines = L.lines + _read_band(o, work, free_top, H)
+    band = _read_band(o, work, free_top, H)
+    L.lines = L.lines + band
     _free_text(L, used, boundary)
-    _free_signatures(L, free_top)
+    _free_signatures(L, free_top, band)
     kinds = {fl.kind for fl in L.fields if fl.source == "table"}
     if kinds and kinds != {"id", "phone", "signature"}:
         L.problems.append(f"agents table: found only {', '.join(sorted(kinds))} columns")

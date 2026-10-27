@@ -89,3 +89,23 @@ def test_ocr_reads_printed_labels():
                 (0, 0, 0), 2, cv2.LINE_AA)
     text = " ".join(l.text for l in ocr.engine().read(img)).lower()
     assert "passport" in text and "signature" in text
+
+
+def _read(text, x0, x1, p):
+    q = np.float32([[x0, 0], [x1, 0], [x1, 34], [x0, 34]])
+    n = len(text)
+    return Line(q, text, p, [(i + 0.5) / n for i in range(n)], [p] * n)
+
+
+@pytest.mark.parametrize("page,band,legible", [
+    ("MAPOA", "MAoA", True),     # handwriting read alike at both scales
+    ("BrLLoi", "BrLLoi", True),
+    ("1015", "dol", False),      # a signature: read differently each time
+    ("uNGu中", "uNGu母", False),  # strokes read as CJK
+    ("", "", False),             # not read at all
+    ("ID", "", True),            # one confident reading is enough
+])
+def test_signatures_are_what_ocr_cannot_read(page, band, legible):
+    passes = [[_read(page, 0, 120, 0.95 if page == "ID" else 0.5)] if page else [],
+              [_read(band, 0, 120, 0.5)] if band else []]
+    assert generic._legible(passes, (0, 0, 120, 34)) == legible

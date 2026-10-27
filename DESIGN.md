@@ -14,7 +14,8 @@ personal data gets a different treatment:
 | National ID / passport numbers | **3 random characters hidden** |
 | Phone numbers | **First digits kept, 3 of the last 6 hidden**: `0734471897` keeps `0734` and hides 3 of `471897` |
 | Names | Left visible |
-| QR code, stamp, station codes, votes | Left visible: these are what make the form verifiable |
+| QR code, station codes, votes | Left visible: these are what make the form verifiable |
+| Stamps | **Never masked**, even where a stamp lies over a signature, an ID or a phone number |
 
 The hidden characters are random, but never more than two neighbouring
 characters are left visible together.
@@ -66,6 +67,11 @@ photo ─► page alignment (ORB + MAGSAC) ─► table snapping (printed rules)
                ▼                               ▼                                          ▼
             review               widened zones (or review with --strict-structure)     review
 ```
+
+A form type with no template (older printings, by-election forms) is read
+without one instead: see [Forms without a template](#forms-without-a-template-genericpy).
+Either way, stamps are found before masking and no mask is ever applied over
+one: see [Stamps are never masked](#stamps-are-never-masked-stampspy).
 
 ### 1. Page alignment (`align.py`)
 ORB features are matched to the template's reference image, and a homography is
@@ -169,7 +175,8 @@ A document is published only if every page passes:
 | Gate | Catches |
 |---|---|
 | Page alignment checks | unknown form or layout, blank or garbage page |
-| Form type has a template | 34B, 35A, 36A, … until templates exist |
+| Form type has a template | 34B, 35A, 36A, … until templates exist (or read without one, below) |
+| Reading without a template | a column of the agents table not found; officers named in the declaration but no signature line found; no PII fields at all |
 | QR code vs file name | form uploaded under the wrong station |
 | **Column edge check** | table matched one rule off. The straightened column must have its printed rules at its own edges, not a stronger rule somewhere else. This compares the mapping against the paper, because comparing the masks against the same mapping can't detect it |
 | **Leak check** | the redacted column is re-read over a wider window; 5 or more written characters in a row with no mask between them means something was missed |
@@ -189,6 +196,41 @@ dropped.
 Next to each PDF goes its signed manifest (`.manifest.json`), plus the ledger
 and batch roots described below. Documents that fail go to `review/`, each
 with a JSON report of why. `review/report.jsonl` logs every document.
+
+## Stamps are never masked (`stamps.py`)
+
+The presiding officer's stamp is what readers look for to tell a genuine
+form. It is often pressed across a signature, an ID or a phone number. The
+rule is absolute: **no blacked block may touch a stamp**, even when that leaves
+part of a signature or a number visible under it.
+
+- **Finding stamps.** Two ink maps are made: dark ink, and coloured ink (any
+  colour that stands out from the paper's own, so faded violet or blue stamps
+  count; the green security print doesn't). Circles found by a Hough transform
+  in three radius bands are refined by least squares. They are kept only if
+  ink runs around the ring: continuously, densely, and with little ink just
+  outside it. Those thresholds were measured on the sample forms. The radius
+  range comes from the page: 40–135 px on a 2340 px KIEMS page, or
+  1.6–4.2 × the printed text height on a form read without a template. That
+  keeps a looped signature from passing as a stamp. A line OCR reads as stamp
+  lettering ("PRESIDING OFFICER", "I.E.B.C.") starts a second, more permissive
+  search around it.
+- **A second look where masks are about to go.** A faint stamp under a
+  signature is the most likely miss and the costliest. So, before masks are
+  applied, the area around them is searched again with lower thresholds, and
+  any ring found there that reaches into a mask is added.
+- **Protection.** Each stamp's disc, plus a margin (6 px + 4% of the radius),
+  is rounded out to whole 8×8 blocks and removed from the mask canvas. Writing
+  under a stamp stays visible; the page notes say how much was lifted.
+- **Gates.** Signature coverage ignores ink inside a stamp, so a stamp over a
+  signature doesn't send the page to review. The VLM audit is told to ignore
+  writing inside stamps and to report any stamp a mask covers
+  (`stamp_covered`); either a covered stamp or readable PII fails the audit.
+- **Record and verification.** Stamps are listed among the page's protected
+  regions in the manifest (`kind: "stamp"`, the circle, and how it was
+  found). `rfpii verify` checks that no blacked block touches one and that its
+  pixels decode identically in the original and the redacted form, as for the
+  results. The overlay outlines stamps in magenta.
 
 ## Verifiability
 
@@ -219,7 +261,9 @@ altered, only obscured, and the manifest records where.
   stops publication.
 - **Protected regions.** Templates declare `protect` regions: the header with
   the form serial and QR code, station names and codes, the votes table, and
-  the polling-station counts. A mask block touching one stops publication.
+  the polling-station counts. Without a template, everything above the
+  "Declaration" label is protected. Every stamp found on the page is protected
+  too. A mask block touching any of them stops publication.
 
 ### The record
 - **Manifest.** For each document (`process.py`) it records:
@@ -275,6 +319,7 @@ each of these cases (also in the test suite):
 | "The publisher swapped a file after release." | The ledger chain and the published batch root fail. |
 | "The manifest was edited to hide a change." | The signature fails. The coefficient check doesn't trust the manifest anyway: an unlisted change fails it. |
 | "The masking hid a result." | Protected regions are checked by the redactor and by the verifier, and the overlay shows every black block. |
+| "The masking hid the stamp, so the form can't be authenticated." | No mask block may touch a stamp; the verifier checks it and the overlay outlines each stamp. A stamp the finder missed would show on the overlay as an unoutlined stamp, and the VLM audit asks about it. |
 | "The original itself is fake." | Out of scope for redaction. The manifest ties each form to its source hash, KIEMS kit serial, capture time and QR, for comparison with IEBC records. |
 | "The signing key was stolen." | Keep it offline. Publish its fingerprint once. Rotate by announcing a new key in a signed statement from the old one. |
 
@@ -334,9 +379,10 @@ coordinates map back exactly.
 | Review: page alignment failed or other | 4 |
 | Review: leak check | 1 |
 
-That is 188 of 215 (87%) published, and all 188 verify. Throughput is about
+That is 188 of 215 (87%) published, and all 188 verify. Throughput was about
 3.7 files/s on 4 cores, including the coefficient-level edit and the
-self-check. With per-signature masks, the blacked-out area is a median of
+self-check; the stamp search added since roughly halves it. Adding stamp
+protection changed none of these outcomes: the same 188 forms publish. With per-signature masks, the blacked-out area is a median of
 3.0% of each image (it was 5.4% with whole-column signature blocks), at most
 7.3%. Several
 random samples of the published forms were reviewed by eye. Every review that
@@ -352,7 +398,7 @@ template can clear them.
 | `form34a_2022` (2022 Form 34A, KIEMS) | Built from a real form; 188 of 215 published, all verified |
 | `form34b_2022_block`, `form34b_2022_results`, `form34b_2022_results_b` | Form 34B layout "A" (the system-printed form, the most common); see below |
 | Form 34B layouts B and C, and heavily distorted copies | Not yet; routed to review |
-| 2021 by-election Forms 35A / 36A / 38A | Not yet; routed to review |
+| 2017 Forms 34A, 2021 by-election Forms 35A / 36A / 38A, other printings | Read without a template; see below |
 
 ### Form 34B (constituency tally)
 
@@ -430,6 +476,58 @@ before the test).
 A template's reference image must have its handwriting erased, keeping the
 printed rules (see `README.md`). The form's PII must never end up in the repo.
 
+## Forms without a template (`generic.py`)
+
+Older forms (2017 Forms 34A, the 2021 by-election Forms 35A, 36A and 38A) came
+in many printings and were scanned or photographed in every orientation.
+A template per printing doesn't scale, so a form with no template is
+**read**, using the same printed labels and rules a person would look for.
+It is on by default (`--no-generic` turns it off) and needs the
+`.[generic]` extra.
+
+1. **OCR, locally** (`ocr.py`). RapidOCR with the PP-OCRv3 models, on the CPU;
+   nothing leaves the machine. The recogniser's output is decoded here, so
+   every character has a position and a confidence. Labels are matched
+   allowing for misreads ("Shature", "bate 17-10-2019").
+2. **Upright and to scale.** Orientation comes from the shape of the text
+   boxes and the 180° classifier, then the page is deskewed and scaled so
+   that printed text is 34 px high. A homography maps every field back to the
+   original image.
+3. **Results are protected.** Everything above the "Declaration" label (or,
+   failing that, down to the last line that names a count) is a protected
+   region.
+4. **Agents table.** The column headers ("ID/Passport No.", "Tel. Contact",
+   "Signature") are found by OCR. Each column runs between the printed rules
+   either side of its header, and the rows come from the horizontal rules.
+   A column rule hidden by handwriting in every row is recovered from the
+   ink profile; if it can't be, the page goes to review.
+5. **Declaration.** Each officer's line is found by its "Signature" and "Date"
+   labels; the signature field lies between them. The band is OCR'd again at
+   2.5× because, at page scale, a label running into handwriting is often
+   missed. The officers' written names are kept for step 7.
+6. **Numbers written anywhere else.** An ID (7–9 digits that aren't a date,
+   or digits after "ID") or a phone number written below the results gets the
+   same partial masking as in the table.
+7. **Signatures outside any field**, typically an officer signing off under
+   the comments. OCR decides: names, numbers and words are read, either
+   confidently or the same way twice (on the page and in a re-read at 2.5×);
+   a signature is read as nothing, as noise, or differently each time.
+   Writing that isn't read is taken for a signature when it is next to an
+   officer's own name, or on a sign-off line (one carrying a number, a date,
+   an ID or "sign"). On any other line, only joined-up writing beside a word
+   in capitals is. A signature written on from a name is judged apart from
+   the name. Comments are left readable: a remark such as "NO DISPUTED
+   VOTES" is part of the record a scrutineer needs.
+8. **Masking and proof are shared.** The fields found go through the same
+   signature and digit masking as template zones, with glyph sizes scaled to
+   the text height, and then through the same block proof, gates, manifest
+   and verification. Typed "XXXX" fill and printed labels inside a field are
+   left alone.
+
+The manifest records what was read (the page frame, each field, the notes)
+and the OCR engine with its models' hashes, so `rfpii verify --rerun` can
+reproduce the page bit for bit with the same models.
+
 ## Known limits
 - **Form 34B layouts.** Only layout A has templates. Each other layout (B, C,
   …) needs its own block template, built from a blank or cleaned copy. The
@@ -447,9 +545,25 @@ printed rules (see `README.md`). The form's PII must never end up in the repo.
 - **Strength of the masking.** Hiding 3 digits of an 8-digit ID, or 3 of a
   phone number, leaves 1000 possible values. That is enough against casual
   reading, not against someone able to test candidates.
-- **PII outside template zones** is only caught by the VLM audit. This includes
-  officers re-signing beside the stamp, IDs written in the comments, and an
-  agent's ID written into the name column.
+- **PII outside template zones** is only caught by the VLM audit on templated
+  forms. This includes officers re-signing beside the stamp, IDs written in
+  the comments, and an agent's ID written into the name column. Forms read
+  without a template look for these (steps 6 and 7 above), but by rule, not
+  by understanding: run `--vlm-audit` on them.
+- **Writing under a stamp stays visible.** A signature, ID or phone number
+  that a stamp lies across is masked only outside the stamp. This is the
+  stamp rule working as intended, and the page notes record it.
+- **A stamp the finder misses is not protected.** Rings that are very faint,
+  mostly hidden, or far from circular can be missed. The second search near
+  masks and the VLM audit's `stamp_covered` check reduce this; the overlay
+  shows every stamp that was protected.
+- **Reading without a template depends on OCR.** Dim photos, labels the OCR
+  can't find, and source PDFs that are truncated send pages to review. OCR
+  adds about 8–15 s per page on one core.
+- **Re-runs are bit-identical on the same software and hardware.** ONNX
+  Runtime can round differently on another CPU, so a `--rerun` of a form read
+  without a template elsewhere may differ in a few blocks; the coefficient
+  check, which doesn't depend on re-running, is unaffected.
 - **Faint or heavily curled tables** go to review rather than being published.
   That's by design.
 - **Thresholds come from 215 forms in two counties.** Run a pilot on other

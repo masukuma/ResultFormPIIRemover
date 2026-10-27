@@ -15,9 +15,9 @@ For every published form, the publisher claims:
 2. **Nothing else changed.** The only change is that some 8×8-pixel blocks were
    replaced with solid black. Every other block of the image is the same data
    as in the original.
-3. **Results untouched.** None of those black blocks touches the results:
-   header and QR code, station names and codes, the votes table, or the
-   polling-station counts.
+3. **Results and stamps untouched.** None of those black blocks touches the
+   results (header and QR code, station names and codes, the votes table, the
+   polling-station counts) or any official stamp on the form.
 4. **Fixed record.** The form, its manifest and its place in the batch were
    recorded when published, and cannot be changed later without detection.
 
@@ -62,16 +62,23 @@ PASS  1 page image(s), as recorded
 PASS  original matches the manifest's source SHA-256 85d2fa2da8b6b42d...
 PASS  original has the same number of pages
 PASS  page 1: image matches the manifest
-PASS  page 1: no blacked block touches the 4 protected results region(s)
+PASS  page 1: no blacked block touches the 4 protected results region(s) and 1 stamp(s)
 PASS  page 1: original page is a JPEG, as recorded
 PASS  page 1: 57601 of 60651 blocks identical to the original (DCT coefficients); 3050 changed, all listed and solid black
-PASS  page 1: results regions decode to identical pixels in original and redacted (luminance)
+PASS  page 1: results regions and stamps decode to identical pixels in original and redacted (luminance)
 RESULT: VERIFIED - only the listed blocks were blacked out; nothing else changed
 ```
 
 `changes/` then contains an image of the original with every changed block
-shaded red and the results regions outlined in green, so you can see for
-yourself where the changes are.
+shaded red, the results regions outlined in green and the stamps in magenta,
+so you can see for yourself where the changes are.
+
+The protected regions come from the manifest. For a Form 34A or 34B they are
+the template's results regions; for older forms read without a template, the
+whole page above the "Declaration" label. Stamps are found on each page and
+listed with their circle. Whether the list is complete is something you can
+check by eye on the overlay: every stamp on the form should be outlined, and
+no red block should touch one.
 
 ## How the check works, and why it doesn't rely on trusting us
 
@@ -95,7 +102,9 @@ yourself where the changes are.
 - **Re-running the redaction.** `--rerun templates/` repeats the whole redaction
   from the recorded random seed, with the recorded code and template versions.
   It must give a bit-identical result, which shows the published file is
-  exactly what the documented process produces.
+  exactly what the documented process produces. For forms read without a
+  template, the manifest also records the OCR models' hashes; the re-run
+  checks that the same models are installed (`pip install -e '.[generic]'`).
 
 Try a tampered file. Change one number in the votes table of the published
 image (even one coefficient of one block), re-save it, and run `rfpii verify`.
@@ -110,5 +119,5 @@ It fails four separate checks. The test suite does this automatically
   kit logs, and the kit serial and capture time in the file name, which the
   manifest also records.
 - **What is under the black blocks.** That is the point of redaction. The
-  blocks are only in the signature boxes and the ID and phone columns, and the
-  overlay shows where they are.
+  blocks are only on signatures, IDs and phone numbers, and the overlay shows
+  where they are.
