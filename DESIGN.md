@@ -556,12 +556,13 @@ in the folder:
 
 | Outcome | Pages |
 |---|---|
-| Published | 35 |
-| Review: a column header of the agents table not read (handwriting or a stamp across it) | 4 |
+| Published | 36 |
+| Review: a column header of the agents table not read (handwriting or a stamp across it) | 3 |
 | Review: dim photo, nowhere to tell where the results end | 1 |
 | Review: source PDF truncated, no page in it | 2 |
 
-Each published page was checked by eye, original against redacted:
+Each published page was checked by eye, original against redacted, with
+the protected stamps outlined and the blacked blocks shaded:
 
 - Every stamp is found and untouched (the IEBC logo is often taken for one
   as well, which does no harm).
