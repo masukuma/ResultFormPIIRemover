@@ -165,15 +165,25 @@ def _measure(maps: dict, r_range, param2: float, offset=(0, 0)) -> list[tuple[st
             if any(np.hypot(cx - a, cy - b) < 0.3 * max(r, c) and abs(r - c) < 0.3 * max(r, c) for a, b, c in tried):
                 continue
             tried.append((cx, cy, r))
-            quick = ring(ink, cx, cy, r)
-            if quick is None or quick[0] < 0.3:
-                continue  # nothing ring-like here even roughly
-            cx, cy, r = refine(ink, cx, cy, r)
-            if not r_range[0] * 0.8 <= r <= r_range[1] * 1.2:
-                continue
-            m = ring(ink, cx, cy, r)
-            if m:
-                out.append((kind, cx + offset[0], cy + offset[1], r, m))
+            # A stamp's lettering makes circles of its own, a little inside
+            # the ring and off centre, and Hough may return one of those
+            # instead of the ring (which then counts as a near-copy). So the
+            # fit starts from a smaller and a larger radius too, and the best
+            # ring wins.
+            best = None
+            for k in (1.0, 0.85, 1.2):
+                quick = ring(ink, cx, cy, k * r)
+                if quick is None or quick[0] < 0.3:
+                    continue  # nothing ring-like here even roughly
+                fx, fy, fr = refine(ink, cx, cy, k * r)
+                if not r_range[0] * 0.8 <= fr <= r_range[1] * 1.2:
+                    continue
+                m = ring(ink, fx, fy, fr)
+                if m and (best is None or m[0] * m[1] > best[3][0] * best[3][1]):
+                    best = (fx, fy, fr, m)
+            if best:
+                fx, fy, fr, m = best
+                out.append((kind, fx + offset[0], fy + offset[1], fr, m))
     return out
 
 
