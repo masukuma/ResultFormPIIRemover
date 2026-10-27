@@ -1,0 +1,19 @@
+[project]
+name = "resultform-pii"
+version = "0.1.0"
+description = "Template-based PII redaction for scanned election result forms"
+requires-python = ">=3.10"
+dependencies = ["opencv-python-headless>=4.8", "numpy>=1.24", "pymupdf>=1.24", "pyyaml>=6"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+rfpii = "resultform_pii.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["resultform_pii"]

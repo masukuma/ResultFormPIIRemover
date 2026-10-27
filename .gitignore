@@ -1,0 +1,10 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+# never commit real scans or outputs
+scans/
+public/
+review/
+demo/
