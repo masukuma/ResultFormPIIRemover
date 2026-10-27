@@ -138,6 +138,10 @@ def ring(ink: np.ndarray, cx: float, cy: float, r: float, bins: int = 180) -> tu
 # 0.28, nothing outside).
 STRICT = {"dark": (0.8, 0.6, 0.4), "color": (0.45, 0.25, 0.25)}
 LOOSE = {"dark": (0.7, 0.5, 0.45), "color": (0.4, 0.22, 0.3)}
+# Near a mask, a faint stamp's ring may be thin (seen: density 0.49) but runs
+# all the way round with nothing outside it, which writing that happens to
+# lie on a circle doesn't do.
+FAINT = {"dark": (0.9, 0.4, 0.25), "color": (0.9, 0.2, 0.25)}
 
 
 def _candidates(ink: np.ndarray, r_range: tuple[float, float], param2: float) -> np.ndarray:
@@ -184,10 +188,11 @@ def _measure(maps: dict, r_range, param2: float, offset=(0, 0)) -> list[tuple[st
 
 
 def _passing(measured, limits, how) -> list[Stamp]:
+    """Rings meeting any of ``limits`` (one or more threshold sets)."""
+    limits = limits if isinstance(limits, (list, tuple)) else [limits]
     out = []
     for kind, cx, cy, r, (cont, dens, outside) in measured:
-        min_cont, min_dens, max_out = limits[kind]
-        if cont >= min_cont and dens >= min_dens and outside <= max_out * dens:
+        if any(cont >= lim[kind][0] and dens >= lim[kind][1] and outside <= lim[kind][2] * dens for lim in limits):
             out.append(Stamp(cx, cy, r, cont, how))
     return out
 
@@ -273,15 +278,18 @@ def near(img: np.ndarray, hide: np.ndarray, r_range: tuple[float, float], known:
     hs = cv2.resize(hide.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST)
     rr = (r_range[0] * s, r_range[1] * s)
     pad = int(1.2 * rr[1])
-    # one window per cluster of masks (masks closer than a stamp's size share one)
+    # one window per cluster of masks (masks closer than a stamp's size share
+    # one), reaching far enough that a ring touching a mask lies wholly inside:
+    # a ring cut by the window's edge is fitted off its true circle
     n, _, st, _ = cv2.connectedComponentsWithStats(cv2.dilate(hs, np.ones((pad, pad), np.uint8)))
+    reach = int(2.2 * rr[1]) - pad // 2
     found: list[Stamp] = []
     yy, xx = np.ogrid[:shape[0], :shape[1]]
     for i in range(1, n):
         x, y, w, h, _ = st[i]
-        X0, Y0 = max(0, x - pad // 2), max(0, y - pad // 2)
-        sub = {k: m[Y0:y + h + pad // 2, X0:x + w + pad // 2] for k, m in maps.items()}
-        for t in _rings(sub, rr, 22, LOOSE, "near-mask", (X0, Y0)):
+        X0, Y0 = max(0, x - reach), max(0, y - reach)
+        sub = {k: m[Y0:y + h + reach, X0:x + w + reach] for k, m in maps.items()}
+        for t in _rings(sub, rr, 22, (LOOSE, FAINT), "near-mask", (X0, Y0)):
             if not hs[(xx - t.cx) ** 2 + (yy - t.cy) ** 2 <= (t.r * 1.05) ** 2].any():
                 continue  # only rings that reach the mask matter here
             if any(np.hypot(t.cx - k.cx * s, t.cy - k.cy * s) < 0.6 * k.r * s for k in known):
