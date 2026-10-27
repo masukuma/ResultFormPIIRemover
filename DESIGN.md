@@ -384,8 +384,11 @@ coordinates map back exactly.
 
 That is 188 of 215 (87%) published, and all 188 verify. Throughput was about
 3.7 files/s on 4 cores, including the coefficient-level edit and the
-self-check; the stamp search added since roughly halves it. Adding stamp
-protection changed none of these outcomes: the same 188 forms publish. With per-signature masks, the blacked-out area is a median of
+self-check; the stamp search added since cuts it to about 1–1.5 files/s.
+Adding stamp protection changed none of these outcomes: the same 188 forms
+publish, and 177 of them have a stamp below the header (262 in all), each
+protected. Every stamp the search finds or stops finding between versions is
+checked against the original by eye. With per-signature masks, the blacked-out area is a median of
 3.0% of each image (it was 5.4% with whole-column signature blocks), at most
 7.3%. Several
 random samples of the published forms were reviewed by eye. Every review that
@@ -542,6 +545,43 @@ It is on by default (`--no-generic` turns it off) and needs the
 The manifest records what was read (the page frame, each field, the notes)
 and the OCR engine with its models' hashes, so `rfpii verify --rerun` can
 reproduce the page bit for bit with the same models.
+
+### Results on the older forms (`Work/Kenya/Extracted`)
+
+The folder holds 2017 Forms 34A from the repeat presidential election and
+2018–2021 by-election Forms 35A, 36A and 38A, one folder per station or
+ward; five of its 46 folders are empty. One page was taken from each of the
+other 41 (three from the repeat election), 42 in all, covering every printing
+in the folder:
+
+| Outcome | Pages |
+|---|---|
+| Published | 35 |
+| Review: a column header of the agents table not read (handwriting or a stamp across it) | 4 |
+| Review: dim photo, nowhere to tell where the results end | 1 |
+| Review: source PDF truncated, no page in it | 2 |
+
+Each published page was checked by eye, original against redacted:
+
+- Every stamp is found and untouched (the IEBC logo is often taken for one
+  as well, which does no harm).
+- Signatures in the declaration and the agents table are masked, and so are
+  the officers' sign-offs under the comments.
+- IDs and phone numbers, in the table or written elsewhere, keep all but 3
+  digits.
+- Comments stay readable, including remarks about rejected and disputed
+  votes.
+
+Some sign-off lines lose more than they should: part of a name OCR can't
+read, or a date, next to the signature. That errs on the side of privacy;
+the officers' names stay readable in the declaration.
+
+Building this found real misses, each now covered by the checks above and
+by a test where one can be written:
+- signatures written across or beside a stamp;
+- a cursive signature that OCR reads as a word;
+- a signature merged with a printed label OCR missed;
+- a faint stamp the circle search fitted off its ring.
 
 ## Known limits
 - **Form 34B layouts.** Only layout A has templates. Each other layout (B, C,
