@@ -140,3 +140,38 @@ def test_column_edge_check_catches_shifted_column():
     assert masking.check_column_edges(img, IDENTITY, _cells()) == ""
     shift = masking.homography(np.float64([[1, 0, 60], [0, 1, 0], [0, 0, 1]]))
     assert "placed wrong" in masking.check_column_edges(img, shift, _cells())
+
+
+def _signature_table(rows: dict[int, int]) -> np.ndarray:
+    """Ruled column; rows -> x offset of a scribbled signature."""
+    img = np.full((600, 500), 235, np.uint8)
+    for r in range(ROWS + 1):
+        cv2.line(img, (X - 60, Y + r * ROW_H), (X + W + 60, Y + r * ROW_H), 60, 2)
+    for x in (X, X + W):
+        cv2.line(img, (x, Y - 40), (x, Y + ROWS * ROW_H), 60, 2)
+    rng = np.random.default_rng(0)
+    for r, dx in rows.items():
+        pts = np.cumsum(rng.integers(-6, 7, (30, 2)), axis=0) + (X + dx, Y + r * ROW_H + 18)
+        pts[:, 0] = np.linspace(X + dx, X + dx + 70, 30)
+        cv2.polylines(img, [pts.astype(np.int32)], False, 20, 2)
+    return img
+
+
+def test_each_signature_gets_its_own_box():
+    img = _signature_table({0: 20, 3: 110})
+    cells = [Zone(f"s[{r}]", (X, Y + r * ROW_H, W, ROW_H), "signature", group="s", row=r) for r in range(ROWS)]
+    canvas = np.full(img.shape, 255, np.uint8)
+    rep = masking.signature_column(canvas, img, IDENTITY, cells, MaskSettings())
+    assert [r["mode"] for r in rep] == ["signature", "empty", "empty", "signature", "empty", "empty"]
+    sig_ink = (img < 120) & (np.abs(np.arange(img.shape[1]) - (X + W / 2)) < W / 2 - 4)[None, :]
+    sig_ink[:Y + 2] = False
+    for r in range(ROWS + 1):  # printed rules are not signatures
+        sig_ink[Y + r * ROW_H - 3:Y + r * ROW_H + 3] = False
+    assert (canvas[sig_ink] == 0).mean() > 0.97  # signatures covered
+    hidden = canvas[Y:Y + ROWS * ROW_H, X:X + W] == 0
+    assert hidden.mean() < 0.35  # far from the whole column
+    assert not hidden[1 * ROW_H + 8:3 * ROW_H - 8].any()  # empty rows untouched
+    out = cv2.cvtColor(np.where(canvas == 0, 0, img).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+    assert masking.verify_signatures(img, out, IDENTITY, cells, None, MaskSettings()) == ""
+    assert "not fully masked" in masking.verify_signatures(img, cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), IDENTITY,
+                                                           cells, None, MaskSettings())

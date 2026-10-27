@@ -24,11 +24,15 @@ structure:
   - name: agents
     rect: [60, 1500, 1530, 480]
 zones:
-  # Presiding officer + deputy signatures (one box spans both lines, with
-  # room for signatures that stray above the line or toward the stamp).
+  # Presiding officer and deputy: each signature blacked out on its own box.
+  # Two cells, one per signature line; strokes found a little above/below
+  # (signatures stray off the line) are included.
   - name: officer_signatures
-    action: blackout
-    rect: [1008, 1325, 330, 160]
+    action: signature
+    rect: [1008, 1350, 330, 56]
+    rows: 2
+    row_step: 56
+    search: [12, 24]
     region: agents
   # Agents table, 11 rows. Names stay visible.
   - name: agent_id
@@ -47,9 +51,10 @@ zones:
     rows: 11
     row_step: 36.4
     region: agents
-  # Whole signature column, header row to below the bottom border, so a
-  # table mapped a row off is still covered.
+  # Agents' signatures: each one blacked out on its own box; empty rows untouched.
   - name: agent_signatures
-    action: blackout
-    rect: [1221, 1522, 225, 490]
+    action: signature
+    rect: [1221, 1562, 225, 36.4]
+    rows: 11
+    row_step: 36.4
     region: agents

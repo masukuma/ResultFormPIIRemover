@@ -98,10 +98,13 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
         cy = float(np.mean([z.rect[1] + z.rect[3] / 2 for z in zones]))
         return masking.homography(a.local(((x0 + x1) / 2, cy)))
 
-    columns: dict[str, list] = {}
+    columns: dict[str, list] = {}  # ID / phone columns
+    signatures: dict[str, list] = {}  # signature boxes and columns
     for z in a.template.zones:
         if z.action == "partial":
             columns.setdefault(z.group or z.name, []).append(z)
+        elif z.action == "signature":
+            signatures.setdefault(z.group or z.name, []).append(z)
     # The masked columns must sit between their printed rules (catches a table
     # matched one rule off, which the mask-vs-mapping leak check can't see).
     misplaced = [r for cells in columns.values()
@@ -118,6 +121,8 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
             zz = Zone(z.name, (z.rect[0], z.rect[1] - up, z.rect[2], z.rect[3] + up + down)) if up or down else z
             masking.blackout(canvas, mapper([z]), zz, a.template.padding)
             report.append({"zone": z.name, "mode": "blackout"})
+    for cells in signatures.values():
+        report += masking.signature_column(canvas, gray, mapper(cells), cells, ms, margin(cells), a.template.image)
     for cells in columns.values():
         report += masking.partial_column(canvas, gray, mapper(cells), cells, ms, rng, margin(cells), a.template.image)
     blocks, out = _apply(img, canvas)
@@ -135,6 +140,9 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
     # Final gate: re-read every masked column from the output.
     leaks = [r for cells in columns.values()
              if verify and (r := masking.verify_column(out, mapper(cells), cells, a.template.image, ms))]
+    leaks += [r for cells in signatures.values()
+              if verify and (r := masking.verify_signatures(gray, out, mapper(cells), cells, a.template.image, ms,
+                                                            margin(cells)))]
     if leaks:
         return fail("leak check: " + "; ".join(leaks), report, notes)
     return PageResult(True, out, a.template.name, a.inliers, a.score, "",

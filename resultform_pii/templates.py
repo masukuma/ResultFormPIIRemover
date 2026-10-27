@@ -20,8 +20,9 @@ template.yaml:
         rect: [x, y, w, h]
     zones:
       - name: officer_signatures
-        action: blackout   # solid fill (signatures)
+        action: signature  # each signature blacked out on its own box
         rect: [x, y, w, h]
+        search: [12, 24]   # px searched above/below for strokes that stray
       - name: agent_id
         action: partial    # mask random digits, keep the rest visible
         digits: 8          # expected digit count (ID 8, phone 10)
@@ -44,7 +45,7 @@ import cv2
 import numpy as np
 import yaml
 
-ACTIONS = ("blackout", "partial")
+ACTIONS = ("blackout", "partial", "signature")
 
 
 @dataclass
@@ -57,6 +58,7 @@ class Zone:
     row: int = 0
     region: str = ""  # structure region whose printed rules position this zone
     rule: str = ""  # partial zones: "phone" (keep prefix, hide 3 of last 6) or "id" (hide 3)
+    search: tuple[float, float] | None = None  # px searched above/below the cells (default: MaskSettings.vpad)
 
     @property
     def polygon(self) -> np.ndarray:
@@ -116,7 +118,8 @@ def _zones_from_spec(spec: dict) -> list[Zone]:
     step = float(spec.get("row_step", h))
     return [
         Zone(f"{name}[{r}]" if rows > 1 else name, (x, y + r * step, w, h), action, digits,
-             name if rows > 1 else "", r, str(spec.get("region", "")), rule)
+             name if rows > 1 else "", r, str(spec.get("region", "")), rule,
+             tuple(map(float, spec["search"])) if "search" in spec else None)
         for r in range(rows)
     ]
 

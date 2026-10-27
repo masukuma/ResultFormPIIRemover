@@ -167,12 +167,12 @@ def cmd_keygen(a) -> int:
 
 
 def cmd_preview(a) -> int:
-    """Draw zones (red blackout, blue partial) and protected results regions
+    """Draw zones (red blackout, purple signature, blue partial) and protected results regions
     (green) over the reference so they can be checked by eye."""
     t = load_templates(a.template)[0]
     img = cv2.cvtColor(t.image, cv2.COLOR_GRAY2BGR)
     overlay = img.copy()
-    colours = {"blackout": (0, 0, 255), "partial": (255, 120, 0)}
+    colours = {"blackout": (0, 0, 255), "signature": (180, 0, 200), "partial": (255, 120, 0)}
     for z in t.zones:
         cv2.fillPoly(overlay, [np.round(z.padded(t.padding)).astype(np.int32)], colours[z.action])
     img = cv2.addWeighted(overlay, 0.35, img, 0.65, 0)
@@ -236,11 +236,11 @@ def cmd_demo(a) -> int:
 
 def _vlm_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--vlm-model", default="", help="vision model (default: qwen3-vl:235b on Ollama Cloud, "
-                                                   "qwen2.5vl:7b locally); see ollama.com/search?c=cloud")
+                                                   "qwen3.8:27b locally); see ollama.com/library")
     p.add_argument("--vlm-host", default=None,
                    help="Ollama URL (default $OLLAMA_HOST, else https://ollama.com if $OLLAMA_API_KEY, else local)")
     p.add_argument("--vlm-coords", choices=("auto", "pixel", "norm1000"), default="auto",
-                   help="box convention of the model (auto: norm1000 for Qwen3-VL, pixel otherwise)")
+                   help="box convention of the model (auto: norm1000 for Qwen3.x/Qwen3-VL, pixel otherwise)")
     p.add_argument("--allow-remote-unredacted", action="store_true",
                    help="allow sending UNREDACTED forms to a non-local VLM (fallback/propose); "
                         "only if that data transfer is approved")

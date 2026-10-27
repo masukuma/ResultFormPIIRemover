@@ -46,8 +46,12 @@ import cv2
 import numpy as np
 
 CLOUD_HOST = "https://ollama.com"
-DEFAULT_CLOUD_MODEL = "qwen3-vl:235b"  # direct Ollama Cloud API name; "-cloud" suffix via a local proxy
-DEFAULT_LOCAL_MODEL = "qwen2.5vl:7b"
+# Qwen's newest models with image input on Ollama (Oct 2026). Qwen3.8 is the
+# latest family (vision built in) but has no Ollama Cloud tag that we could
+# confirm; Qwen3-VL 235B is the newest Qwen vision model offered on Ollama
+# Cloud. Both report boxes on a 0-1000 grid. Override with --vlm-model.
+DEFAULT_CLOUD_MODEL = "qwen3-vl:235b"  # direct Ollama Cloud API name; "qwen3-vl:235b-cloud" via a local proxy
+DEFAULT_LOCAL_MODEL = "qwen3.8:27b"
 
 
 def _default_host() -> str:
@@ -157,12 +161,13 @@ class Ollama:
                 f"refusing to send an unredacted form to {self.s.host}; use a local model or pass "
                 "--allow-remote-unredacted if that is an approved data transfer")
 
-    def _resize(self, img: np.ndarray) -> tuple[np.ndarray, float]:
+    def _resize(self, img: np.ndarray) -> tuple[np.ndarray, tuple[float, float]]:
         h, w = img.shape[:2]
         f = min(1.0, self.s.max_side / max(h, w))
         # round to multiples of 28 so the model sees exactly these pixels
         nw, nh = max(28, int(w * f) // 28 * 28), max(28, int(h * f) // 28 * 28)
-        return cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA), nw / w
+        # per-axis: rounding each side to 28 px makes the two factors differ
+        return cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA), (nw / w, nh / h)
 
     def ask(self, prompt: str, img: np.ndarray, schema: dict) -> tuple[dict, str]:
         """Returns the parsed reply and the sha256 of the exact image sent."""
@@ -212,5 +217,6 @@ class Ollama:
             y0, y1 = sorted((y0, y1))
             if x1 - x0 < 2 or y1 - y0 < 2:
                 continue
-            boxes.append(Box(it["label"], x0 / scale, y0 / scale, x1 / scale, y1 / scale))
+            sx, sy = scale
+            boxes.append(Box(it["label"], x0 / sx, y0 / sy, x1 / sx, y1 / sy))
         return boxes

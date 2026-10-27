@@ -56,16 +56,16 @@ def test_audit_request_and_verdict(ollama):
 
 
 def test_locate_scales_boxes_back(ollama):
-    client = vlm.Ollama(vlm.VlmSettings(host=ollama))
+    client = vlm.Ollama(vlm.VlmSettings(host=ollama, model="qwen2.5vl:7b"))  # pixel boxes
     page = np.full((2340, 1654, 3), 255, np.uint8)
     _Stub.replies = [{"items": [{"label": "signature", "bbox": [100, 200, 50, 220]},
                                 {"label": "name", "bbox": [0, 0, 10, 10]}]}]
     boxes = client.locate(page)
     assert len(boxes) == 1 and boxes[0].label == "signature"  # unknown label dropped
     # sent at 896x1288 (multiples of 28 within 1288); x1 < x0 in the reply gets sorted
-    scale = (1654 * 1288 / 2340) // 28 * 28 / 1654
+    sx, sy = (1654 * 1288 / 2340) // 28 * 28 / 1654, 1288 / 2340
     b = boxes[0]
-    assert np.allclose([b.x0, b.y0, b.x1, b.y1], np.array([50, 200, 100, 220]) / scale, atol=1e-6)
+    assert np.allclose([b.x0, b.y0, b.x1, b.y1], np.array([50, 200, 100, 220]) / [sx, sy, sx, sy], atol=1e-6)
 
 
 def test_redact_boxes_masks_signature():
@@ -118,3 +118,12 @@ def test_cloud_without_key_is_rejected(monkeypatch):
     monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
     with pytest.raises(ValueError):
         vlm.Ollama(vlm.VlmSettings(host="https://ollama.com", api_key=None))
+
+
+def test_qwen3_boxes_are_on_a_1000_grid(ollama):
+    client = vlm.Ollama(vlm.VlmSettings(host=ollama))  # default local: latest Qwen
+    assert client.s.model == vlm.DEFAULT_LOCAL_MODEL and client.s.coords == "norm1000"
+    page = np.full((2340, 1654, 3), 255, np.uint8)
+    _Stub.replies = [{"items": [{"label": "signature", "bbox": [500, 500, 600, 550]}]}]
+    b = client.locate(page)[0]
+    assert np.allclose([b.x0, b.y0, b.x1, b.y1], [827, 1170, 992.4, 1287], atol=2)

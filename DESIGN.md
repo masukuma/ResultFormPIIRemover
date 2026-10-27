@@ -104,8 +104,25 @@ always downward. With `--strict-structure`, such pages go to review instead.
 
 ### 3. Masking (`masking.py`)
 
-**Blackout zones** (signatures) are solid fills, mapped edge by edge so they
-stay covered on curled pages.
+**Signature zones** (`action: signature`) get one black box **per signature**,
+not one block per region:
+
+1. **Find the ink.** The column is straightened and searched 24 px beyond each
+   side, and 30 px further down, because signatures overrun their box and bent
+   pages drift downward.
+2. **Remove what isn't a signature:**
+   - printed rules;
+   - the rings of official stamps;
+   - flat strokes 8 px or less in height, which are pieces of rules.
+3. **Group strokes.** Strokes that touch, mostly sideways, form one signature.
+   A group spanning several rows (neighbours' strokes touching) is cut at the
+   row boundaries.
+4. **Mask.** Each signature gets its own padded box. Empty rows are untouched.
+
+A coverage check then finds signatures again on the original and requires
+each to be at least 90% under black in the output. Blackout zones (plain
+rectangles) remain available for areas that must be hidden entirely, and are
+mapped edge by edge so they stay covered on curled pages.
 
 **Partial zones** (ID and phone columns) work on a whole table column at once:
 
@@ -267,14 +284,19 @@ A vision model is used where judgement helps and speed doesn't matter. There
 are three ways to run it:
 
 - **Ollama Cloud directly:** set `OLLAMA_API_KEY`. Requests go to
-  `https://ollama.com/api/chat` with a bearer token. The default model is
-  `qwen3-vl:235b`; check ollama.com/search?c=cloud for current names.
+  `https://ollama.com/api/chat` with a bearer token. The default cloud model is
+  `qwen3-vl:235b`, the newest Qwen vision model with a confirmed Ollama Cloud
+  tag.
 - **A local Ollama signed in to the cloud:** use a `*-cloud` model name with
   the local host.
-- **Fully local:** for example `qwen2.5vl:7b`.
+- **Fully local:** the default is `qwen3.8:27b`, Qwen's newest family on
+  Ollama, which has image input built in.
 
-Box coordinates are read as 0–1000 for Qwen3-VL and as pixels for
-Qwen2.5-VL, chosen automatically from the model name.
+Check ollama.com/library for current names. Both defaults report boxes on a
+0–1000 grid; boxes are scaled back per axis.
+
+Box coordinates are read as 0–1000 for Qwen3.x and Qwen3-VL, and as pixels
+for Qwen2.5-VL, chosen automatically from the model name.
 
 **Privacy.** The audit sends only the *redacted* page, so it is safe for the
 cloud. The fallback and template proposals need the *unredacted* form. These
@@ -309,11 +331,14 @@ coordinates map back exactly.
 |---|---|
 | Published | 188 |
 | Review: column edge check | 22 |
-| Review: page alignment failed or other | 5 |
+| Review: page alignment failed or other | 4 |
+| Review: leak check | 1 |
 
 That is 188 of 215 (87%) published, and all 188 verify. Throughput is about
-5 files/s on 4 cores, including the coefficient-level edit and the self-check.
-The blacked-out area is a median of 5.4% of each image, at most 9.6%. Several
+3.7 files/s on 4 cores, including the coefficient-level edit and the
+self-check. With per-signature masks, the blacked-out area is a median of
+3.0% of each image (it was 5.4% with whole-column signature blocks), at most
+7.3%. Several
 random samples of the published forms were reviewed by eye. Every review that
 found a problem led to a fix, and those cases are now caught by the gates
 above. Withheld forms are a mix of genuinely misplaced tables and forms whose
@@ -332,10 +357,10 @@ A template's reference image must have its handwriting erased, keeping the
 printed rules (see `README.md`). The form's PII must never end up in the repo.
 
 ## Known limits
-- **Phone numbers written into the signature column.** The whole signature
-  column is blacked out, so when agents continue a phone number into it, more
-  than 3 digits end up hidden. Hiding only signature ink there would need a
-  signature detector.
+- **Signature boxes merge in dense tables.** Where agents sign across
+  neighbouring rows, the boxes merge into one patch. Any writing inside a
+  signature box (e.g. a phone number continued into the column, or part of
+  the "Signature" label) is hidden with it.
 - **Block granularity.** Blocks are 8 px wide and a handwritten digit is about
   15–20 px, so a black block can also clip the edge of a neighbouring visible
   character.

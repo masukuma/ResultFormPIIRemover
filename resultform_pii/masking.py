@@ -68,9 +68,13 @@ def blackout(img: np.ndarray, f: Mapper, zone: Zone, pad: float) -> None:
     _fill(img, f, zone.padded(pad))
 
 
-def ink_mask(strip: np.ndarray, row_h: float) -> np.ndarray:
+def ink_mask(strip: np.ndarray, row_h: float, signature: bool = False) -> np.ndarray:
     """Binary ink of a rectified strip, with rules, strike lines and the
-    security-print background removed."""
+    security-print background removed.
+
+    ``signature``: keep long flat pen strokes (a signature's flourish): only
+    horizontal lines spanning nearly the whole strip count as printed rules,
+    and the thin-stroke filter meant for digit columns is skipped."""
     # KIEMS photos range from crisp to blurry and grey-on-grey; stretch the
     # contrast (with a floor, so an empty cell's faint security pattern isn't
     # blown up into "ink") before thresholding.
@@ -80,7 +84,8 @@ def ink_mask(strip: np.ndarray, row_h: float) -> np.ndarray:
     bw = cv2.adaptiveThreshold(c, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, 45)
     h, w = bw.shape
     rh = max(10, int(row_h))
-    lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(15, w // 3), 1)))
+    rule_len = int(0.8 * w) if signature else max(15, w // 3)
+    lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (rule_len, 1)))
     lines |= cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, int(rh * 1.6))))
     ink = cv2.subtract(bw, cv2.dilate(lines, np.ones((3, 3), np.uint8)))
     ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))  # speckle
@@ -110,7 +115,10 @@ def ink_mask(strip: np.ndarray, row_h: float) -> np.ndarray:
         pts = np.column_stack(np.nonzero(lab == i)[::-1]).astype(np.float32)
         _, (rw, rhh), ang = cv2.minAreaRect(pts)
         theta = abs(ang) if rw >= rhh else 90 - abs(ang)  # long side vs horizontal
-        if min(rw, rhh) <= 7 and max(rw, rhh) >= 25 and min(theta, 180 - theta) < 50:
+        # Signatures: only near-flat thin strokes (pieces of printed rules,
+        # broken by the photo) go; a signature's curvy strokes stay.
+        max_theta = 10 if signature else 50
+        if min(rw, rhh) <= 7 and max(rw, rhh) >= 25 and min(theta, 180 - theta) < max_theta:
             ink[lab == i] = 0
     return ink
 
@@ -409,4 +417,147 @@ def check_column_edges(gray: np.ndarray, f: Mapper, cells: list[Zone], tol: floa
             return f"{name}: printed rule found off the column's {label} edge (table placed wrong)"
         if require and at < 0.1 * sh:
             return f"{name}: can't see the printed rule at the column's {label} edge"
+    return ""
+
+
+# --- signatures ---------------------------------------------------------------------------
+
+SIG_OVERRUN = 24  # px beyond each side of the column searched: signatures overrun their box
+SIG_MIN_INK = 40  # ink pixels for a blob to count as (part of) a signature
+SIG_JOIN = 9  # px: strokes closer than this belong to the same signature
+SIG_MIN_H = 8  # px: anything flatter is a printed rule, not a signature
+SIG_BELOW = 30.0  # extra px searched below: drift on bent pages is downward
+
+
+def _column_strip(gray: np.ndarray, f: Mapper, cells: list[Zone], above: float, below: float, extra: float):
+    """Rectified strip covering a table column (template scale), widened by
+    ``extra`` px each side and ``above``/``below`` px. Returns the strip, its
+    template origin and the row bands in strip coordinates."""
+    cells = sorted(cells, key=lambda z: z.rect[1])
+    x, y, w = cells[0].rect[:3]
+    bottom = cells[-1].rect[1] + cells[-1].rect[3]
+    sw, sh = max(1, round(w + 2 * extra)), max(1, round(bottom - y + above + below))
+    ox, oy = x - extra, y - above
+    gx, gy = np.meshgrid(np.arange(sw, dtype=np.float64) + ox, np.arange(sh, dtype=np.float64) + oy)
+    m = f(np.stack([gx.ravel(), gy.ravel()], 1)).astype(np.float32).reshape(sh, sw, 2)
+    strip = cv2.remap(gray, m[..., 0], m[..., 1], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    bands = [(z.rect[1] - oy, z.rect[1] - oy + z.rect[3]) for z in cells]
+    return strip, np.float64([ox, oy]), bands, cells
+
+
+def _ref_crop(ref: np.ndarray | None, origin: np.ndarray, shape) -> np.ndarray | None:
+    if ref is None:
+        return None
+    sh, sw = shape
+    R = np.full((sh, sw), 255, np.uint8)
+    x0, y0 = int(round(origin[0])), int(round(origin[1]))
+    crop = ref[max(0, y0):y0 + sh, max(0, x0):x0 + sw]
+    R[max(0, -y0):max(0, -y0) + crop.shape[0], max(0, -x0):max(0, -x0) + crop.shape[1]] = crop
+    return R
+
+
+def _remove_stamp_rings(ink: np.ndarray) -> None:
+    """Erase the ring of a round official stamp (it would join everything near
+    it into one big "signature"). Only the ring: a signature written across
+    the stamp stays ink and is still masked."""
+    blur = cv2.GaussianBlur(ink, (5, 5), 0)
+    circles = cv2.HoughCircles(blur, cv2.HOUGH_GRADIENT, dp=1.5, minDist=150, param1=100, param2=40,
+                               minRadius=55, maxRadius=130)
+    for cx, cy, r in (np.round(circles[0]).astype(int) if circles is not None else ()):
+        ring = np.zeros_like(ink)
+        cv2.circle(ring, (cx, cy), r, 255, 9)
+        if (ink[ring > 0] > 0).mean() > 0.35:  # really a drawn circle, not chance
+            ink[ring > 0] = 0
+
+
+def _signature_blobs(strip: np.ndarray, ink: np.ndarray, extra: float,
+                     w: float, min_ink: int, bands: list[tuple[float, float]]) -> list[tuple[int, int, int, int, int]]:
+    """Separate signatures: strokes joined mostly sideways (signatures run
+    horizontally; rows are stacked). A blob spanning several rows (strokes of
+    neighbouring rows touching) is cut at the row boundaries, one box per row.
+    Returns (x0, y0, x1, y1, ink_pixels) per part that is mostly inside the
+    column."""
+    joined = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (SIG_JOIN + 6, 5)))
+    n, lab = cv2.connectedComponents(joined)
+    edges = [bands[0][0]] + [(a[1] + b[0]) / 2 for a, b in zip(bands, bands[1:])] + [bands[-1][1]]
+    parts = []
+    for i in range(1, n):
+        ys, xs = np.nonzero((lab == i) & (ink > 0))
+        if len(xs) < min_ink:
+            continue
+        row = np.clip(np.searchsorted(edges, ys, side="right") - 1, 0, len(bands) - 1)
+        for r in np.unique(row):
+            sel = row == r
+            if sel.sum() >= min(min_ink, len(xs)) or len(np.unique(row)) == 1:
+                parts.append((xs[sel], ys[sel]))
+    blobs = []
+    for xs, ys in parts:
+        if ((xs >= extra) & (xs < extra + w)).mean() < 0.5:
+            continue  # writing from the neighbouring column
+        x0, x1, y0, y1 = int(xs.min()), int(xs.max()) + 1, int(ys.min()), int(ys.max()) + 1
+        if y1 - y0 <= SIG_MIN_H:
+            continue  # flat: a printed rule or its remains, not a signature
+        # No "looks printed" test here, unlike for digits: in testing, a faint
+        # trace in the reference matched real signatures well enough to skip
+        # them. Masking a printed "Signature" label is the safe failure.
+        blobs.append((x0, y0, x1, y1, len(xs)))
+    return blobs
+
+
+def _sig_window(cells: list[Zone], s: MaskSettings, margin=(0.0, 0.0), more_below: float = 0.0):
+    above = (cells[0].search[0] if cells[0].search else s.vpad) + margin[0]
+    below = (cells[0].search[1] if cells[0].search else s.vpad) + margin[1] + more_below
+    return above, below
+
+
+def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0):
+    above, below = _sig_window(cells, s, margin, more_below)
+    strip, origin, bands, cells = _column_strip(gray, f, cells, above, below, SIG_OVERRUN)
+    row_h = float(np.median([z.rect[3] for z in cells]))
+    ink = ink_mask(strip, row_h, signature=True)
+    _remove_stamp_rings(ink)
+    return _signature_blobs(strip, ink, SIG_OVERRUN, cells[0].rect[2], SIG_MIN_INK, bands), origin, bands, cells
+
+
+def signature_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zone], s: MaskSettings,
+                     margin: tuple[float, float] = (0.0, 0.0), ref: np.ndarray | None = None,
+                     pad: float = 6.0) -> list[dict]:
+    """Black out each signature on its own box, instead of the whole column.
+
+    Ink in the column (plus SIG_OVERRUN px each side, plus the zone's search
+    margin above/below) is split into signatures; each gets its own padded
+    box. Empty rows stay untouched."""
+    blobs, origin, bands, cells = _find_signatures(gray, f, cells, s, margin, ref, SIG_BELOW)
+    counts = [0] * len(cells)
+    for x0, y0, x1, y1, _ in blobs:
+        quad = np.float64([[x0 - pad, y0 - pad], [x1 + pad, y0 - pad], [x1 + pad, y1 + pad], [x0 - pad, y1 + pad]])
+        _fill(img, f, quad + origin)
+        cy = (y0 + y1) / 2
+        i = int(np.argmin([0 if b0 <= cy < b1 else min(abs(cy - b0), abs(cy - b1)) for b0, b1 in bands]))
+        counts[i] += 1
+    return [{"zone": z.name, "mode": "signature" if c else "empty", **({"signatures": c} if c else {})}
+            for z, c in zip(cells, counts)]
+
+
+def verify_signatures(gray: np.ndarray, out: np.ndarray, f: Mapper, cells: list[Zone], ref: np.ndarray | None,
+                      s: MaskSettings, margin=(0.0, 0.0), more_below: float = SIG_BELOW) -> str:
+    """Coverage check: find signatures again on the *original* image, over a
+    window reaching further down (drift on bent pages is downward), and
+    require each to be at least 90% under black in the redacted image."""
+    blobs, origin, _, cells = _find_signatures(gray, f, cells, s, margin, ref, more_below)
+    above, below = _sig_window(cells, s, margin, more_below)
+    o = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY) if out.ndim == 3 else out
+    ostrip = _column_strip(o, f, cells, above, below, SIG_OVERRUN)[0]
+    gstrip = _column_strip(gray, f, cells, above, below, SIG_OVERRUN)[0]
+    ink = ink_mask(gstrip, float(np.median([z.rect[3] for z in cells])), signature=True)
+    bad = 0
+    for x0, y0, x1, y1, n in blobs:
+        if n < 2 * SIG_MIN_INK:
+            continue
+        sel = ink[y0:y1, x0:x1] > 0
+        if (ostrip[y0:y1, x0:x1][sel] <= 8).mean() < 0.9:
+            bad += 1
+    if bad:
+        name = cells[0].group or cells[0].name
+        return f"{name}: {bad} signature(s) not fully masked"
     return ""

@@ -4,7 +4,7 @@ Removes personal data from photographed election result forms (KIEMS Form
 34A and others) before publication. Each published form comes with evidence
 that **nothing but the personal data was touched**.
 
-- **Signatures** are blacked out.
+- **Signatures** are blacked out, each on its own box.
 - **ID and passport numbers** have 3 random characters hidden.
 - **Phone numbers** keep their first digits; 3 of the last 6 are hidden.
 - **Names, results, stamps and QR codes** stay readable.
@@ -38,10 +38,11 @@ rfpii keygen keys/
 rfpii redact Forms/34A/*.zip --templates templates --out public --review review \
     --sign-key keys/signing_key.pem
 
-# With an Ollama Cloud vision model auditing every redacted page
+# With a Qwen vision model on Ollama Cloud auditing every redacted page
 export OLLAMA_API_KEY=...            # from ollama.com/settings/keys
 rfpii redact Forms/ --templates templates --out public --review review \
-    --sign-key keys/signing_key.pem --vlm-audit --vlm-model qwen3-vl:235b
+    --sign-key keys/signing_key.pem --vlm-audit          # default: qwen3-vl:235b
+# ...or on a local Ollama: --vlm-host localhost:11434 (default qwen3.8:27b)
 
 # Anyone, later: prove a published form against its original
 rfpii verify public/x.pdf --original x.PDF --pubkey signing_key.pub.pem \
@@ -85,7 +86,8 @@ Useful flags:
    structure:                    # printed tables that position their zones
      - {name: agents, rect: [x, y, w, h]}
    zones:
-     - {name: signatures, action: blackout, rect: [x, y, w, h], region: agents}
+     - {name: signatures, action: signature, rect: [x, y, w, row_h],
+        rows: 4, row_step: 36.4, region: agents}
      - {name: agent_id, action: partial, rule: id, digits: 8, rect: [x, y, w, row_h],
         rows: 4, row_step: 36.4, region: agents}
    protect:                      # results regions no mask may ever touch
