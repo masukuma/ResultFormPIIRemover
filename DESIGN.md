@@ -524,8 +524,9 @@ It is on by default (`--no-generic` turns it off) and needs the
      by it), when it is a few strokes OCR reads nothing in.
 
    Names and numbers read well are taken out first, so a signature written
-   on from a name is judged by itself, and its mask leaves the name
-   readable. Comments are left alone even where OCR can't read them: a
+   on from a name is judged by itself. The mask is the box of the writing
+   found, so it leaves the name, and a printed label the signature touches,
+   readable. A straight line struck across a box is not a signature. Comments are left alone even where OCR can't read them: a
    remark such as "NO DISPUTED VOTES" or "6 REJECTED" is part of the
    record a scrutineer needs. Printed labels ("Presiding Officer's
    Comments") are never masked.

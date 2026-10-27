@@ -116,3 +116,14 @@ def test_cursive_reading():
     assert not generic._cursive([("MAPOA", [0.6] * 5), ("MAoA", [0.6] * 4)])
     assert not generic._cursive([("15-12-2020", [0.9] * 10), ("", [])])
     assert not generic._cursive([("Four", [0.6] * 4), ("Fur", [0.7] * 3)])  # "FOUR" in capitals
+
+
+def test_a_struck_line_is_not_a_signature():
+    import cv2
+    lab = np.zeros((60, 200), np.int32)
+    cv2.line(lab, (5, 50), (190, 10), 1, 3)  # a line struck across a box
+    assert generic._straight(lab, [1], generic.TEXT_H)
+    lab[:] = 0
+    cv2.ellipse(lab, (60, 30), (40, 18), 0, 0, 300, 2, 3)  # a looped flourish
+    cv2.line(lab, (20, 40), (180, 25), 2, 3)
+    assert not generic._straight(lab, [2], generic.TEXT_H)

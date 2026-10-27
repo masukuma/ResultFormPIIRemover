@@ -273,20 +273,18 @@ def redact_generic(img: np.ndarray, ms: MaskSettings | None = None, rng: random.
         return dataclasses.replace(ms, min_glyph_h=min(ms.min_glyph_h, 0.3 * generic.TEXT_H / row_h))
 
     print_mask, print_ref = generic.printed(L)
-    # Below the tables, a signature's mask also spares names and numbers that
-    # OCR reads well beside it.
-    spare = print_mask if L.legible is None else cv2.bitwise_or(print_mask, L.legible)
-
-    def sig_spare(fl):
-        return spare if fl.source == "free-text" else print_mask
-
     canvas = np.full(gray.shape, 255, np.uint8)  # 0 = hide
     report = []
     for fl in L.fields:
-        if fl.kind == "signature":
+        if fl.kind == "signature" and fl.source == "free-text":
+            # found as the writing itself: its box is the mask
+            x, y, w, h = fl.zones[0].rect
+            masking._fill(canvas, f, np.float64([[x, y], [x + w, y], [x + w, y + h], [x, y + h]]))
+            report.append({"zone": fl.zones[0].name, "mode": "signature", "signatures": 1})
+        elif fl.kind == "signature":
             # a field on a text line takes only writing centred on it, not the
             # lines above and below that its search window reaches
-            report += masking.signature_column(canvas, gray, f, fl.zones, ms, printed=sig_spare(fl),
+            report += masking.signature_column(canvas, gray, f, fl.zones, ms, printed=print_mask,
                                                centered=fl.source != "table")
         else:
             report += masking.partial_column(canvas, gray, f, fl.zones, field_settings(fl), rng, ref=print_ref)
@@ -309,8 +307,10 @@ def redact_generic(img: np.ndarray, ms: MaskSettings | None = None, rng: random.
     leaks = []
     if verify:
         for fl in L.fields:
+            if fl.kind == "signature" and fl.source == "free-text":
+                continue  # masked whole, box and all
             if fl.kind == "signature":
-                r = masking.verify_signatures(gray, out, f, fl.zones, None, ms, keep=keep, printed=sig_spare(fl),
+                r = masking.verify_signatures(gray, out, f, fl.zones, None, ms, keep=keep, printed=print_mask,
                                               centered=fl.source != "table")
             else:
                 r = masking.verify_column(out, f, fl.zones, print_ref, field_settings(fl))

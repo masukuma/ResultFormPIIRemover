@@ -106,7 +106,6 @@ class Layout:
     problems: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     officer_names: set = field(default_factory=set)  # words of the officers' names, as written in the declaration
-    legible: np.ndarray | None = None  # names and numbers read well below the tables: a signature mask spares them
 
 
 def _quad_dims(q: np.ndarray) -> tuple[float, float]:
@@ -547,13 +546,15 @@ def _labels(L: Layout, used: set[int], top: float) -> None:
             L.fields.append(Field(kind, [z], "label", ln.text, ln.box))
 
 
-def _covered(L: Layout, x: float, y: float, h: float) -> bool:
-    """Is (x, y) inside a field found already, or inside a table's rows
-    (numbers written in a table belong to its columns)?"""
+def _covered(L: Layout, x: float, y: float, h: float, margin: float = 0.5) -> bool:
+    """Is (x, y) inside a field found already (within ``margin`` text
+    heights), or inside a table's rows (numbers written in a table belong to
+    its columns)?"""
     rows = [z.rect for fl in L.fields if fl.source == "table" for z in fl.zones]
+    m = margin * h
     for fl in L.fields:
         for zx, zy, zw, zh in (z.rect for z in fl.zones):
-            if zx - 0.5 * h <= x <= zx + zw + 0.5 * h and zy - 0.5 * h <= y <= zy + zh + 0.5 * h:
+            if zx - m <= x <= zx + zw + m and zy - m <= y <= zy + zh + m:
                 return True
     same_row = [(zx, zx + zw) for zx, zy, zw, zh in rows if zy - 0.3 * h <= y <= zy + zh + 0.3 * h]
     return bool(same_row) and min(a for a, _ in same_row) - 4 * h <= x <= max(b for _, b in same_row) + 4 * h
@@ -672,12 +673,11 @@ def _free_signatures(L: Layout, top: float, band: list = ()) -> None:
             zones.append((bx0 - 2 * h, by0 - 0.5 * h, bx1 + 10 * h, by1 + 3.5 * h))
             strong.append(ln.box)
     stamped = [(c.cx - c.r, c.cy - c.r, c.cx + c.r, c.cy + c.r) for c in L.stamps]  # officers sign by it
-    # Names and numbers read well: what's left of a group is judged on its
-    # own, and masking a signature beside them leaves them readable.
-    L.legible = np.zeros(L.gray.shape, np.uint8)
+    # Names and numbers read well are taken out: what's left of a group is
+    # judged, and masked, on its own.
     for bx0, by0, bx1, by1 in vetoed:
-        cv2.rectangle(L.legible, (int(bx0) - 2, int(by0) - 2), (int(math.ceil(bx1)) + 2, int(math.ceil(by1)) + 2), 255, -1)
-    ink[L.legible[y0:] > 0] = 0
+        cv2.rectangle(ink, (int(bx0) - 2, int(by0 - y0) - 2), (int(math.ceil(bx1)) + 2, int(math.ceil(by1 - y0)) + 2),
+                      0, -1)
     ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     n, lab, st, _ = cv2.connectedComponentsWithStats(ink)
     groups = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (int(0.3 * h), 1)))
@@ -699,15 +699,15 @@ def _free_signatures(L: Layout, top: float, band: list = ()) -> None:
 
     for k in range(1, m):
         x, y, w, hh, _ = wst[k]
-        if w < 1.0 * h or hh < 0.5 * h:
+        if w < 1.0 * h or hh < 0.4 * h:  # specks; a small signature under a name is barely more
             continue
         parts = [j for j in np.unique(lab[y:y + hh, x:x + w][wlab[y:y + hh, x:x + w] == k]) if j and st[j][4] >= 20]
         if not parts:
             continue
         box = (x, y + y0, x + w, y + y0 + hh)
         cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-        if _covered(L, cx, cy, h):
-            continue  # masked already
+        if _covered(L, cx, cy, h, margin=0):
+            continue  # masked already (an ID field beside it hides only 3 digits: not that)
         reads = _readings(passes, box)
         signing = inside(cx, cy, zones) or near(box, strong, 8 * h, 2.5 * h)
         signed = signing and _cursive(reads) and not on_line(box, worded, 2 * h)  # cursive on its own line
