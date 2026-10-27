@@ -11,10 +11,19 @@ personal data gets a different treatment:
 | Field | Treatment |
 |---|---|
 | Signatures (officers, agents) | **Blacked out** completely |
-| National ID / passport numbers | **Random part masked**: about 60% of the characters, never leaving more than two neighbouring characters visible |
-| Phone numbers | Same as IDs |
+| National ID / passport numbers | **3 random characters hidden** |
+| Phone numbers | **First digits kept, 3 of the last 6 hidden**: `0734471897` keeps `0734` and hides 3 of `471897` |
 | Names | Left visible |
 | QR code, stamp, station codes, votes | Left visible: these are what make the form verifiable |
+
+The hidden characters are random, but never more than two neighbouring
+characters are left visible together.
+
+The 2022 process was marred by claims that results were altered between
+transmission and publication. A redaction step adds another place where that
+claim could be made. So the process must **demonstrate, to anyone who asks,
+that no result was changed**. See [Verifiability](#verifiability) below, and
+[VERIFYING.md](VERIFYING.md) for the procedure a scrutineer follows.
 
 ## Inputs: KIEMS results transmission
 
@@ -117,11 +126,23 @@ stay covered on curled pages.
    digits land where the reference has print, and a position test would skip
    them.
 4. **Group into lines.** Glyphs are grouped into written lines, and each line is
-   segmented into character slots: connected components when they look like
-   separate characters, otherwise `digits` equal slots.
-5. **Hide characters.** About 60% of the slots are hidden at random
-   (`SystemRandom`, different per cell and per run), never leaving more than two
-   neighbouring slots visible. A line that can't be segmented is hidden whole.
+   segmented into **one slot per character**: joined-up writing is split at
+   the expected character pitch, and if that doesn't give a plausible count,
+   the line is divided into `digits` equal slots.
+5. **Hide characters**, following the zone's rule:
+   - `id`: 3 random characters.
+   - `phone`: 3 random digits among the last 6. The prefix (network code, e.g.
+     `0734`) stays visible.
+
+   Choices are random, with no more than two neighbouring characters left
+   visible together. The seed is drawn per document and recorded in the
+   manifest, so the redaction can be reproduced.
+
+   A hidden character is covered from the midpoint with its left neighbour to
+   the midpoint with its right, over the line's full height. Rule removal can
+   shave a 5's or 7's top bar off the detected glyph box, so masking only the
+   box could leave part of a "hidden" digit showing. A line that can't be
+   segmented is hidden whole.
 6. **Assign rows.** Lines are assigned to rows only to tell empty rows from
    unreadable ones, and for the report. Masks follow the writing itself.
 
@@ -141,14 +162,131 @@ The edge check and the leak check were both added after reviewing real outputs
 showed misses that geometry alone allowed through.
 
 ### 5. Output
-The output is a new image-only PDF with no text layer, annotations or metadata
-(`io.py`), plus the provenance sidecar. Documents that fail go to `review/`,
-each with a JSON report of why. `review/report.jsonl` logs every document.
+The output is a new PDF (`io.py`). Each page holds exactly one image: the
+redacted JPEG, passed through byte for byte, or a lossless PNG for non-JPEG
+sources. The page has the same size and layout as the source page. There is
+no text layer, no annotations and no metadata. JPEG markers other than
+JFIF/ICC/Adobe (for example EXIF, which can hold camera serials or GPS) are
+dropped.
 
-## VLM assistance (`vlm.py`, Ollama)
+Next to each PDF goes its signed manifest (`.manifest.json`), plus the ledger
+and batch roots described below. Documents that fail go to `review/`, each
+with a JSON report of why. `review/report.jsonl` logs every document.
 
-A local vision model, e.g. `qwen2.5vl:7b` via Ollama, is used where judgement
-helps and speed doesn't matter:
+## Verifiability
+
+### The edit is restricted to black blocks
+The pipeline never edits the image freely. Masks are drawn on a separate
+canvas, rounded **out** to whole 8×8 blocks (`pipeline.py`), and only then
+applied to the image as **stored**:
+
+- **JPEG sources (all KIEMS transmissions; `proof.py`).** The edit is made on
+  the JPEG's quantised DCT coefficients:
+  - a masked luma block gets the DC value that decodes to black, and zero AC;
+  - a chroma block whose whole area is masked is set to neutral grey;
+  - every other block's coefficients, and the quantisation tables, are copied
+    unchanged.
+
+  The new JPEG is embedded in the PDF byte for byte, so the published file
+  contains the original's image data apart from the black blocks.
+- **Other sources.** The same blocks are set to 0 in the pixels, which are
+  written losslessly as PNG.
+
+A black block can hide a digit but cannot change it into another digit. If
+every changed block is listed and solid black, no result can have been
+altered, only obscured, and the manifest records where.
+
+### Checks made before anything is published
+- **Self-check.** The output is compared with the original, block by block,
+  before it is written. Anything other than "identical, or listed and black"
+  stops publication.
+- **Protected regions.** Templates declare `protect` regions: the header with
+  the form serial and QR code, station names and codes, the votes table, and
+  the polling-station counts. A mask block touching one stops publication.
+
+### The record
+- **Manifest.** For each document (`process.py`) it records:
+  - the source file's SHA-256 (the IEBC portal / KIEMS copy) and the hash of
+    the embedded image;
+  - the output's SHA-256;
+  - the tool version and exact git commit;
+  - each template's fingerprint (hash of its YAML and reference image);
+  - the random seed;
+  - the bitmap of blacked blocks, the protected regions as image polygons,
+    and the page alignment;
+  - per agent row, the rule applied and which character *positions* were
+    hidden (never the characters themselves);
+  - any VLM verdicts.
+
+  It is signed with the publisher's Ed25519 key (`manifest.py`).
+- **Ledger.** `ledger.jsonl` is append-only and hash-chained. Each entry commits
+  to the previous one, so altering, dropping or back-dating any entry breaks
+  the chain.
+- **Batch root.** Each run ends with a signed Merkle root over its manifests.
+  Publish this one hash widely when the batch is released. Inclusion of any
+  manifest can then be proven, and nothing can be swapped in later.
+
+### Independent verification (`rfpii verify`, see VERIFYING.md)
+Given the published PDF, its manifest, the public key, the ledger and the
+original, the verifier checks:
+
+- the signature, the ledger chain, and that the manifest is in the ledger;
+- both files' hashes;
+- **every block's coefficients** (identical, or listed and black);
+- that no listed block touches a protected region;
+- that each results region decodes to identical pixels in both files.
+
+It also writes an overlay showing every changed block. With `--rerun` it
+repeats the redaction from the recorded seed and templates and must
+reproduce the output bit for bit.
+
+### Tested
+On the 215 real Forms 34A, all 188 published forms verify. Re-running a
+random sample of 12 reproduced each one bit for bit. Tampering is detected in
+each of these cases (also in the test suite):
+
+- changing one coefficient of one block in the votes table (caught by four
+  separate checks);
+- editing the manifest after signing;
+- supplying a different original;
+- editing an entry in the ledger.
+
+### Threat model, briefly
+| Concern | Answer |
+|---|---|
+| "The redaction step changed a result." | Proven not to, block by block, against the original, by anyone. |
+| "The publisher swapped a file after release." | The ledger chain and the published batch root fail. |
+| "The manifest was edited to hide a change." | The signature fails. The coefficient check doesn't trust the manifest anyway: an unlisted change fails it. |
+| "The masking hid a result." | Protected regions are checked by the redactor and by the verifier, and the overlay shows every black block. |
+| "The original itself is fake." | Out of scope for redaction. The manifest ties each form to its source hash, KIEMS kit serial, capture time and QR, for comparison with IEBC records. |
+| "The signing key was stolen." | Keep it offline. Publish its fingerprint once. Rotate by announcing a new key in a signed statement from the old one. |
+
+## VLM assistance (`vlm.py`, Ollama Cloud or local)
+
+A vision model is used where judgement helps and speed doesn't matter. There
+are three ways to run it:
+
+- **Ollama Cloud directly:** set `OLLAMA_API_KEY`. Requests go to
+  `https://ollama.com/api/chat` with a bearer token. The default model is
+  `qwen3-vl:235b`; check ollama.com/search?c=cloud for current names.
+- **A local Ollama signed in to the cloud:** use a `*-cloud` model name with
+  the local host.
+- **Fully local:** for example `qwen2.5vl:7b`.
+
+Box coordinates are read as 0–1000 for Qwen3-VL and as pixels for
+Qwen2.5-VL, chosen automatically from the model name.
+
+**Privacy.** The audit sends only the *redacted* page, so it is safe for the
+cloud. The fallback and template proposals need the *unredacted* form. These
+are refused for any non-local host unless `--allow-remote-unredacted` is
+given, which should only be used if that data transfer has been approved.
+
+**Scrutiny.** A VLM never edits pixels itself: its boxes go through the same
+block masking and the same proof as everything else. Every audit verdict is
+recorded in the manifest with the model, host, prompt hash and the hash of
+the exact image sent.
+
+What the model does:
 
 - **`--vlm-audit`:** before publishing, ask whether a complete ID number, phone
   number or signature is readable anywhere. A "yes" sends the form to review.
@@ -169,13 +307,13 @@ coordinates map back exactly.
 
 | Outcome | Count |
 |---|---|
-| Published (table snapped) | 173 |
-| Published (widened fallback) | 15 |
-| Review: page alignment failed | 4 |
+| Published | 188 |
 | Review: column edge check | 22 |
-| Review: leak check | 1 |
+| Review: page alignment failed or other | 5 |
 
-That is 188 of 215 (87%) published, at about 7 files/s on 4 cores. Several
+That is 188 of 215 (87%) published, and all 188 verify. Throughput is about
+5 files/s on 4 cores, including the coefficient-level edit and the self-check.
+The blacked-out area is a median of 5.4% of each image, at most 9.6%. Several
 random samples of the published forms were reviewed by eye. Every review that
 found a problem led to a fix, and those cases are now caught by the gates
 above. Withheld forms are a mix of genuinely misplaced tables and forms whose
@@ -194,6 +332,16 @@ A template's reference image must have its handwriting erased, keeping the
 printed rules (see `README.md`). The form's PII must never end up in the repo.
 
 ## Known limits
+- **Phone numbers written into the signature column.** The whole signature
+  column is blacked out, so when agents continue a phone number into it, more
+  than 3 digits end up hidden. Hiding only signature ink there would need a
+  signature detector.
+- **Block granularity.** Blocks are 8 px wide and a handwritten digit is about
+  15–20 px, so a black block can also clip the edge of a neighbouring visible
+  character.
+- **Strength of the masking.** Hiding 3 digits of an 8-digit ID, or 3 of a
+  phone number, leaves 1000 possible values. That is enough against casual
+  reading, not against someone able to test candidates.
 - **PII outside template zones** is only caught by the VLM audit. This includes
   officers re-signing beside the stamp, IDs written in the comments, and an
   agent's ID written into the name column.

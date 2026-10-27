@@ -16,7 +16,6 @@ equal slots. A cell with ink that can't be segmented is hidden whole.
 
 from __future__ import annotations
 
-import math
 import random
 from dataclasses import dataclass
 from typing import Callable
@@ -29,8 +28,9 @@ from .templates import Zone
 
 @dataclass
 class MaskSettings:
-    fraction: float = 0.6  # share of character slots hidden in partial zones
-    slot_pad: float = 0.08  # widen each hidden slot by this share of its width, each side
+    hide: int = 3  # characters hidden per ID / phone number
+    phone_tail: int = 6  # phone numbers: hide only within the last N digits (subscriber part);
+    # 0734471897 keeps "0734" and hides 3 of "471897"
     vpad: int = 60  # px above/below a column searched for ink: handwriting strays, and
     # on photographed pages the table can be a row off; writing found anywhere in
     # this window is masked
@@ -167,22 +167,35 @@ def _text_lines(glyphs: list[Glyph], row_h: float) -> list[list[Glyph]]:
     return lines
 
 
-def line_slots(glyphs: list[Glyph], digits: int, row_w: float) -> list[Glyph] | None:
-    """Character boxes for one written line, or None if it can't be segmented."""
+def char_slots(glyphs: list[Glyph], digits: int, row_w: float) -> list[Glyph] | None:
+    """One box per written character, or None if the line can't be segmented.
+
+    The masking rules name positions ("keep the first four digits"), so slots
+    must be characters, not blobs: joined-up handwriting is split at the
+    expected character pitch, and when that still doesn't give a plausible
+    count the line's extent is divided into ``digits`` equal slots."""
     merged = _merge(glyphs)
-    if abs(len(merged) - digits) <= 2 and len(merged) >= 4:
-        return merged
     left, right = merged[0].x0, max(g.x1 for g in merged)
-    top, bottom = min(g.y0 for g in merged), max(g.y1 for g in merged)
     if right - left < 0.15 * row_w:
         return None
-    step = (right - left) / digits  # joined-up digits: equal slots
-    return [Glyph(round(left + i * step), round(left + (i + 1) * step), top, bottom) for i in range(digits)]
+    pitch = (right - left) / digits
+    split: list[Glyph] = []
+    for g in merged:
+        n = max(1, round((g.x1 - g.x0) / pitch))
+        step = (g.x1 - g.x0) / n
+        split += [Glyph(round(g.x0 + i * step), round(g.x0 + (i + 1) * step), g.y0, g.y1) for i in range(n)]
+    if abs(len(split) - digits) <= 1 or (digits >= 10 and len(split) >= digits):
+        return split  # IDs/passports run 7-9 characters; phones may carry +254
+    top, bottom = min(g.y0 for g in merged), max(g.y1 for g in merged)
+    return [Glyph(round(left + i * pitch), round(left + (i + 1) * pitch), top, bottom) for i in range(digits)]
 
 
 def pick_hidden(n: int, k: int, rng: random.Random, max_run: int = 2) -> list[int]:
     """Random k of n slots to hide, leaving no more than ``max_run`` visible
-    slots side by side (a visible run is what makes a number usable)."""
+    slots side by side where possible (a visible run is what makes a number
+    usable). Falls back to a plain random choice if no such pattern exists."""
+    k = min(k, n)
+    best_hidden = None
     for _ in range(200):
         hidden = set(rng.sample(range(n), k))
         run = best = 0
@@ -191,8 +204,20 @@ def pick_hidden(n: int, k: int, rng: random.Random, max_run: int = 2) -> list[in
             best = max(best, run)
         if best <= max_run:
             return sorted(hidden)
-    # k too small for the constraint: hide every slot not needed to keep runs short
-    return [i for i in range(n) if i % (max_run + 1) == rng.randrange(max_run + 1) or i in hidden]
+        best_hidden = best_hidden or hidden
+    return sorted(best_hidden)
+
+
+def choose_hidden(n: int, rule: str, rng: random.Random, s: "MaskSettings") -> list[int]:
+    """Which character slots to hide.
+
+    phone  ``s.hide`` of the last ``s.phone_tail`` digits; the prefix (network
+           code, e.g. 0734) stays visible.
+    id     ``s.hide`` of all characters (ID or passport number)."""
+    if rule == "phone":
+        start = max(0, n - s.phone_tail)
+        return [start + i for i in pick_hidden(n - start, s.hide, rng)]
+    return pick_hidden(n, s.hide, rng)
 
 
 def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zone],
@@ -256,19 +281,27 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
         cy = float(np.median([g.y0 + 0.35 * (g.y1 - g.y0) for g in line]))
         i = int(np.argmin([0 if b0 <= cy < b1 else min(abs(cy - b0), abs(cy - b1)) for b0, b1 in bands]))
         top, bot = min(g.y0 for g in line), max(g.y1 for g in line)
-        slots = line_slots(line, cells[i].digits, w)
+        slots = char_slots(line, cells[i].digits, w)
         if slots is None:  # can't segment this line: hide it whole
             quad = np.float64([[0, top], [w, top], [w, bot], [0, bot]])
             _fill(img, f, _grow(quad, s.mask_vpad + 4) + to_template)
             per_row[i].append({"mode": "full"})
             continue
-        k = min(len(slots), max(1, math.ceil(s.fraction * len(slots))))
-        for j in pick_hidden(len(slots), k, rng):
-            g = slots[j]
-            p = s.slot_pad * (g.x1 - g.x0)
-            quad = np.float64([[g.x0 - p, top], [g.x1 + p, top], [g.x1 + p, bot], [g.x0 - p, bot]])
-            _fill(img, f, _grow(quad, s.mask_vpad, 0) + to_template)
-        per_row[i].append({"mode": "partial", "slots": len(slots), "hidden": k})
+        hidden = choose_hidden(len(slots), cells[i].rule, rng, s)
+        # A hidden character's mask runs from the midpoint with its left
+        # neighbour to the midpoint with its right one, over the line's full
+        # height plus a margin. Glyph boxes come from cleaned ink (rule
+        # removal can shave a 5's or 7's top bar), so masking just the box
+        # could leave part of a "hidden" digit showing.
+        pitch = (slots[-1].x1 - slots[0].x0) / len(slots)
+        lo = [slots[0].x0 - pitch / 2] + [(a.x1 + b.x0) / 2 for a, b in zip(slots, slots[1:])]
+        hi = [(a.x1 + b.x0) / 2 for a, b in zip(slots, slots[1:])] + [slots[-1].x1 + pitch / 2]
+        h = bot - top  # margins cover a shaved top bar, not the rows above/below
+        y0, y1 = top - 0.15 * h - 2, bot + 0.1 * h + 2
+        for j in hidden:
+            quad = np.float64([[lo[j], y0], [hi[j], y0], [hi[j], y1], [lo[j], y1]])
+            _fill(img, f, quad + to_template)
+        per_row[i].append({"mode": "partial", "slots": len(slots), "hidden": hidden})
 
     # Rows with no line of writing: empty, or ink we couldn't make glyphs of.
     stray = ink.copy()
@@ -278,9 +311,9 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
     for z, (b0, b1), lines in zip(cells, bands, per_row):
         if lines:
             modes = {l["mode"] for l in lines}
-            report.append({"zone": z.name, "mode": "full" if modes == {"full"} else "partial",
-                           "lines": len(lines), "slots": sum(l.get("slots", 0) for l in lines),
-                           "hidden": sum(l.get("hidden", 0) for l in lines)})
+            report.append({"zone": z.name, "rule": z.rule, "mode": "full" if modes == {"full"} else "partial",
+                           "lines": [{k: v for k, v in l.items() if k != "mode"} for l in lines
+                                     if l["mode"] == "partial"]})
             continue
         share = stray[int(b0):int(b1)].mean() / 255 if b1 > b0 else 0.0
         if share >= 3 * s.empty_ink:
@@ -292,14 +325,18 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
 
 
 def verify_column(out: np.ndarray, f: Mapper, cells: list[Zone], ref: np.ndarray | None,
-                  s: MaskSettings, window: tuple[float, float] = (60.0, 110.0), max_run: int = 5) -> str:
+                  s: MaskSettings, window: tuple[float, float] = (60.0, 110.0), max_run: int | None = None) -> str:
     """Independent leak check on the redacted image: re-read the column over
     a window (px above, below) at least as wide as the one used for masking --
     drift on bent pages is downward, and the declaration with the officers'
     names sits just above the table -- and look for ``max_run`` or
     more written characters in a row with no mask between them. A masked line
-    is broken up every few characters; a missed one isn't.
+    is broken up every few characters; a missed one isn't. By default the
+    allowed run follows the rule: a phone keeps its prefix plus at most two
+    more digits visible together (flag at 8), an ID at most two (flag at 5).
     Returns a reason, or "" if clean."""
+    if max_run is None:
+        max_run = 8 if cells and cells[0].rule == "phone" else 5
     cells = sorted(cells, key=lambda z: z.rect[1])
     x, y, w = cells[0].rect[:3]
     bottom = cells[-1].rect[1] + cells[-1].rect[3]

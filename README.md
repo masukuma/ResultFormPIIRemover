@@ -1,14 +1,25 @@
 # ResultFormPIIRemover
 
 Removes personal data from photographed election result forms (KIEMS Form
-34A and others) before publication. Signatures are blacked out, and ID and
-phone numbers are partly masked at random so they can't be used but the form
-visibly carries them. Names, results, stamps and QR codes stay readable.
+34A and others) before publication. Each published form comes with evidence
+that **nothing but the personal data was touched**.
+
+- **Signatures** are blacked out.
+- **ID and passport numbers** have 3 random characters hidden.
+- **Phone numbers** keep their first digits; 3 of the last 6 are hidden.
+- **Names, results, stamps and QR codes** stay readable.
+
+The only edit ever made is replacing 8×8 blocks with solid black. On KIEMS
+JPEGs this is done at coefficient level, so every other block is the same
+data as the original. Each form gets a signed manifest, an entry in a
+hash-chained ledger, and a place in a published batch root. Anyone can then
+run `rfpii verify` against the original from the IEBC portal and see that no
+result was changed. See [VERIFYING.md](VERIFYING.md).
 
 Forms are aligned to a template, tables are snapped to their printed rules,
-and every page passes geometric and leak checks before it is published.
-Anything uncertain goes to a review folder. An optional local vision model
-(Ollama) audits pages and helps with forms that have no template. See
+and each page passes geometric, protected-region and leak checks before it is
+published. Anything uncertain goes to a review folder. An optional vision
+model on Ollama Cloud or a local Ollama audits pages. See
 [DESIGN.md](DESIGN.md).
 
 ## Install
@@ -20,28 +31,44 @@ pip install -e '.[test]'
 ## Run
 
 ```bash
-# Files, folders, or KIEMS county zips directly
-rfpii redact Forms/34A/*.zip --templates templates --out public --review review
+# Once: a signing key. Keep the private key offline; publish the .pub.pem.
+rfpii keygen keys/
 
-# With a local vision model (run `ollama pull qwen2.5vl:7b` first)
+# Files, folders, or KIEMS county zips directly
+rfpii redact Forms/34A/*.zip --templates templates --out public --review review \
+    --sign-key keys/signing_key.pem
+
+# With an Ollama Cloud vision model auditing every redacted page
+export OLLAMA_API_KEY=...            # from ollama.com/settings/keys
 rfpii redact Forms/ --templates templates --out public --review review \
-    --vlm-audit --vlm-fallback --vlm-model qwen2.5vl:7b
+    --sign-key keys/signing_key.pem --vlm-audit --vlm-model qwen3-vl:235b
+
+# Anyone, later: prove a published form against its original
+rfpii verify public/x.pdf --original x.PDF --pubkey signing_key.pub.pem \
+    --ledger public/ledger.jsonl --overlay changes/
 ```
 
-- `public/` holds the redacted PDFs plus a `.json` provenance sidecar for each
-  (station, KIEMS kit, capture time, source SHA-256; no PII). Publish only this
-  folder.
+- `public/` holds what you publish:
+  - the redacted PDFs;
+  - each one's signed `.manifest.json` (source and output hashes, blocks
+    blacked, protected regions, seed, tool and template versions; no PII);
+  - `ledger.jsonl`;
+  - `batches/*.json`, each with the batch's Merkle root. Announce that root
+    widely when the batch is released.
 - `review/` holds a JSON report for each withheld document, `report.jsonl` for
   all documents, and `vlm/` for VLM-proposed redactions awaiting approval.
 - The exit code is `2` if anything was withheld.
 
 Useful flags:
 
-- `--hide-fraction`: share of each ID or phone number hidden (default 0.6).
+- `--hide`: characters hidden per ID or phone number (default 3).
+- `--phone-tail`: phone numbers are masked only within their last N digits
+  (default 6).
+- `--allow-remote-unredacted`: needed before `--vlm-fallback` or `propose` may
+  send unredacted forms to a cloud model.
 - `--strict-structure`: withhold pages whose table rules can't be matched,
   instead of masking them with widened zones.
 - `--workers`: number of worker processes.
-- `--dpi`: render resolution for PDFs.
 
 ## Adding a form type
 
@@ -59,8 +86,10 @@ Useful flags:
      - {name: agents, rect: [x, y, w, h]}
    zones:
      - {name: signatures, action: blackout, rect: [x, y, w, h], region: agents}
-     - {name: agent_id, action: partial, digits: 8, rect: [x, y, w, row_h],
+     - {name: agent_id, action: partial, rule: id, digits: 8, rect: [x, y, w, row_h],
         rows: 4, row_step: 36.4, region: agents}
+   protect:                      # results regions no mask may ever touch
+     - {name: votes, rect: [x, y, w, h]}
    ```
 
 3. **Check:** `rfpii preview templates/<form> -o preview.png`.

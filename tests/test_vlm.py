@@ -73,3 +73,48 @@ def test_redact_boxes_masks_signature():
     cv2.putText(page, "Sig", (100, 200), cv2.FONT_HERSHEY_SCRIPT_SIMPLEX, 2, (0, 0, 0), 3)
     r = redact_boxes(page, [vlm.Box("signature", 90, 140, 260, 220)])
     assert (r.image[150:210, 100:250] == 0).all()
+
+
+def test_qwen3_coords_and_audit_record(ollama):
+    client = vlm.Ollama(vlm.VlmSettings(host=ollama, model="qwen3-vl:235b"))
+    assert client.s.coords == "norm1000"  # Qwen3-VL boxes are 0..1000
+    _Stub.replies = [{"id_number_visible": False, "phone_number_visible": False, "signature_visible": False,
+                      "details": ""}]
+    a = client.audit(np.full((500, 400, 3), 255, np.uint8))
+    assert a.ok and a.record["model"] == "qwen3-vl:235b" and len(a.record["image_sent_sha256"]) == 64
+
+
+def test_remote_host_refuses_unredacted_and_sends_key(monkeypatch):
+    s = vlm.VlmSettings(host="https://ollama.com", api_key="k123")
+    client = vlm.Ollama(s)
+    assert not client.local and client.s.model == vlm.DEFAULT_CLOUD_MODEL
+    with pytest.raises(PermissionError):
+        client.locate(np.full((500, 400, 3), 255, np.uint8))
+    sent = {}
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+        def read(self, *a):
+            return json.dumps({"message": {"content": json.dumps(
+                {"id_number_visible": False, "phone_number_visible": False, "signature_visible": False,
+                 "details": ""})}}).encode()
+
+    def fake_urlopen(req, timeout=0):
+        sent["auth"] = req.headers.get("Authorization")
+        sent["url"] = req.full_url
+        return Resp()
+
+    monkeypatch.setattr(vlm.urllib.request, "urlopen", fake_urlopen)
+    client.audit(np.full((500, 400, 3), 255, np.uint8))  # redacted pages may go to the cloud
+    assert sent == {"auth": "Bearer k123", "url": "https://ollama.com/api/chat"}
+
+
+def test_cloud_without_key_is_rejected(monkeypatch):
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    with pytest.raises(ValueError):
+        vlm.Ollama(vlm.VlmSettings(host="https://ollama.com", api_key=None))

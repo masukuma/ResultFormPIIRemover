@@ -1,7 +1,8 @@
-"""Command line: batch redaction, zone preview/proposal, demo data.
+"""Command line.
 
-    rfpii redact Forms/ --templates templates/ --out public/ --review review/
-    rfpii redact county.zip ... --vlm-audit --vlm-fallback
+    rfpii keygen keys/
+    rfpii redact Forms/ --templates templates --out public --review review --sign-key keys/signing_key.pem
+    rfpii verify public/x.pdf --original x.PDF --pubkey keys/signing_key.pub.pem --ledger public/ledger.jsonl
     rfpii preview templates/form34a_2022 -o preview.png
     rfpii propose reference.png -o templates/new_form/template.yaml
     rfpii demo demo/
@@ -10,54 +11,34 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
+import datetime as dt
 import json
 import multiprocessing as mp
 import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from . import io, kiems
+from . import io, manifest as mf
 from .align import AlignSettings, prepare
 from .masking import MaskSettings
-from .pipeline import DocResult, redact_boxes, redact_pages
+from .pipeline import redact_boxes
+from .process import Config, process_document
 from .templates import load_templates
 from .vlm import Ollama, VlmSettings
-
-
-@dataclass
-class Config:
-    templates: str
-    out: str
-    review: str
-    dpi: int | None = None
-    quality: int = 85
-    align: AlignSettings = field(default_factory=AlignSettings)
-    mask: MaskSettings = field(default_factory=MaskSettings)
-    vlm: VlmSettings | None = None  # None = no VLM use
-    vlm_audit: bool = False
-    vlm_fallback: bool = False
-    strict_structure: bool = False
-
 
 _W: dict = {}  # per-worker state
 
 
 def _init_worker(cfg: Config) -> None:
-    cv2.setNumThreads(1)  # parallelism comes from processes
+    cv2.setNumThreads(1)  # parallelism comes from processes (and determinism needs one thread)
     _W["cfg"] = cfg
     _W["templates"] = [prepare(t, cfg.align) for t in load_templates(cfg.templates)]
     _W["vlm"] = Ollama(cfg.vlm) if cfg.vlm else None
-
-
-def _gray(img: np.ndarray) -> np.ndarray:
-    return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
 
 
 def _out_path(root: str, rel: str, ext: str) -> Path:
@@ -71,68 +52,26 @@ def _process(job: tuple[str, str]) -> dict:
     cfg: Config = _W["cfg"]
     vlm: Ollama | None = _W["vlm"]
     t0 = time.perf_counter()
-    report: dict = {"file": src, "ok": False}
     try:
-        data = io.read_bytes(src)
-        report["sha256"] = hashlib.sha256(data).hexdigest()
-        pages = list(io.iter_pages(src, cfg.dpi, data))
-        if not pages:
-            raise ValueError("no pages")
-        name = kiems.parse_name(Path(rel).stem)
-        payload = kiems.decode_qr(_gray(pages[0]))
-        qr = kiems.parse_qr(payload) if payload else {}
-        form = qr.get("form") or (name.form if name else None)
-        meta = {"form": form, "kiems": name.to_dict() if name else None, "qr": payload, "qr_fields": qr or None}
-        doc: DocResult = redact_pages(pages, _W["templates"], cfg.align, cfg.mask, form, cfg.strict_structure)
-        doc.meta = meta
-        problems = [f"page {i + 1}: {p.reason}" for i, p in enumerate(doc.pages) if not p.ok]
-        if mismatch := kiems.check(name, qr):
-            problems.append(mismatch)
-        if vlm and cfg.vlm_audit and not problems:
-            for i, p in enumerate(doc.pages):
-                a = vlm.audit(p.image)
-                p.audit = a.findings
-                if not a.ok:
-                    problems.append(f"page {i + 1}: VLM audit flagged: {a.findings.get('details', '')}")
-        report.update(meta)
-        report["pages"] = [
-            {"template": p.template, "ok": p.ok, "inliers": p.inliers, "score": round(p.score, 3),
-             "reason": p.reason, "ms": round(p.ms, 1),
-             "cells": {m: sum(1 for r in p.masks if r["mode"] == m) for m in ("partial", "full", "empty")},
-             **({"notes": p.notes} if p.notes else {}),
-             **({"audit": p.audit} if getattr(p, "audit", None) else {})}
-            for p in doc.pages
-        ]
-        report["ok"] = not problems
-        if problems:
-            report["reason"] = "; ".join(problems)
+        o = process_document(src, rel, _W["templates"], cfg, vlm)
     except Exception as e:  # unreadable or broken file -> review, never publish
-        report["reason"] = f"{type(e).__name__}: {e}"
-        pages, doc = [], None
-
-    if report["ok"]:
-        out = _out_path(cfg.out, rel, ".pdf")
-        io.write_pdf([p.image for p in doc.pages], out, cfg.dpi or 150, cfg.quality)
-        # Sidecar: provenance only (station, kit, capture time, source hash). No PII.
-        side = {k: report.get(k) for k in ("form", "kiems", "qr", "qr_fields", "sha256")}
-        side["source_name"] = Path(rel).name
-        side["templates"] = sorted({p.template for p in doc.pages})
-        out.with_suffix(".json").write_text(json.dumps(side, indent=2))
-        report["output"] = str(out)
-    else:
+        return {"report": {"file": src, "ok": False, "reason": f"{type(e).__name__}: {e}",
+                           "ms": round((time.perf_counter() - t0) * 1000, 1)}, "rel": rel}
+    report = o.report
+    if not o.ok:
         _out_path(cfg.review, rel, ".json").write_text(json.dumps(report, indent=2))
-        if vlm and cfg.vlm_fallback and pages:
+        if vlm and cfg.vlm_fallback and o.source_pages:
             # Unrecognised layout: let the VLM find the PII, apply the same
             # masking, and park the result for a person to approve.
             try:
-                fixed = [redact_boxes(pg, vlm.locate(pg), cfg.mask) for pg in pages]
+                fixed = [redact_boxes(sp.pixels, vlm.locate(sp.pixels), cfg.mask) for sp in o.source_pages]
                 vout = _out_path(Path(cfg.review) / "vlm", rel, ".pdf")
-                io.write_pdf([p.image for p in fixed], vout, cfg.dpi or 150, cfg.quality)
+                io.write_pdf([p.image for p in fixed], vout)  # a proposal for review, not published
                 report["vlm_proposal"] = str(vout)
             except Exception as e:
                 report["vlm_error"] = f"{type(e).__name__}: {e}"
     report["ms"] = round((time.perf_counter() - t0) * 1000, 1)
-    return report
+    return {"report": report, "manifest": o.manifest, "rel": rel}
 
 
 def _jobs(inputs: list[str]) -> list[tuple[str, str]]:
@@ -151,36 +90,85 @@ def _jobs(inputs: list[str]) -> list[tuple[str, str]]:
     return jobs
 
 
+def _vlm_settings(a) -> VlmSettings:
+    kw = {"coords": a.vlm_coords, "allow_remote_unredacted": getattr(a, "allow_remote_unredacted", False)}
+    if a.vlm_model:
+        kw["model"] = a.vlm_model
+    if a.vlm_host:
+        kw["host"] = a.vlm_host
+    return VlmSettings(**kw)
+
+
 def cmd_redact(a) -> int:
-    vs = None
-    if a.vlm_audit or a.vlm_fallback:
-        vs = VlmSettings(model=a.vlm_model, coords=a.vlm_coords, **({"host": a.vlm_host} if a.vlm_host else {}))
-    cfg = Config(a.templates, a.out, a.review, a.dpi, a.quality,
+    vs = _vlm_settings(a) if (a.vlm_audit or a.vlm_fallback) else None
+    if vs:
+        Ollama(vs)  # fail fast on bad cloud configuration
+    cfg = Config(a.templates, a.out, a.review,
                  AlignSettings(min_score=a.min_score, min_inliers=a.min_inliers),
-                 MaskSettings(fraction=a.hide_fraction), vs, a.vlm_audit, a.vlm_fallback, a.strict_structure)
+                 MaskSettings(hide=a.hide, phone_tail=a.phone_tail), vs, a.vlm_audit, a.vlm_fallback,
+                 a.strict_structure)
+    key = mf.load_private(a.sign_key) if a.sign_key else None
+    if not key:
+        print("warning: no --sign-key; manifests will be unsigned", file=sys.stderr)
     Path(a.out).mkdir(parents=True, exist_ok=True)
     Path(a.review).mkdir(parents=True, exist_ok=True)
+    ledger = Path(a.ledger or Path(a.out) / "ledger.jsonl")
     jobs = [j for j in _jobs(a.inputs) if a.overwrite or not _out_path(a.out, j[1], ".pdf").exists()]
     t0 = time.perf_counter()
-    n_ok = 0
+    n_ok, batch = 0, []
     with open(Path(a.review) / "report.jsonl", "a") as log, ProcessPoolExecutor(
         a.workers, initializer=_init_worker, initargs=(cfg,),
         # fork after OpenCV has started its thread pool can deadlock the child
         mp_context=mp.get_context("spawn"),
     ) as pool:
-        for r in pool.map(_process, jobs, chunksize=4):
-            n_ok += r["ok"]
+        for res in pool.map(_process, jobs, chunksize=4):
+            r = res["report"]
+            if r["ok"]:
+                m = mf.sign(res["manifest"], key) if key else res["manifest"]
+                mpath = _out_path(a.out, res["rel"], ".manifest.json")
+                mpath.write_text(json.dumps(m, indent=1, sort_keys=True))
+                h = mf.digest(m)
+                mf.ledger_append(ledger, h, m["source"]["sha256"], m["output"]["pdf_sha256"], res["rel"])
+                batch.append({"name": res["rel"], "manifest_sha256": h})
+                n_ok += 1
             log.write(json.dumps(r) + "\n")
             if not r["ok"]:
                 print(f"REVIEW  {r['file']}: {r.get('reason', '')}", file=sys.stderr)
-    dt = time.perf_counter() - t0
+    if batch:
+        # One root for the whole batch: publish it widely when the batch is released.
+        bdir = Path(a.out) / "batches"
+        bdir.mkdir(exist_ok=True)
+        ok, _, entries = mf.ledger_check(ledger)
+        b = {"schema": "rfpii/batch/1", "created_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+             "count": len(batch), "merkle_root": mf.merkle_root([x["manifest_sha256"] for x in batch]),
+             "ledger_head": entries[-1]["entry_hash"] if entries else None, "documents": batch}
+        b = mf.sign(b, key) if key else b
+        bpath = bdir / f"batch-{b['created_at'].replace(':', '')}.json"
+        bpath.write_text(json.dumps(b, indent=1, sort_keys=True))
+        print(f"batch root {b['merkle_root']}  ({bpath})")
+    dt_ = time.perf_counter() - t0
     print(f"{n_ok}/{len(jobs)} published, {len(jobs) - n_ok} sent to review, "
-          f"{dt:.1f}s ({len(jobs) / dt if dt else 0:.1f} files/s)")
+          f"{dt_:.1f}s ({len(jobs) / dt_ if dt_ else 0:.1f} files/s)")
     return 0 if n_ok == len(jobs) else 2
 
 
+def cmd_verify(a) -> int:
+    from .verify import verify
+    rep = verify(a.redacted, a.manifest, a.original, a.pubkey, a.ledger, a.overlay, a.rerun)
+    print(rep.text())
+    return 0 if rep.ok else 1
+
+
+def cmd_keygen(a) -> int:
+    priv, pub = mf.keygen(a.directory)
+    print(f"private key {priv} (keep offline/secret)\npublic key  {pub} (publish)  "
+          f"id {mf.key_id(mf.load_public(pub))}")
+    return 0
+
+
 def cmd_preview(a) -> int:
-    """Draw the padded zones over the reference so they can be checked by eye."""
+    """Draw zones (red blackout, blue partial) and protected results regions
+    (green) over the reference so they can be checked by eye."""
     t = load_templates(a.template)[0]
     img = cv2.cvtColor(t.image, cv2.COLOR_GRAY2BGR)
     overlay = img.copy()
@@ -188,11 +176,15 @@ def cmd_preview(a) -> int:
     for z in t.zones:
         cv2.fillPoly(overlay, [np.round(z.padded(t.padding)).astype(np.int32)], colours[z.action])
     img = cv2.addWeighted(overlay, 0.35, img, 0.65, 0)
+    for name, (x, y, w, h) in t.protect.items():
+        cv2.rectangle(img, (int(x), int(y)), (int(x + w), int(y + h)), (0, 160, 0), 3)
+        cv2.putText(img, f"protected: {name}", (int(x) + 4, int(y) + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                    (0, 140, 0), 2)
     for z in t.zones:
         p = np.round(z.polygon).astype(np.int32)
         cv2.polylines(img, [p], True, colours[z.action], 1)
         if z.row == 0:
-            label = z.group or z.name
+            label = (z.group or z.name) + (f" ({z.rule})" if z.rule else "")
             cv2.putText(img, label, tuple(int(v) for v in p[0] + [3, -5]), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         colours[z.action], 1)
     cv2.imwrite(a.output, img)
@@ -204,24 +196,25 @@ def cmd_propose(a) -> int:
     """Ask the VLM for PII boxes on a reference image and write a draft template."""
     import yaml
 
-    img = next(io.iter_pages(a.reference))
-    client = Ollama(VlmSettings(model=a.vlm_model, coords=a.vlm_coords,
-                                **({"host": a.vlm_host} if a.vlm_host else {})))
+    img = io.source_pages(a.reference)[0].pixels
+    client = Ollama(_vlm_settings(a))
     boxes = client.locate(img)
     out = Path(a.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out.parent / "reference.png"), _gray(img))
+    cv2.imwrite(str(out.parent / "reference.png"), cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
     zones = []
     for i, b in enumerate(boxes):
         z = {"name": f"{b.label}_{i}", "action": "blackout" if b.label == "signature" else "partial",
              "rect": [round(b.x0), round(b.y0), round(b.x1 - b.x0), round(b.y1 - b.y0)]}
         if b.label != "signature":
-            z["digits"] = 8 if b.label == "id_number" else 10
+            z["rule"] = "phone" if b.label == "phone_number" else "id"
+            z["digits"] = 10 if b.label == "phone_number" else 8
         zones.append(z)
-    spec = {"name": out.parent.name, "form": a.form or "", "reference": "reference.png", "padding": 8, "zones": zones}
-    out.write_text("# DRAFT from a VLM: check every zone with `rfpii preview` before use.\n"
-                   "# Paint handwriting out of reference.png before committing it.\n"
-                   + yaml.safe_dump(spec, sort_keys=False))
+    spec = {"name": out.parent.name, "form": a.form or "", "reference": "reference.png", "padding": 8,
+            "protect": [], "zones": zones}
+    out.write_text("# DRAFT from a VLM: check every zone with `rfpii preview` before use, and add\n"
+                   "# `protect` rects for every results region. Erase handwriting from reference.png\n"
+                   "# (keep printed rules) before committing it.\n" + yaml.safe_dump(spec, sort_keys=False))
     print(f"{len(zones)} zones -> {out}")
     return 0
 
@@ -242,26 +235,32 @@ def cmd_demo(a) -> int:
 
 
 def _vlm_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--vlm-model", default=VlmSettings.model, help="Ollama vision model")
-    p.add_argument("--vlm-host", default=None, help="Ollama URL (default $OLLAMA_HOST or localhost:11434)")
-    p.add_argument("--vlm-coords", choices=("pixel", "norm1000"), default="pixel",
-                   help="box convention of the model (qwen2.5vl: pixel)")
+    p.add_argument("--vlm-model", default="", help="vision model (default: qwen3-vl:235b on Ollama Cloud, "
+                                                   "qwen2.5vl:7b locally); see ollama.com/search?c=cloud")
+    p.add_argument("--vlm-host", default=None,
+                   help="Ollama URL (default $OLLAMA_HOST, else https://ollama.com if $OLLAMA_API_KEY, else local)")
+    p.add_argument("--vlm-coords", choices=("auto", "pixel", "norm1000"), default="auto",
+                   help="box convention of the model (auto: norm1000 for Qwen3-VL, pixel otherwise)")
+    p.add_argument("--allow-remote-unredacted", action="store_true",
+                   help="allow sending UNREDACTED forms to a non-local VLM (fallback/propose); "
+                        "only if that data transfer is approved")
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="rfpii", description="Remove PII from scanned result forms.")
+    ap = argparse.ArgumentParser(prog="rfpii", description="Verifiable PII removal for result forms.")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("redact", help="redact files, directories and zip archives in bulk")
     r.add_argument("inputs", nargs="+")
     r.add_argument("--templates", required=True, help="template dir, or dir of template dirs")
-    r.add_argument("--out", required=True, help="publishable output (redacted PDFs + provenance JSON)")
+    r.add_argument("--out", required=True, help="publishable output (redacted PDFs, manifests, ledger)")
     r.add_argument("--review", required=True, help="reports for documents that failed checks")
+    r.add_argument("--sign-key", help="Ed25519 private key (rfpii keygen) to sign manifests and batches")
+    r.add_argument("--ledger", help="append-only ledger (default <out>/ledger.jsonl)")
     r.add_argument("--workers", type=int, default=os.cpu_count())
-    r.add_argument("--dpi", type=int, default=None, help="render DPI for PDFs (default: native image resolution)")
-    r.add_argument("--quality", type=int, default=85, help="output JPEG quality")
-    r.add_argument("--hide-fraction", type=float, default=MaskSettings.fraction,
-                   help="share of characters hidden in ID/phone cells")
+    r.add_argument("--hide", type=int, default=MaskSettings.hide, help="characters hidden per ID / phone number")
+    r.add_argument("--phone-tail", type=int, default=MaskSettings.phone_tail,
+                   help="phone numbers: hide only within the last N digits")
     r.add_argument("--min-score", type=float, default=AlignSettings.min_score)
     r.add_argument("--min-inliers", type=int, default=AlignSettings.min_inliers)
     r.add_argument("--strict-structure", action="store_true",
@@ -273,7 +272,21 @@ def main(argv=None) -> int:
     r.add_argument("--overwrite", action="store_true")
     r.set_defaults(fn=cmd_redact)
 
-    p = sub.add_parser("preview", help="render template zones for visual check")
+    v = sub.add_parser("verify", help="prove a redacted form changed nothing but the listed blocks")
+    v.add_argument("redacted")
+    v.add_argument("--manifest", help="default: <redacted>.manifest.json")
+    v.add_argument("--original", help="the original transmission (e.g. from the IEBC portal)")
+    v.add_argument("--pubkey", help="publisher's public key")
+    v.add_argument("--ledger", help="the published ledger.jsonl")
+    v.add_argument("--overlay", help="directory for images showing every changed block")
+    v.add_argument("--rerun", metavar="TEMPLATES", help="also re-run the redaction from the manifest's seed")
+    v.set_defaults(fn=cmd_verify)
+
+    k = sub.add_parser("keygen", help="create an Ed25519 signing key pair")
+    k.add_argument("directory")
+    k.set_defaults(fn=cmd_keygen)
+
+    p = sub.add_parser("preview", help="render template zones and protected regions for visual check")
     p.add_argument("template")
     p.add_argument("-o", "--output", default="preview.png")
     p.set_defaults(fn=cmd_preview)

@@ -6,6 +6,18 @@ name: form34a_2022
 form: 34A
 reference: reference.png
 padding: 8
+# Results regions: no mask block may touch these (checked on every page, and
+# by `rfpii verify`). Header with form serial + QR, station names and codes,
+# the votes table, polling-station counts and disputed votes.
+protect:
+  - name: header_and_qr
+    rect: [40, 20, 1610, 145]
+  - name: station_and_codes
+    rect: [60, 290, 1540, 175]
+  - name: votes
+    rect: [50, 480, 1560, 540]
+  - name: counts_and_disputed
+    rect: [50, 1020, 1560, 228]
 structure:
   # Agents table incl. its top border; its printed rules position every zone
   # below (photos of curled pages put the global fit rows off down here).
@@ -16,11 +28,12 @@ zones:
   # room for signatures that stray above the line or toward the stamp).
   - name: officer_signatures
     action: blackout
-    rect: [1008, 1310, 330, 175]
+    rect: [1008, 1325, 330, 160]
     region: agents
   # Agents table, 11 rows. Names stay visible.
   - name: agent_id
     action: partial
+    rule: id           # hide 3 random characters
     digits: 8
     rect: [500, 1562, 178, 36.4]
     rows: 11
@@ -28,6 +41,7 @@ zones:
     region: agents
   - name: agent_phone
     action: partial
+    rule: phone        # keep the prefix (0734...), hide 3 of the last 6 digits
     digits: 10
     rect: [1050, 1566, 171, 36.4]
     rows: 11

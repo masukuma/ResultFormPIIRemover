@@ -26,7 +26,8 @@ def _table(entries: dict[int, str], strike: bool = False) -> np.ndarray:
 
 
 def _cells(digits: int = 8) -> list[Zone]:
-    return [Zone(f"id[{r}]", (X, Y + r * ROW_H, W, ROW_H), "partial", digits, "id", r) for r in range(ROWS)]
+    return [Zone(f"id[{r}]", (X, Y + r * ROW_H, W, ROW_H), "partial", digits, "id", r,
+                 rule="phone" if digits >= 10 else "id") for r in range(ROWS)]
 
 
 IDENTITY = masking.homography(np.eye(3))
@@ -46,20 +47,54 @@ def _visible_runs(row_out: np.ndarray, row_in: np.ndarray) -> list[int]:
     return runs + [run]
 
 
-def test_partial_hides_most_digits_but_not_all():
+def _cells_rule(rule: str, digits: int) -> list[Zone]:
+    return [Zone(f"c[{r}]", (X, Y + r * ROW_H, W, ROW_H), "partial", digits, "c", r, rule=rule) for r in range(ROWS)]
+
+
+def _hidden_chars(out: np.ndarray, gray: np.ndarray, row: int, text: str) -> list[int]:
+    """Which characters (by position) ended up fully under black."""
+    band = slice(Y + row * ROW_H + 4, Y + (row + 1) * ROW_H - 4)
+    cols_ = slice(X + 4, X + W - 4)  # inside the column rules
+    ink = gray[band, cols_] < 120
+    covered = out[band, cols_] == 0
+    cols = np.flatnonzero(ink.any(axis=0))
+    runs = np.split(cols, np.flatnonzero(np.diff(cols) > 1) + 1)
+    assert len(runs) == len(text), (len(runs), text)
+    return [i for i, r in enumerate(runs) if covered[:, r][ink[:, r]].mean() >= 0.9]  # antialiased edges
+
+
+def test_id_rule_hides_exactly_three_characters():
+    img = _table({0: "36676945", 2: "24571109"})
+    for seed in range(20):
+        canvas = np.full(img.shape, 255, np.uint8)
+        rep = masking.partial_column(canvas, img, IDENTITY, _cells_rule("id", 8), MaskSettings(), random.Random(seed))
+        by = {r["zone"]: r for r in rep}
+        assert by["c[0]"]["mode"] == "partial" and by["c[1]"]["mode"] == "empty"
+        assert len(by["c[0]"]["lines"][0]["hidden"]) == 3
+        for row, text in ((0, "36676945"), (2, "24571109")):
+            hid = _hidden_chars(canvas, img, row, text)
+            assert len(hid) == 3, hid
+
+
+def test_phone_rule_keeps_prefix_and_hides_three_of_last_six():
+    img = _table({1: "0734471897"})
+    seen = set()
+    for seed in range(30):
+        canvas = np.full(img.shape, 255, np.uint8)
+        rep = masking.partial_column(canvas, img, IDENTITY, _cells_rule("phone", 10), MaskSettings(),
+                                     random.Random(seed))
+        line = {r["zone"]: r for r in rep}["c[1]"]["lines"][0]
+        assert line["slots"] == 10 and len(line["hidden"]) == 3 and min(line["hidden"]) >= 4
+        hid = _hidden_chars(canvas, img, 1, "0734471897")
+        assert not set(hid) & {0, 1, 2}, hid  # 073 always readable
+        seen.add(tuple(line["hidden"]))
+    assert len(seen) > 3  # random, not a fixed pattern
+
+
+def test_partial_masks_pass_the_leak_check():
     img = _table({0: "36676945", 2: "0719108076"})
-    gray = img.copy()
     out = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    rep = masking.partial_column(out, gray, IDENTITY, _cells(), MaskSettings(), random.Random(1))
-    by = {r["zone"]: r for r in rep}
-    assert by["id[0]"]["mode"] == "partial" and by["id[2]"]["mode"] == "partial"
-    assert by["id[1]"]["mode"] == "empty" and by["id[5]"]["mode"] == "empty"
-    for r in (0, 2):
-        band = slice(Y + r * ROW_H + 4, Y + (r + 1) * ROW_H - 4)
-        written = (gray[band, X:X + W] < 120).any(axis=0)
-        hidden = (out[band, X:X + W, 0] == 0).any(axis=0)
-        share = (written & hidden).sum() / written.sum()
-        assert 0.4 < share < 0.95, share  # some, but not all, of the number is hidden
+    masking.partial_column(out, img, IDENTITY, _cells(), MaskSettings(), random.Random(1))
     assert masking.verify_column(out, IDENTITY, _cells(), None, MaskSettings()) == ""
 
 
@@ -74,12 +109,12 @@ def test_strike_line_through_unused_rows_is_not_masked():
 def test_writing_off_the_expected_rows_is_still_masked():
     """Table mapped a row low: row 0 writing sits above the first band."""
     img = _table({0: "36676945"})
-    shifted = [Zone(z.name, (z.rect[0], z.rect[1] + ROW_H, z.rect[2], z.rect[3]), "partial", 8, "id", z.row)
-               for z in _cells()]
+    shifted = [Zone(z.name, (z.rect[0], z.rect[1] + ROW_H, z.rect[2], z.rect[3]), "partial", 8, "id", z.row,
+                    rule="id") for z in _cells()]
     out = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     masking.partial_column(out, img, IDENTITY, shifted, MaskSettings(), random.Random(2))
     band = slice(Y + 4, Y + ROW_H - 4)
-    assert (out[band, X:X + W, 0] == 0).any(axis=0).sum() > 0.4 * W * 0.5
+    assert (out[band, X:X + W, 0] == 0).any(axis=0).sum() > 30  # three characters' worth
 
 
 def test_verify_flags_unmasked_number():

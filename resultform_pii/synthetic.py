@@ -115,6 +115,7 @@ def write_template(directory) -> None:
         "name": "sample_rs1",
         "reference": "reference.png",
         "padding": 12,
+        "protect": [{"name": "results", "rect": [60, 520, 1120, 620]}],
         "zones": [{"name": k, "rect": list(v)} for k, v in ZONES.items()],
     }
     (d / "template.yaml").write_text(yaml.safe_dump(spec, sort_keys=False))

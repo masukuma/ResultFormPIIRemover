@@ -12,6 +12,9 @@ template.yaml:
     form: 34A              # matched against the form code in the QR / KIEMS file name
     reference: reference.png
     padding: 8             # px (template space) added around every zone
+    protect:               # results regions: no mask may touch them
+      - name: votes
+        rect: [x, y, w, h]
     structure:             # printed tables whose rules re-position their zones
       - name: agents
         rect: [x, y, w, h]
@@ -33,6 +36,7 @@ in the reference image.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -52,6 +56,7 @@ class Zone:
     group: str = ""  # table column this cell belongs to ("" = standalone)
     row: int = 0
     region: str = ""  # structure region whose printed rules position this zone
+    rule: str = ""  # partial zones: "phone" (keep prefix, hide 3 of last 6) or "id" (hide 3)
 
     @property
     def polygon(self) -> np.ndarray:
@@ -71,6 +76,8 @@ class Template:
     padding: int = 8
     form: str = ""
     structure: dict = field(default_factory=dict)  # region name -> rect (x, y, w, h)
+    protect: dict = field(default_factory=dict)  # results regions no mask may touch: name -> rect
+    fingerprint: str = ""  # sha256 of template.yaml + reference image, recorded in manifests
     # Filled in by prepare(): computed once per worker, reused for every page.
     regions: dict = field(default_factory=dict, repr=False)  # name -> structure.Region
     mask: np.ndarray | None = field(default=None, repr=False)
@@ -101,12 +108,15 @@ def _zones_from_spec(spec: dict) -> list[Zone]:
     digits = int(spec.get("digits", 0))
     if action == "partial" and digits < 2:
         raise ValueError(f"zone {name!r}: partial zones need 'digits' >= 2")
+    rule = str(spec.get("rule", "phone" if digits >= 10 else "id")) if action == "partial" else ""
+    if rule not in ("", "phone", "id"):
+        raise ValueError(f"zone {name!r}: rule must be 'phone' or 'id'")
     x, y, w, h = map(float, spec["rect"])
     rows = int(spec.get("rows", 1))
     step = float(spec.get("row_step", h))
     return [
         Zone(f"{name}[{r}]" if rows > 1 else name, (x, y + r * step, w, h), action, digits,
-             name if rows > 1 else "", r, str(spec.get("region", "")))
+             name if rows > 1 else "", r, str(spec.get("region", "")), rule)
         for r in range(rows)
     ]
 
@@ -124,8 +134,11 @@ def load_template(directory: str | Path) -> Template:
     for z in zones:
         if z.region and z.region not in structure:
             raise ValueError(f"zone {z.name!r} refers to unknown structure region {z.region!r}")
+    protect = {r["name"]: tuple(map(float, r["rect"])) for r in spec.get("protect") or []}
+    h = hashlib.sha256((directory / "template.yaml").read_bytes())
+    h.update((directory / spec.get("reference", "reference.png")).read_bytes())
     return Template(spec.get("name", directory.name), image, zones,
-                    int(spec.get("padding", 8)), str(spec.get("form", "")), structure)
+                    int(spec.get("padding", 8)), str(spec.get("form", "")), structure, protect, h.hexdigest())
 
 
 def load_templates(root: str | Path) -> list[Template]:
