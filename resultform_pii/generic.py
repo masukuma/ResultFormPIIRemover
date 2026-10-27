@@ -611,14 +611,14 @@ def _free_signatures(L: Layout, top: float, band: list = ()) -> None:
     confidently or the same way at two scales (the page, and ``band``, the
     free area re-read on its own); a signature is read as nothing, as noise,
     or differently each time. Names on a form are written in capitals, so
-    joined-up lower case next to a sign-off is a signature even when it is
-    read. Writing taken for a signature:
+    joined-up lower case on its own line next to a sign-off is a signature
+    even when it is read. Writing taken for a signature:
 
     - next to the officer's own name (as written in the declaration), or on
       a sign-off line (a number, a date, an ID or "sign" on it): anything
-      not read, or cursive;
-    - on the line above or below a sign-off: cursive, or joined strokes OCR
-      reads nothing in;
+      not read;
+    - on the line above or below a sign-off: cursive on a line of its own,
+      or joined strokes OCR reads nothing in;
     - on a line with a word in capitals, or beside the stamp: a few strokes
       OCR reads nothing in.
 
@@ -638,7 +638,7 @@ def _free_signatures(L: Layout, top: float, band: list = ()) -> None:
     lines = [ln for ln in L.lines if ln.cy >= top and not stamps_mod.is_stamp_text(ln.text)]
     in_band = {id(ln) for ln in band}
     passes = [[ln for ln in lines if id(ln) not in in_band], [ln for ln in lines if id(ln) in in_band]]
-    vetoed, strong, weak, zones = [], [], [], []
+    vetoed, strong, weak, worded, zones = [], [], [], [], []
     for ln in lines:
         if re.search(r"refus|comment|presiding\s*officer", ln.text, re.I) or PRINTED_LINE.match(ln.text):
             q = ln.quad - np.float32([0, y0])
@@ -664,6 +664,8 @@ def _free_signatures(L: Layout, top: float, band: list = ()) -> None:
             strong.append(ln.box)  # a number or date, "sign", "ID"
         elif re.search(r"[A-Z]{4,}", ln.text):
             weak.append(ln.box)  # a word in capitals: a name, or a comment
+        if re.search(r"[A-Z]{4,}", ln.text):
+            worded.append(ln.box)  # a line of words: cursive here is handwriting, not a signature
         words = re.findall(r"[A-Z]{3,}", ln.text.upper())
         if any(_name_match(w, n) for w in words for n in L.officer_names):
             bx0, by0, bx1, by1 = ln.box
@@ -708,7 +710,8 @@ def _free_signatures(L: Layout, top: float, band: list = ()) -> None:
             continue  # masked already
         reads = _readings(passes, box)
         signing = inside(cx, cy, zones) or near(box, strong, 8 * h, 2.5 * h)
-        if _legible(reads, w) and not (signing and _cursive(reads)):
+        signed = signing and _cursive(reads) and not on_line(box, worded, 2 * h)  # cursive on its own line
+        if _legible(reads, w) and not signed:
             continue  # a word, a name, a number
         unread = not any(t.strip() for t, _ in reads)
         if _straight(lab[y:y + hh, x:x + w], parts, h):
@@ -719,7 +722,7 @@ def _free_signatures(L: Layout, top: float, band: list = ()) -> None:
             why = "next to the officer's name, not legible as text"
         elif on_line(box, strong, 8 * h):
             why = "on a sign-off line, not legible as text"
-        elif signing and (_cursive(reads) or (joined and unread)):
+        elif signed or (signing and joined and unread):
             why = "joined strokes next to a name, date or ID"
         elif joined and unread and on_line(box, weak, 8 * h):
             why = "joined strokes next to a word in capitals"
@@ -736,10 +739,9 @@ def _free_signatures(L: Layout, top: float, band: list = ()) -> None:
 def _readings(passes: list[list], box) -> list[tuple[str, list[float]]]:
     """What each OCR pass reads in ``box``: (text, per-character confidence)."""
     x0, y0, x1, y1 = box
-    cy = (y0 + y1) / 2
     out = []
-    for lines in passes:
-        cs = [c for ln in lines if ln.box[1] - 0.3 * TEXT_H <= cy <= ln.box[3] + 0.3 * TEXT_H
+    for lines in passes:  # lines across the writing, not the line above or below it
+        cs = [c for ln in lines if min(y1, ln.box[3]) - max(y0, ln.box[1]) >= 0.5 * min(y1 - y0, ln.box[3] - ln.box[1])
               for c in ln.chars_in(x0, x1)]
         out.append(("".join(c for c, _ in cs), [p for _, p in cs]))
     return out

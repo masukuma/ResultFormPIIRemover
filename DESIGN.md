@@ -513,13 +513,13 @@ It is on by default (`--no-generic` turns it off) and needs the
    signatures: names, numbers and words are read, either confidently or the
    same way twice (on the page and in a re-read at 2.5×); a signature is read
    as nothing, as noise, or differently each time. Names on these forms are
-   written in capitals, so joined-up lower case next to a sign-off is a
-   signature even when it is read ("Kahenya"). Writing is taken for a
-   signature:
+   written in capitals, so joined-up lower case on its own line next to a
+   sign-off is a signature even when it is read ("Kahenya"). Writing is
+   taken for a signature:
    - next to an officer's own name, or on a sign-off line (one carrying a
-     number, a date, an ID or "sign"), when it isn't read or is cursive;
-   - on the line above or below a sign-off, when it is cursive or joined
-     strokes OCR reads nothing in;
+     number, a date, an ID or "sign"), when it isn't read;
+   - on the line above or below a sign-off, when it is cursive on a line of
+     its own, or joined strokes OCR reads nothing in;
    - on a line with a word in capitals, or beside the stamp (officers sign
      by it), when it is a few strokes OCR reads nothing in.
 
