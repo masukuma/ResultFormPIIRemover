@@ -106,6 +106,7 @@ class Layout:
     problems: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     officer_names: set = field(default_factory=set)  # words of the officers' names, as written in the declaration
+    legible: np.ndarray | None = None  # names and numbers read well below the tables: a signature mask spares them
 
 
 def _quad_dims(q: np.ndarray) -> tuple[float, float]:
@@ -291,8 +292,8 @@ def _rows(hs, lv, rv, cy: float, h: float) -> list[tuple[float, float]]:
             break
         n = max(n, 1)
         rows += [(a + (b - a) * k / n, a + (b - a) * (k + 1) / n) for k in range(n)]
-    # slivers: a stray line just under the table
-    return [(a, b) for a, b in rows if b - a >= 0.5 * pitch and b <= max(lv.hi, rv.hi) + 0.3 * h]
+    # slivers: a stray or double-drawn line just under the table
+    return [(a, b) for a, b in rows if b - a >= 0.6 * pitch and b <= max(lv.hi, rv.hi) + 0.3 * h]
 
 
 def _tables(L: Layout, hs, vs) -> set[int]:
@@ -606,14 +607,23 @@ def _free_signatures(L: Layout, top: float, band: list = ()) -> None:
     """Signatures written outside any labelled field: an officer signing off
     under the comments (name, ID, signature, date).
 
-    What is writing and what is a signature is told by OCR: names, numbers
-    and words are read, confidently or the same way at two scales (the page,
-    and ``band``, the free area re-read on its own); a signature is read as
-    nothing, as noise, or differently each time. Writing that isn't read is
-    taken for a signature next to the officer's own name (as written in the
-    declaration) and on a sign-off line: one with a number, a date, an ID or
-    "sign" on it. On any other line, only joined-up writing next to a word
-    in capitals is; comments are left alone, even when OCR can't read them."""
+    OCR tells writing from signatures: names, numbers and words are read,
+    confidently or the same way at two scales (the page, and ``band``, the
+    free area re-read on its own); a signature is read as nothing, as noise,
+    or differently each time. Names on a form are written in capitals, so
+    joined-up lower case next to a sign-off is a signature even when it is
+    read. Writing taken for a signature:
+
+    - next to the officer's own name (as written in the declaration), or on
+      a sign-off line (a number, a date, an ID or "sign" on it): anything
+      not read, or cursive;
+    - on the line above or below a sign-off: cursive, or joined strokes OCR
+      reads nothing in;
+    - on a line with a word in capitals, or beside the stamp: a few strokes
+      OCR reads nothing in.
+
+    Comments are left alone, even where OCR can't read them: a remark such
+    as "NO DISPUTED VOTES" is part of the record."""
     h = TEXT_H
     W, H = L.frame.size
     y0 = int(max(0, top))
@@ -660,8 +670,12 @@ def _free_signatures(L: Layout, top: float, band: list = ()) -> None:
             zones.append((bx0 - 2 * h, by0 - 0.5 * h, bx1 + 10 * h, by1 + 3.5 * h))
             strong.append(ln.box)
     stamped = [(c.cx - c.r, c.cy - c.r, c.cx + c.r, c.cy + c.r) for c in L.stamps]  # officers sign by it
-    for bx0, by0, bx1, by1 in vetoed:  # names and numbers read well: what's left of a group is judged on its own
-        cv2.rectangle(ink, (int(bx0) - 2, int(by0 - y0) - 2), (int(math.ceil(bx1)) + 2, int(math.ceil(by1 - y0)) + 2), 0, -1)
+    # Names and numbers read well: what's left of a group is judged on its
+    # own, and masking a signature beside them leaves them readable.
+    L.legible = np.zeros(L.gray.shape, np.uint8)
+    for bx0, by0, bx1, by1 in vetoed:
+        cv2.rectangle(L.legible, (int(bx0) - 2, int(by0) - 2), (int(math.ceil(bx1)) + 2, int(math.ceil(by1)) + 2), 255, -1)
+    ink[L.legible[y0:] > 0] = 0
     ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     n, lab, st, _ = cv2.connectedComponentsWithStats(ink)
     groups = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (int(0.3 * h), 1)))
@@ -696,17 +710,20 @@ def _free_signatures(L: Layout, top: float, band: list = ()) -> None:
         signing = inside(cx, cy, zones) or near(box, strong, 8 * h, 2.5 * h)
         if _legible(reads, w) and not (signing and _cursive(reads)):
             continue  # a word, a name, a number
+        unread = not any(t.strip() for t, _ in reads)
+        if _straight(lab[y:y + hh, x:x + w], parts, h):
+            continue  # a line struck across a box, not a signature
         few = len(parts) <= 0.9 * (w / h) + 1 and w >= 2 * h  # strokes, not a row of letters
         joined = few and max(st[j][2] for j in parts) >= 0.6 * w
         if inside(cx, cy, zones):
             why = "next to the officer's name, not legible as text"
         elif on_line(box, strong, 8 * h):
             why = "on a sign-off line, not legible as text"
-        elif signing and (joined or _cursive(reads)):
+        elif signing and (_cursive(reads) or (joined and unread)):
             why = "joined strokes next to a name, date or ID"
-        elif joined and on_line(box, weak, 8 * h):
+        elif joined and unread and on_line(box, weak, 8 * h):
             why = "joined strokes next to a word in capitals"
-        elif few and (joined or not any(t for t, _ in reads)) and on_line(box, stamped, 3 * h):
+        elif few and (joined or unread) and on_line(box, stamped, 3 * h):
             why = "unreadable strokes beside the stamp"
         else:
             continue
@@ -747,11 +764,22 @@ def _legible(reads: list[tuple[str, list[float]]], width: float) -> bool:
 
 def _cursive(reads: list[tuple[str, list[float]]]) -> bool:
     """Read as joined-up lower case: on a form, names are written in
-    capitals, so this next to a sign-off is a signature ("Kahenya")."""
-    found = [[c for c in text if c.isalpha()] for text, _ in reads]
+    capitals, so this next to a sign-off is a signature ("Kahenya"). Only
+    letters whose capital looks different count: OCR reads a written "O" or
+    "U" as lower case as often as not ("FOUR" as "Four")."""
+    found = [[c for c in text if c.isalpha() and c.lower() not in "cosuvwxz"] for text, _ in reads]
     found = [f for f in found if f]
-    return bool(found) and max(map(len, found)) >= 4 and \
+    return bool(found) and max(map(len, found)) >= 3 and \
         all(sum(c.islower() for c in f) >= 0.6 * len(f) for f in found)
+
+
+def _straight(lab: np.ndarray, parts: list[int], h: float) -> bool:
+    """Is the writing a single straight stroke (a line struck through)?"""
+    pts = np.column_stack(np.nonzero(np.isin(lab, parts)))
+    if len(pts) < 10:
+        return False
+    (_, _), (a, b), _ = cv2.minAreaRect(pts[:, ::-1].astype(np.float32))
+    return min(a, b) <= 0.25 * h and max(a, b) >= 2 * h
 
 
 def _name_match(word: str, name: str) -> bool:

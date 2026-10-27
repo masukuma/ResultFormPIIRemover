@@ -509,15 +509,26 @@ It is on by default (`--no-generic` turns it off) and needs the
    or digits after "ID") or a phone number written below the results gets the
    same partial masking as in the table.
 7. **Signatures outside any field**, typically an officer signing off under
-   the comments. OCR decides: names, numbers and words are read, either
-   confidently or the same way twice (on the page and in a re-read at 2.5×);
-   a signature is read as nothing, as noise, or differently each time.
-   Writing that isn't read is taken for a signature when it is next to an
-   officer's own name, or on a sign-off line (one carrying a number, a date,
-   an ID or "sign"). On any other line, only joined-up writing beside a word
-   in capitals is. A signature written on from a name is judged apart from
-   the name. Comments are left readable: a remark such as "NO DISPUTED
-   VOTES" is part of the record a scrutineer needs.
+   the comments ("name, ID, signature, date"). OCR tells writing from
+   signatures: names, numbers and words are read, either confidently or the
+   same way twice (on the page and in a re-read at 2.5×); a signature is read
+   as nothing, as noise, or differently each time. Names on these forms are
+   written in capitals, so joined-up lower case next to a sign-off is a
+   signature even when it is read ("Kahenya"). Writing is taken for a
+   signature:
+   - next to an officer's own name, or on a sign-off line (one carrying a
+     number, a date, an ID or "sign"), when it isn't read or is cursive;
+   - on the line above or below a sign-off, when it is cursive or joined
+     strokes OCR reads nothing in;
+   - on a line with a word in capitals, or beside the stamp (officers sign
+     by it), when it is a few strokes OCR reads nothing in.
+
+   Names and numbers read well are taken out first, so a signature written
+   on from a name is judged by itself, and its mask leaves the name
+   readable. Comments are left alone even where OCR can't read them: a
+   remark such as "NO DISPUTED VOTES" or "6 REJECTED" is part of the
+   record a scrutineer needs. Printed labels ("Presiding Officer's
+   Comments") are never masked.
 8. **Masking and proof are shared.** The fields found go through the same
    signature and digit masking as template zones, with glyph sizes scaled to
    the text height, and then through the same block proof, gates, manifest

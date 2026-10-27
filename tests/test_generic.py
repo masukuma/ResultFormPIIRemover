@@ -115,3 +115,4 @@ def test_cursive_reading():
     assert generic._cursive([("Kaagd", [0.8] * 5), ("Kaad", [0.8] * 4)])
     assert not generic._cursive([("MAPOA", [0.6] * 5), ("MAoA", [0.6] * 4)])
     assert not generic._cursive([("15-12-2020", [0.9] * 10), ("", [])])
+    assert not generic._cursive([("Four", [0.6] * 4), ("Fur", [0.7] * 3)])  # "FOUR" in capitals
