@@ -1,0 +1,90 @@
+# Form 34B, 2022 General Election: the declaration block (agents table,
+# Returning Officer, handing over / taking over). It is found wherever it is
+# on a page: the results table flows over as many pages as needed and the
+# block follows the last row, so it is not at a fixed place.
+#
+# Reference: the blank, system-generated block (Garissa Township, rendered
+# from the IEBC PDF; contains no personal data). Coordinates are pixels in it.
+name: form34b_2022_block
+form: 34B
+reference: reference.png
+page_long_side: 3308  # the reference is cut from a 2339x3308 page
+padding: 8
+min_area_frac: 0.05   # the block is only part of a page
+priority: 1           # a page showing the block is redacted with it, even if it also shows results rows
+once: true            # a 34B document must contain the complete block on exactly one page
+protect:
+  - name: form34a_counts      # "Number of FORM 34A submitted / received"
+    rect: [51, 1132, 1982, 79]
+structure:
+  - name: agents
+    rect: [30, 60, 2080, 450]
+zones:
+  # Agents table: 4 rows (one per candidate). Names and parties stay visible.
+  - name: agent_id
+    action: partial
+    rule: id
+    digits: 8
+    rect: [538, 160, 275, 81]
+    rows: 4
+    row_step: 83.3
+    region: agents
+  - name: agent_phone
+    action: partial
+    rule: phone
+    digits: 10
+    rect: [1131, 160, 314, 81]
+    rows: 4
+    row_step: 83.3
+    region: agents
+  - name: agent_signatures
+    action: signature
+    rect: [1447, 160, 393, 81]
+    rows: 4
+    row_step: 83.3
+    search: [6, 30]   # not up into the printed "Signature" header
+    region: agents
+  # Single underlined fields: each zone spans from just below the previous
+  # printed line to just below its own, so handwriting of any height on that
+  # line is inside, and the neighbouring lines (names, dates) are not. Each
+  # is anchored to its printed label: layout variants put this section a
+  # line or so higher or lower, and the zone moves with the label.
+  # Constituency Returning Officer (declaration); underlines at y 605/688/771
+  - name: ro_id
+    anchor: [44, 655, 150, 34]   # its printed label
+    action: partial
+    rule: id
+    digits: 8
+    rect: [200, 609, 880, 85]
+    search: [0, 6]
+  - name: ro_signature
+    anchor: [44, 655, 150, 34]   # the section's "ID Number:" label (signatures often cross their own)
+    action: signature
+    rect: [200, 692, 880, 85]
+    search: [0, 10]
+  # Handing over (Returning Officer) / taking over (Commission Chairperson);
+  # underlines at y 1357/1503/1648
+  - name: handover_ro_id
+    anchor: [51, 1440, 146, 33]   # its printed label
+    action: partial
+    rule: id
+    digits: 8
+    rect: [416, 1418, 600, 91]
+    search: [0, 6]
+  - name: handover_ro_signature
+    anchor: [51, 1440, 146, 33]   # the section's "ID Number:" label
+    action: signature
+    rect: [416, 1562, 600, 92]
+    search: [0, 10]
+  - name: chair_id
+    anchor: [1112, 1440, 146, 33]   # its printed label
+    action: partial
+    rule: id
+    digits: 8
+    rect: [1476, 1418, 560, 91]
+    search: [0, 6]
+  - name: chair_signature
+    anchor: [1112, 1440, 146, 33]   # the section's "ID Number:" label
+    action: signature
+    rect: [1476, 1562, 560, 92]
+    search: [0, 10]

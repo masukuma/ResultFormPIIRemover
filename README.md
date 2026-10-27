@@ -16,7 +16,8 @@ hash-chained ledger, and a place in a published batch root. Anyone can then
 run `rfpii verify` against the original from the IEBC portal and see that no
 result was changed. See [VERIFYING.md](VERIFYING.md).
 
-Forms are aligned to a template, tables are snapped to their printed rules,
+Templates: Form 34A (2022) and Form 34B (2022, the system-printed layout,
+multi-page). Forms are aligned to a template, tables are snapped to their printed rules,
 and each page passes geometric, protected-region and leak checks before it is
 published. Anything uncertain goes to a review folder. An optional vision
 model on Ollama Cloud or a local Ollama audits pages. See
@@ -93,6 +94,12 @@ Useful flags:
    protect:                      # results regions no mask may ever touch
      - {name: votes, rect: [x, y, w, h]}
    ```
+
+   For a section that floats or varies between layouts (like the Form 34B
+   declaration block), see `templates/form34b_2022_block/template.yaml`:
+   - `min_area_frac` and `page_long_side` for a reference cut from a page;
+   - `priority` and `once` for the multi-page rules;
+   - `anchor` to tie a field to its printed label.
 
 3. **Check:** `rfpii preview templates/<form> -o preview.png`.
 4. **Pilot:** run a pilot batch and look at `review/report.jsonl` and a sample of

@@ -110,7 +110,8 @@ def verify(redacted: str | Path, manifest_path: str | Path | None = None, origin
     for pm, img_bytes in zip(m["pages"], images):
         n = pm["index"]
         declared = proof.unpack(pm["blocks"])
-        r.add(proof.sha256(img_bytes) == pm["output_image_sha256"], f"page {n}: image matches the manifest")
+        kind = "jpeg" if pm["proof"] == "jpeg-dct" else "pixels"
+        r.add(proof.image_digest(kind, img_bytes) == pm["output_image_sha256"], f"page {n}: image matches the manifest")
         red_px = io._decode_bytes(img_bytes)
         # blacked blocks must not touch results regions
         prot = np.zeros(red_px.shape[:2], np.uint8)

@@ -1,0 +1,26 @@
+# Form 34B, 2022 General Election: a results page, recognised by the typed
+# column-header row (polling station code/name, registered voters, the four
+# candidates, totals) that heads every results page. Results pages carry no
+# personal data, so there are no zones: nothing on them is ever changed.
+# A page that also shows the declaration block is redacted with the block
+# template instead (it has higher priority).
+#
+# Variant: some constituencies' generator labels the columns differently
+# ("Voters per Polling station", other fonts). Reference: that header row,
+# cut from a scanned results page (Matayos, page 2); typed text only, no
+# personal data.
+name: form34b_2022_results_b
+form: 34B
+reference: reference.png
+page_long_side: 3307  # cut from a 2340x3307 scan
+min_area_frac: 0.03   # just the header row
+# A small reference has fewer features and its NCC is more sensitive to a
+# pixel or two of misfit. Lower bars are safe here: this template has no zones
+# (it can never change a pixel), and a document is only published if its
+# declaration block was found on exactly one page.
+min_inliers: 30
+min_score: 0.22
+protect:
+  - name: results_header
+    rect: [0, 0, 2000, 245]
+zones: []

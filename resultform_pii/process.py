@@ -54,6 +54,29 @@ def tool_info() -> dict:
     return info
 
 
+def document_rules(doc: DocResult, templates: list[Template]) -> list[str]:
+    """Checks across the pages of one document.
+
+    - All pages must be of one form type.
+    - A template marked ``once`` (e.g. the Form 34B declaration block) must
+      match exactly one page. Zero means the block wasn't recognised (a bad
+      scan, or a layout we don't know) and the page holding it might
+      otherwise be published as a plain results page; two or more means a
+      split block or a merged document. Either way: review, not publication."""
+    by_name = {t.name: t for t in templates}
+    used = [by_name.get(p.template) for p in doc.pages if p.ok]
+    forms = {t.form for t in used if t and t.form}
+    problems = []
+    if len(forms) > 1:
+        problems.append(f"pages match different forms: {', '.join(sorted(forms))}")
+    for t in templates:
+        if t.once and t.form in forms:
+            n = sum(1 for u in used if u is t)
+            if n != 1:
+                problems.append(f"Form {t.form}: {t.name} found on {n} pages (expected exactly 1)")
+    return problems
+
+
 @dataclass
 class Outcome:
     ok: bool
@@ -96,6 +119,7 @@ def process_document(src: str, rel: str, templates: list[Template], cfg: Config,
     problems = [f"page {i + 1}: {p.reason}" for i, p in enumerate(doc.pages) if not p.ok]
     if mismatch := kiems.check(name, qr):
         problems.append(mismatch)
+    problems += document_rules(doc, templates)
 
     audits = []
     if vlm and cfg.vlm_audit and not problems:
@@ -138,7 +162,7 @@ def process_document(src: str, rel: str, templates: list[Template], cfg: Config,
             "source_ref": sp.ref,
             "proof": "jpeg-dct" if sp.kind == "jpeg" else "pixels",
             "source_image_sha256": proof.sha256(sp.data) if sp.data else proof.sha256(sp.pixels.tobytes()),
-            "output_image_sha256": proof.sha256(red.data),
+            "output_image_sha256": proof.image_digest(red.kind, red.data),
             "width": w, "height": h, "block": proof.BLOCK,
             "blocks": proof.pack(red.luma_blocks),
             "blocks_blacked": int(red.luma_blocks.sum()),

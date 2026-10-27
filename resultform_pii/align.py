@@ -62,17 +62,21 @@ class Alignment:
         return Hl
 
 
-def _features(gray: np.ndarray, s: AlignSettings) -> tuple[np.ndarray, np.ndarray | None]:
-    scale = min(1.0, s.max_dim / max(gray.shape[:2]))
+def _features(gray: np.ndarray, s: AlignSettings, page_long_side: float | None = None,
+              n_features: int | None = None) -> tuple[np.ndarray, np.ndarray | None]:
+    """ORB features on a copy scaled so the *page* is ``max_dim`` long. For a
+    template cut from a page (``page_long_side``), that is the page it came
+    from, so its text is at the same size as in a scanned page."""
+    scale = min(1.0, s.max_dim / (page_long_side or max(gray.shape[:2])))
     small = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else gray
-    orb = cv2.ORB_create(nfeatures=s.n_features, fastThreshold=10)
+    orb = cv2.ORB_create(nfeatures=n_features or s.n_features, fastThreshold=10)
     kps, desc = orb.detectAndCompute(small, None)
     pts = np.float32([k.pt for k in kps]).reshape(-1, 2) / scale
     return pts, desc
 
 
 def prepare(template: Template, s: AlignSettings) -> Template:
-    template.keypoints, template.descriptors = _features(template.image, s)
+    template.keypoints, template.descriptors = _features(template.image, s, template.page_long_side)
     template.mask = template.build_mask()
     template.regions = {n: structure.prepare_region(template.image, n, r) for n, r in template.structure.items()}
     return template
@@ -85,7 +89,8 @@ def _geometry_ok(H: np.ndarray, template: Template, scan_shape, s: AlignSettings
     if not cv2.isContourConvex(q.astype(np.float32)):
         return "projected form is not convex"
     area = cv2.contourArea(q)
-    if area < s.min_area_frac * scan_shape[0] * scan_shape[1]:
+    min_frac = s.min_area_frac if template.min_area_frac is None else template.min_area_frac
+    if area < min_frac * scan_shape[0] * scan_shape[1]:
         return f"projected form too small ({area / (scan_shape[0] * scan_shape[1]):.2f} of scan)"
     sides = np.linalg.norm(q - np.roll(q, -1, axis=0), axis=1)
     for a, b in ((sides[0], sides[2]), (sides[1], sides[3])):
@@ -121,7 +126,9 @@ def align(scan_gray: np.ndarray, template: Template, s: AlignSettings,
 
     knn = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(template.descriptors, desc, k=2)
     good = [m for m, *rest in knn if rest and m.distance < s.ratio * rest[0].distance]
-    if len(good) < s.min_inliers:
+    min_inliers = template.min_inliers or s.min_inliers
+    min_score = s.min_score if template.min_score is None else template.min_score
+    if len(good) < min_inliers:
         return fail(f"too few matches ({len(good)})", m=len(good))
 
     src = template.keypoints[[m.queryIdx for m in good]]
@@ -130,13 +137,13 @@ def align(scan_gray: np.ndarray, template: Template, s: AlignSettings,
     if H is None:
         return fail("homography failed", m=len(good))
     n_in = int(inl.sum())
-    if n_in < s.min_inliers or n_in / len(good) < s.min_inlier_ratio:
+    if n_in < min_inliers or n_in / len(good) < s.min_inlier_ratio:
         return fail(f"weak match ({n_in}/{len(good)} inliers)", n_in, len(good))
     if reason := _geometry_ok(H, template, scan_gray.shape, s):
         return fail(reason, n_in, len(good))
     score = _score(H, template, scan_gray)
     keep = inl.ravel().astype(bool)
-    ok = score >= s.min_score
+    ok = score >= min_score
     return Alignment(template, H, n_in, len(good), score, ok,
                      "" if ok else f"low alignment score ({score:.2f})", src[keep], dst[keep])
 
@@ -156,4 +163,6 @@ def best_alignment(scan_gray: np.ndarray, templates: list[Template], s: AlignSet
     results = [align(scan_gray, t, s, feats) for t in templates]
     passing = [r for r in results if r.ok]
     pool = passing or results
-    return max(pool, key=lambda r: (r.inliers, r.score))
+    # Priority first: a 34B page showing the declaration block must be
+    # redacted with the block template even if the results header matches better.
+    return max(pool, key=lambda r: (r.template.priority if r.ok else 0, r.inliers, r.score))

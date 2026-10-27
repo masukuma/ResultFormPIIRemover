@@ -59,6 +59,7 @@ class Zone:
     region: str = ""  # structure region whose printed rules position this zone
     rule: str = ""  # partial zones: "phone" (keep prefix, hide 3 of last 6) or "id" (hide 3)
     search: tuple[float, float] | None = None  # px searched above/below the cells (default: MaskSettings.vpad)
+    anchor: tuple[float, float, float, float] | None = None  # printed label (x, y, w, h) the zone moves with
 
     @property
     def polygon(self) -> np.ndarray:
@@ -80,6 +81,12 @@ class Template:
     structure: dict = field(default_factory=dict)  # region name -> rect (x, y, w, h)
     protect: dict = field(default_factory=dict)  # results regions no mask may touch: name -> rect
     fingerprint: str = ""  # sha256 of template.yaml + reference image, recorded in manifests
+    min_area_frac: float | None = None  # override AlignSettings.min_area_frac (reference is part of a page)
+    priority: int = 0  # among templates a page passes, the highest priority wins
+    once: bool = False  # a document of this form must contain exactly one page matching this template
+    page_long_side: float | None = None  # reference cut from a page: that page's long side (px)
+    min_inliers: int | None = None  # override AlignSettings thresholds for this template
+    min_score: float | None = None
     # Filled in by prepare(): computed once per worker, reused for every page.
     regions: dict = field(default_factory=dict, repr=False)  # name -> structure.Region
     mask: np.ndarray | None = field(default=None, repr=False)
@@ -119,7 +126,8 @@ def _zones_from_spec(spec: dict) -> list[Zone]:
     return [
         Zone(f"{name}[{r}]" if rows > 1 else name, (x, y + r * step, w, h), action, digits,
              name if rows > 1 else "", r, str(spec.get("region", "")), rule,
-             tuple(map(float, spec["search"])) if "search" in spec else None)
+             tuple(map(float, spec["search"])) if "search" in spec else None,
+             tuple(map(float, spec["anchor"])) if "anchor" in spec else None)
         for r in range(rows)
     ]
 
@@ -141,7 +149,12 @@ def load_template(directory: str | Path) -> Template:
     h = hashlib.sha256((directory / "template.yaml").read_bytes())
     h.update((directory / spec.get("reference", "reference.png")).read_bytes())
     return Template(spec.get("name", directory.name), image, zones,
-                    int(spec.get("padding", 8)), str(spec.get("form", "")), structure, protect, h.hexdigest())
+                    int(spec.get("padding", 8)), str(spec.get("form", "")), structure, protect, h.hexdigest(),
+                    float(spec["min_area_frac"]) if "min_area_frac" in spec else None,
+                    int(spec.get("priority", 0)), bool(spec.get("once", False)),
+                    float(spec["page_long_side"]) if "page_long_side" in spec else None,
+                    int(spec["min_inliers"]) if "min_inliers" in spec else None,
+                    float(spec["min_score"]) if "min_score" in spec else None)
 
 
 def load_templates(root: str | Path) -> list[Template]:

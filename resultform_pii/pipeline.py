@@ -90,13 +90,35 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
     def margin(zones) -> tuple[float, float]:
         return fallback_margin if zones[0].region in failed else (0.0, 0.0)
 
-    def mapper(zones) -> masking.Mapper:
+    def base_mapper(zones) -> masking.Mapper:
         if zones[0].region and zones[0].region not in failed:
             return snaps[zones[0].region].map
         x0 = min(z.rect[0] for z in zones)
         x1 = max(z.rect[0] + z.rect[2] for z in zones)
         cy = float(np.mean([z.rect[1] + z.rect[3] / 2 for z in zones]))
         return masking.homography(a.local(((x0 + x1) / 2, cy)))
+
+    # Zones tied to a printed label move with it (layout variants); a label
+    # that can't be found fails the page.
+    # Each distinct label is searched once (through the zone's own mapping)
+    # and the offset is shared by every zone tied to it.
+    offsets: dict[tuple, np.ndarray] = {}
+    lost = []
+    for z in a.template.zones:
+        if z.anchor and z.anchor not in offsets:
+            d, ncc = masking.find_anchor(gray, base_mapper([z]), a.template.image, z.anchor)
+            if d is None:
+                lost.append(f"{z.group or z.name}: printed label not found (best match {ncc:.2f})")
+            else:
+                offsets[z.anchor] = d
+    if lost:
+        return fail("; ".join(lost))
+    notes += [f"label at {list(k[:2])} found {np.hypot(*d):.0f}px from its template position"
+              for k, d in offsets.items() if np.hypot(*d) > 25]
+
+    def mapper(zones) -> masking.Mapper:
+        f = base_mapper(zones)
+        return masking.shifted(f, offsets[zones[0].anchor]) if zones[0].anchor else f
 
     columns: dict[str, list] = {}  # ID / phone columns
     signatures: dict[str, list] = {}  # signature boxes and columns
@@ -108,7 +130,8 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
     # The masked columns must sit between their printed rules (catches a table
     # matched one rule off, which the mask-vs-mapping leak check can't see).
     misplaced = [r for cells in columns.values()
-                 if verify and (r := masking.check_column_edges(gray, mapper(cells), cells,
+                 if verify and cells[0].region  # table columns; single underlined fields have no column rules
+                 and (r := masking.check_column_edges(gray, mapper(cells), cells,
                                                                 require=cells[0].region in failed))]
     if misplaced:
         return fail("; ".join(misplaced), notes=notes)

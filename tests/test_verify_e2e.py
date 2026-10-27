@@ -83,3 +83,22 @@ def test_wrong_original_and_forged_manifest(run, tmp_path):
     forged.write_text(json.dumps(m))
     r = verify(**{**_args(run), "manifest_path": forged})
     assert not r.ok and any("signature" in msg for ok, msg in r.checks if not ok)
+
+
+def test_png_source_pages_verify(tmp_path):
+    """Non-JPEG sources (PNG scans, rendered pages) take the lossless pixel
+    path; the image hash must survive the PDF's PNG re-encoding."""
+    write_template(tmp_path / "templates" / "sample_rs1")
+    scan, _ = simulate_scan(filled_form(6), seed=6, angle=1.0)
+    doc = pymupdf.open()
+    page = doc.new_page(width=scan.shape[1], height=scan.shape[0])
+    page.insert_image(page.rect, stream=cv2.imencode(".png", scan)[1].tobytes())
+    (tmp_path / "in").mkdir()
+    doc.save(tmp_path / "in" / "png_form.pdf")
+    rc = main(["redact", str(tmp_path / "in"), "--templates", str(tmp_path / "templates"), "--out",
+               str(tmp_path / "out"), "--review", str(tmp_path / "review"), "--workers", "1"])
+    assert rc == 0
+    m = json.loads((tmp_path / "out" / "png_form.manifest.json").read_text())
+    assert m["pages"][0]["proof"] == "pixels" and m["pages"][0]["blocks_blacked"] > 0
+    r = verify(tmp_path / "out" / "png_form.pdf", original=tmp_path / "in" / "png_form.pdf")
+    assert r.ok, r.text()

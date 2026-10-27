@@ -349,14 +349,94 @@ template can clear them.
 
 | Template | Status |
 |---|---|
-| `form34a_2022` (2022 Form 34A, KIEMS) | Built from a real form and validated |
-| Form 34B (multi-page; agents and CRO details on the last page) | Not yet; routed to review |
+| `form34a_2022` (2022 Form 34A, KIEMS) | Built from a real form; 188 of 215 published, all verified |
+| `form34b_2022_block`, `form34b_2022_results`, `form34b_2022_results_b` | Form 34B layout "A" (the system-printed form, the most common); see below |
+| Form 34B layouts B and C, and heavily distorted copies | Not yet; routed to review |
 | 2021 by-election Forms 35A / 36A / 38A | Not yet; routed to review |
+
+### Form 34B (constituency tally)
+
+Form 34B is multi-page. The results table runs over as many pages as the
+constituency has polling stations. The declaration block follows the last
+row, so it sits at a different place on a different page in each document,
+and it often shares a page with the last results rows. The block holds:
+
+- the agents table (4 rows): name, ID/passport, party, phone, signature, date;
+- the Constituency Returning Officer: name, ID number, signature, date;
+- the handover to the Commission Chairperson: names, ID numbers, signatures, times.
+
+Results pages carry no personal data. So 34B uses three templates:
+
+- **`form34b_2022_block`:** the reference is just the block, so it is found
+  wherever it is on a page. It has priority, so a page that also shows
+  results rows is redacted with it. The masks are:
+  - agent IDs and phones: the ID and phone rules, placed by snapping to the
+    agents table's printed rules;
+  - each signature: its own box;
+  - the RO and Chairperson ID numbers: the ID rule;
+  - names, dates and Form 34A counts: left visible (the counts are protected).
+- **`form34b_2022_results`, `form34b_2022_results_b`:** the reference is just
+  the typed column-header row with the candidate names. There are two
+  variants because constituencies used two generators. These templates have
+  no zones, so results pages are published with every block identical to
+  the original.
+- **Document rule:** a 34B document is published only if the block was found
+  on **exactly one** page. If it was found on none (a bad scan, or a layout
+  without a template), the page holding the personal data could otherwise
+  pass as a plain results page. If it was found on two, the block is split or
+  documents were merged. Either way the document goes to review.
+
+The references come from the blank, system-generated form, rendered from an
+IEBC PDF with empty fields, so there is no handwriting to erase. The variant
+results header is a typed row cut from a scan.
+
+Features for a reference cut from a page are extracted at the page's scale
+(`page_long_side`), so that text sizes match the scans.
+
+**Single underlined fields** (the RO's and Chairperson's ID and signature)
+are handled differently from table cells:
+
+- **Zone height:** each zone spans from just below the previous printed line
+  to just below its own, so handwriting of any height is inside and the name
+  on the line above is not.
+- **Anchors:** each zone is anchored to its section's printed "ID Number:"
+  label. The tool finds that label within ±120 px and moves the zone with it,
+  because layout variants put the section a line higher or lower. If the
+  label isn't found, the page fails.
+- **Stamps:** round official stamps are detected, and printed ink wholly
+  inside a stamp is not treated as a signature, so the stamp stays readable.
+
+**Sample results (12 constituencies, Dropbox `Forms/34B`):**
+- **Published:** 6 (Bomet East, Butula, Funyula, Garissa Township, Matayos,
+  Nambale). All 6 verify against their originals.
+- **Review, other layouts:** 3 documents use layouts without a template:
+  Budalangi (layout B: aggregate results and voter-turnout tables, and a
+  5-row agents table), Daadab (layout C, spreadsheet-style) and Fafi (a
+  heavily curved phone photo).
+- **Review, layout A that wasn't recognised:** Konoin (upside-down, grey
+  background), Runyenjes (speckled "COPY" watermark) and Manyatta (a results
+  page with a weak header match).
+
+**A safety bug found and fixed while building this.** The test that tells
+printed text from handwriting compared raw pixels around each glyph. A digit
+written on an underline matched the reference's underline, and was treated
+as print: it was neither masked nor flagged by the leak check, which uses
+the same test. One RO ID number came out fully readable in testing. The test
+now compares ink with printed rules removed, and requires printed ink nearby
+in the reference. Re-checking all 188 published Forms 34A with the corrected
+leak check found no affected form (in the 34A table, the rules are removed
+before the test).
 
 A template's reference image must have its handwriting erased, keeping the
 printed rules (see `README.md`). The form's PII must never end up in the repo.
 
 ## Known limits
+- **Form 34B layouts.** Only layout A has templates. Each other layout (B, C,
+  …) needs its own block template, built from a blank or cleaned copy. The
+  document rule keeps every unknown layout out of publication.
+- **Blobs that can't be split into characters are hidden whole.** When an ID
+  or phone number can't be segmented (e.g. faint ink), the whole number is
+  hidden. That is the safe failure, but it is more than the 3-character rule.
 - **Signature boxes merge in dense tables.** Where agents sign across
   neighbouring rows, the boxes merge into one patch. Any writing inside a
   signature box (e.g. a phone number continued into the column, or part of

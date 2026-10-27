@@ -37,6 +37,21 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def image_digest(kind: str, data: bytes) -> str:
+    """Hash identifying a page image independently of how a PDF stores it.
+
+    jpeg    the JPEG bytes (embedded in the PDF unchanged, extracted unchanged)
+    pixels  the decoded pixels (h, w, channels, then BGR bytes): a PDF stores
+            a PNG as compressed raw pixels and re-encodes it on extraction,
+            so its bytes aren't stable, but its pixels are."""
+    if kind == "jpeg":
+        return sha256(data)
+    img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
+    if img is None:
+        raise ValueError("cannot decode image")
+    return sha256(np.int64(img.shape).tobytes() + np.ascontiguousarray(img).tobytes())
+
+
 # --- block masks ---------------------------------------------------------------
 
 def to_blocks(mask: np.ndarray, block: int = BLOCK) -> np.ndarray:

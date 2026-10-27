@@ -144,21 +144,29 @@ def _merge(glyphs: list[Glyph]) -> list[Glyph]:
     return out
 
 
-def _looks_printed(strip: np.ndarray, ref: np.ndarray, gx: int, gy: int, gw: int, gh: int,
-                   pad: int = 6, min_ncc: float = 0.5, search: tuple[int, int] = (8, 56)) -> bool:
-    """Does the scan around this glyph match the reference somewhere nearby
-    (i.e. it's print)? Searching a few rows up/down keeps column headers
-    recognised when the table is mapped a row off; handwriting matches no
-    printed text at any offset."""
-    y0, y1 = max(0, gy - pad), min(strip.shape[0], gy + gh + pad)
-    x0, x1 = max(0, gx - pad), min(strip.shape[1], gx + gw + pad)
-    patch = strip[y0:y1, x0:x1]
+def _looks_printed(ink: np.ndarray, ref_ink: np.ndarray, gx: int, gy: int, gw: int, gh: int,
+                   pad: int = 6, min_ncc: float = 0.6, search: tuple[int, int] = (8, 56)) -> bool:
+    """Is this glyph printed text (e.g. a column header) rather than writing?
+
+    Compares *ink with printed rules removed*, the glyph's against the clean
+    reference's around the same place (a few rows up/down, so headers are
+    still recognised when a table is mapped a row off). Comparing raw pixels
+    is unsafe: a digit written on an underline matches the reference's
+    underline and gets mistaken for print -- and then is neither masked nor
+    flagged. Where the reference has (almost) no ink nearby, nothing printed
+    can be there, so the glyph is writing."""
+    y0, y1 = max(0, gy - pad), min(ink.shape[0], gy + gh + pad)
+    x0, x1 = max(0, gx - pad), min(ink.shape[1], gx + gw + pad)
+    patch = cv2.GaussianBlur(ink[y0:y1, x0:x1].astype(np.float32), (5, 5), 0)
     sx, sy = search
-    ry0, ry1 = max(0, y0 - sy), min(ref.shape[0], y1 + sy)
-    rx0, rx1 = max(0, x0 - sx), min(ref.shape[1], x1 + sx)
-    area = ref[ry0:ry1, rx0:rx1]
+    ry0, ry1 = max(0, y0 - sy), min(ref_ink.shape[0], y1 + sy)
+    rx0, rx1 = max(0, x0 - sx), min(ref_ink.shape[1], x1 + sx)
+    area = ref_ink[ry0:ry1, rx0:rx1]
     if area.shape[0] < patch.shape[0] or area.shape[1] < patch.shape[1] or patch.std() < 1:
         return False
+    if (area > 0).sum() < 0.3 * (ink[y0:y1, x0:x1] > 0).sum():
+        return False  # no printed text nearby in the reference
+    area = cv2.GaussianBlur(area.astype(np.float32), (5, 5), 0)
     return float(cv2.matchTemplate(area, patch, cv2.TM_CCOEFF_NORMED).max()) >= min_ncc
 
 
@@ -247,8 +255,12 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
     cells = sorted(cells, key=lambda z: z.rect[1])
     x, y, w = cells[0].rect[:3]
     bottom = cells[-1].rect[1] + cells[-1].rect[3]
-    vpad = s.vpad + margin[0]
-    sw, sh = max(1, round(w)), max(1, round(bottom - y + vpad + s.vpad + margin[1]))
+    # Zones on a single underlined line set their own (small) search window,
+    # so writing on the neighbouring lines (e.g. the officer's name) is never
+    # swept into the ID masking.
+    above, below = cells[0].search if cells[0].search else (s.vpad, s.vpad)
+    vpad = above + margin[0]
+    sw, sh = max(1, round(w)), max(1, round(bottom - y + vpad + below + margin[1]))
     oy = y - vpad
     # strip pixel -> template -> scan, sampled per pixel so curled pages work
     gx, gy = np.meshgrid(np.arange(sw, dtype=np.float64) + x, np.arange(sh, dtype=np.float64) + oy)
@@ -270,11 +282,12 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
         sy0, sx0 = max(0, -y0), max(0, -x0)
         crop = ref[max(0, y0):y0 + sh, max(0, x0):x0 + sw]
         R[sy0:sy0 + crop.shape[0], sx0:sx0 + crop.shape[1]] = crop
+    R_ink = ink_mask(R, row_h) if R is not None else None
     found = []
     for gx, gy, gw, gh, area in st[1:]:
         if gh < s.min_glyph_h * row_h or area <= 30:
             continue
-        if R is not None and _looks_printed(strip, R, gx, gy, gw, gh):
+        if R_ink is not None and _looks_printed(ink, R_ink, gx, gy, gw, gh):
             continue
         found.append(Glyph(int(gx), int(gx + gw), int(gy), int(gy + gh)))
     # Each written line is masked on its own, using its own glyph boxes, so
@@ -333,7 +346,7 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
 
 
 def verify_column(out: np.ndarray, f: Mapper, cells: list[Zone], ref: np.ndarray | None,
-                  s: MaskSettings, window: tuple[float, float] = (60.0, 110.0), max_run: int | None = None) -> str:
+                  s: MaskSettings, window: tuple[float, float] | None = None, max_run: int | None = None) -> str:
     """Independent leak check on the redacted image: re-read the column over
     a window (px above, below) at least as wide as the one used for masking --
     drift on bent pages is downward, and the declaration with the officers'
@@ -345,6 +358,10 @@ def verify_column(out: np.ndarray, f: Mapper, cells: list[Zone], ref: np.ndarray
     Returns a reason, or "" if clean."""
     if max_run is None:
         max_run = 8 if cells and cells[0].rule == "phone" else 5
+    if window is None:
+        # tables: wide (drift on bent pages); single underlined fields: just
+        # beyond their own search window, so the next line (a name) isn't read
+        window = (cells[0].search[0] + 8, cells[0].search[1] + 8) if cells and cells[0].search else (60.0, 110.0)
     cells = sorted(cells, key=lambda z: z.rect[1])
     x, y, w = cells[0].rect[:3]
     bottom = cells[-1].rect[1] + cells[-1].rect[3]
@@ -366,7 +383,7 @@ def verify_column(out: np.ndarray, f: Mapper, cells: list[Zone], ref: np.ndarray
     _, _, st, _ = cv2.connectedComponentsWithStats(ink)
     glyphs = [Glyph(int(a), int(a + b), int(c), int(c + d)) for a, c, b, d, area in st[1:]
               if d >= s.min_glyph_h * row_h and area > 30
-              and not (R is not None and _looks_printed(strip, R, a, c, b, d))]
+              and not (R is not None and _looks_printed(ink, ink_mask(R, row_h), a, c, b, d))]
     for line in _text_lines(glyphs, row_h):
         line = _merge(line)
         top, bot = min(g.y0 for g in line), max(g.y1 for g in line)
@@ -456,22 +473,35 @@ def _ref_crop(ref: np.ndarray | None, origin: np.ndarray, shape) -> np.ndarray |
     return R
 
 
-def _remove_stamp_rings(ink: np.ndarray) -> None:
-    """Erase the ring of a round official stamp (it would join everything near
-    it into one big "signature"). Only the ring: a signature written across
-    the stamp stays ink and is still masked."""
+def _remove_stamp_rings(ink: np.ndarray) -> list[tuple[int, int, int]]:
+    """Find round official stamps; erase their rings (a ring would join
+    everything near it into one big "signature") and return them as
+    (cx, cy, r). A signature written across a stamp stays ink and is masked."""
     blur = cv2.GaussianBlur(ink, (5, 5), 0)
     circles = cv2.HoughCircles(blur, cv2.HOUGH_GRADIENT, dp=1.5, minDist=150, param1=100, param2=40,
                                minRadius=55, maxRadius=130)
+    found = []
     for cx, cy, r in (np.round(circles[0]).astype(int) if circles is not None else ()):
         ring = np.zeros_like(ink)
         cv2.circle(ring, (cx, cy), r, 255, 9)
         if (ink[ring > 0] > 0).mean() > 0.35:  # really a drawn circle, not chance
             ink[ring > 0] = 0
+            found.append((int(cx), int(cy), int(r)))
+    return found
+
+
+def _inside_stamp(xs: np.ndarray, ys: np.ndarray, stamps, share: float = 0.9) -> bool:
+    """Ink lying (almost) wholly inside a stamp is the stamp's own printed
+    text, which stays visible: it is part of what shows a form is genuine."""
+    for cx, cy, r in stamps:
+        if (((xs - cx) ** 2 + (ys - cy) ** 2) < (0.95 * r) ** 2).mean() >= share:
+            return True
+    return False
 
 
 def _signature_blobs(strip: np.ndarray, ink: np.ndarray, extra: float,
-                     w: float, min_ink: int, bands: list[tuple[float, float]]) -> list[tuple[int, int, int, int, int]]:
+                     w: float, min_ink: int, bands: list[tuple[float, float]],
+                     stamps=()) -> list[tuple[int, int, int, int, int]]:
     """Separate signatures: strokes joined mostly sideways (signatures run
     horizontally; rows are stacked). A blob spanning several rows (strokes of
     neighbouring rows touching) is cut at the row boundaries, one box per row.
@@ -494,6 +524,8 @@ def _signature_blobs(strip: np.ndarray, ink: np.ndarray, extra: float,
     for xs, ys in parts:
         if ((xs >= extra) & (xs < extra + w)).mean() < 0.5:
             continue  # writing from the neighbouring column
+        if _inside_stamp(xs, ys, stamps):
+            continue
         x0, x1, y0, y1 = int(xs.min()), int(xs.max()) + 1, int(ys.min()), int(ys.max()) + 1
         if y1 - y0 <= SIG_MIN_H:
             continue  # flat: a printed rule or its remains, not a signature
@@ -515,8 +547,9 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0):
     strip, origin, bands, cells = _column_strip(gray, f, cells, above, below, SIG_OVERRUN)
     row_h = float(np.median([z.rect[3] for z in cells]))
     ink = ink_mask(strip, row_h, signature=True)
-    _remove_stamp_rings(ink)
-    return _signature_blobs(strip, ink, SIG_OVERRUN, cells[0].rect[2], SIG_MIN_INK, bands), origin, bands, cells
+    stamps = _remove_stamp_rings(ink)
+    return (_signature_blobs(strip, ink, SIG_OVERRUN, cells[0].rect[2], SIG_MIN_INK, bands, stamps),
+            origin, bands, cells)
 
 
 def signature_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zone], s: MaskSettings,
@@ -561,3 +594,39 @@ def verify_signatures(gray: np.ndarray, out: np.ndarray, f: Mapper, cells: list[
         name = cells[0].group or cells[0].name
         return f"{name}: {bad} signature(s) not fully masked"
     return ""
+
+
+def find_anchor(gray: np.ndarray, f: Mapper, ref: np.ndarray, anchor, reach: tuple[float, float] = (60, 120),
+                min_ncc: float = 0.5) -> tuple[np.ndarray | None, float]:
+    """Locate a printed label near where the template expects it.
+
+    Layout variants of the same form (e.g. Form 34B generators) place a
+    section a line or two higher or lower. Fields tied to a label are moved
+    by the label's offset, so the mask lands on the line the label names.
+    Returns (offset (dx, dy) in template px, or None if not found; NCC)."""
+    x, y, w, h = anchor
+    rx, ry = reach
+    sw, sh = int(w + 2 * rx), int(h + 2 * ry)
+    ox, oy = x - rx, y - ry
+    gx, gy = np.meshgrid(np.arange(sw, dtype=np.float64) + ox, np.arange(sh, dtype=np.float64) + oy)
+    m = f(np.stack([gx.ravel(), gy.ravel()], 1)).astype(np.float32).reshape(sh, sw, 2)
+    area = cv2.remap(gray, m[..., 0], m[..., 1], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    label = ref[int(y):int(y + h), int(x):int(x + w)]
+    best, where = -1.0, None
+    for sc in (0.9, 1.0, 1.1):  # print and render sizes differ slightly
+        lab = cv2.resize(label, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA)
+        if lab.shape[0] >= area.shape[0] or lab.shape[1] >= area.shape[1]:
+            continue
+        res = cv2.matchTemplate(cv2.GaussianBlur(area, (3, 3), 0), cv2.GaussianBlur(lab, (3, 3), 0),
+                                cv2.TM_CCOEFF_NORMED)
+        _, v, _, loc = cv2.minMaxLoc(res)
+        if v > best:
+            # label centre found vs expected
+            best, where = v, (loc[0] + lab.shape[1] / 2 - (rx + w / 2), loc[1] + lab.shape[0] / 2 - (ry + h / 2))
+    if best < min_ncc:
+        return None, best
+    return np.float64(where), best
+
+
+def shifted(f: Mapper, d: np.ndarray) -> Mapper:
+    return lambda pts: f(np.asarray(pts, np.float64).reshape(-1, 2) + d)
