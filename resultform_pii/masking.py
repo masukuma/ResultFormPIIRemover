@@ -1,0 +1,375 @@
+"""Turning aligned zones into masks.
+
+blackout  Solid fill of the padded zone (signatures).
+partial   A random subset of the handwritten characters in each cell is
+          filled, the rest stays visible: enough to show that a real ID or phone
+          number was written, not enough to use it.
+
+Partial masking works on a whole table column at once, rectified to template
+pixel scale so slant and perspective in the photo don't matter. Characters are
+found once for the column and each is assigned to the row holding its centre,
+so digits that dip into a neighbouring row are still masked as part of their
+own row. Character slots come from connected components when they look like
+separate glyphs, otherwise from dividing the row's ink extent into ``digits``
+equal slots. A cell with ink that can't be segmented is hidden whole.
+"""
+
+from __future__ import annotations
+
+import math
+import random
+from dataclasses import dataclass
+from typing import Callable
+
+import cv2
+import numpy as np
+
+from .templates import Zone
+
+
+@dataclass
+class MaskSettings:
+    fraction: float = 0.6  # share of character slots hidden in partial zones
+    slot_pad: float = 0.08  # widen each hidden slot by this share of its width, each side
+    vpad: int = 60  # px above/below a column searched for ink: handwriting strays, and
+    # on photographed pages the table can be a row off; writing found anywhere in
+    # this window is masked
+    mask_vpad: int = 3  # px above/below the glyph/row covered by a hidden slot
+    min_glyph_h: float = 0.4  # glyph must be at least this share of row height
+    empty_ink: float = 0.01  # below this ink share a cell counts as empty
+
+
+# Template -> scan point mapping: a homography, or a mesh that follows a
+# curled page (structure.Snap.map).
+Mapper = Callable[[np.ndarray], np.ndarray]
+
+
+def homography(H: np.ndarray) -> Mapper:
+    return lambda pts: cv2.perspectiveTransform(
+        np.asarray(pts, np.float64).reshape(-1, 1, 2), H.astype(np.float64)).reshape(-1, 2)
+
+
+def _fill(img: np.ndarray, f: Mapper, quad: np.ndarray, step: float = 8.0) -> None:
+    """Fill a template-space quad, mapped edge by edge (densified, so a curved
+    mapping stays covered)."""
+    pts = []
+    for a, b in zip(quad, np.roll(quad, -1, axis=0)):
+        n = max(1, int(np.linalg.norm(b - a) / step))
+        pts += [a + (b - a) * t for t in np.arange(n) / n]
+    cv2.fillPoly(img, [np.round(f(np.float64(pts))).astype(np.int32)], 0)
+
+
+def _grow(quad: np.ndarray, dy: float, dx: float = 0.0) -> np.ndarray:
+    """Expand an axis-aligned quad (TL, TR, BR, BL) by dx / dy on each side."""
+    return quad + np.float64([[-dx, -dy], [dx, -dy], [dx, dy], [-dx, dy]])
+
+
+def blackout(img: np.ndarray, f: Mapper, zone: Zone, pad: float) -> None:
+    _fill(img, f, zone.padded(pad))
+
+
+def ink_mask(strip: np.ndarray, row_h: float) -> np.ndarray:
+    """Binary ink of a rectified strip, with rules, strike lines and the
+    security-print background removed."""
+    # KIEMS photos range from crisp to blurry and grey-on-grey; stretch the
+    # contrast (with a floor, so an empty cell's faint security pattern isn't
+    # blown up into "ink") before thresholding.
+    c = cv2.GaussianBlur(strip, (3, 3), 0).astype(np.float32)
+    p1, p99 = np.percentile(c, [1, 99])
+    c = np.clip((c - p1) / max(p99 - p1, 60.0) * 255, 0, 255).astype(np.uint8)
+    bw = cv2.adaptiveThreshold(c, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, 45)
+    h, w = bw.shape
+    rh = max(10, int(row_h))
+    lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(15, w // 3), 1)))
+    lines |= cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, int(rh * 1.6))))
+    ink = cv2.subtract(bw, cv2.dilate(lines, np.ones((3, 3), np.uint8)))
+    ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))  # speckle
+    # Long straight diagonal strokes are the "Z" lines officials draw through
+    # unused rows. They cross a column over several rows, so only segments
+    # ~4 rows long are erased: shorter ones can be chance alignments of digit
+    # strokes in stacked rows, and erasing those would hide digits from the
+    # masking. Horizontal rules are already gone; vertical strokes are digits.
+    segs = cv2.HoughLinesP(ink, 1, np.pi / 180, 40, minLineLength=max(120, int(4 * rh)), maxLineGap=8)
+    for x1, y1, x2, y2 in (segs.reshape(-1, 4) if segs is not None else ()):
+        ang = abs(np.degrees(np.arctan2(int(y2) - int(y1), int(x2) - int(x1))))
+        if 8 <= min(ang, 180 - ang) <= 60:
+            cv2.line(ink, (int(x1), int(y1)), (int(x2), int(y2)), 0, 7)
+    ink[:, :4] = 0  # column rules at the edges
+    ink[:, -4:] = 0
+    # Leftover pieces of those lines and of rules: thin strokes lying closer to
+    # horizontal than vertical. (A handwritten "1" is thin too, but near-vertical.)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(ink)
+    for i in range(1, n):
+        x, _, cw, _, area = st[i]
+        if area < 8:
+            ink[lab == i] = 0
+            continue
+        if cw <= 6 and (x < 14 or x + cw > w - 14):  # broken pieces of the column rules
+            ink[lab == i] = 0
+            continue
+        pts = np.column_stack(np.nonzero(lab == i)[::-1]).astype(np.float32)
+        _, (rw, rhh), ang = cv2.minAreaRect(pts)
+        theta = abs(ang) if rw >= rhh else 90 - abs(ang)  # long side vs horizontal
+        if min(rw, rhh) <= 7 and max(rw, rhh) >= 25 and min(theta, 180 - theta) < 50:
+            ink[lab == i] = 0
+    return ink
+
+
+@dataclass
+class Glyph:
+    x0: int
+    x1: int
+    y0: int
+    y1: int
+
+
+def _merge(glyphs: list[Glyph]) -> list[Glyph]:
+    """Merge components that overlap horizontally (broken strokes of one glyph)."""
+    glyphs = sorted(glyphs, key=lambda g: g.x0)
+    out = [glyphs[0]]
+    for g in glyphs[1:]:
+        m = out[-1]
+        if g.x0 <= m.x1 - 2:
+            out[-1] = Glyph(m.x0, max(m.x1, g.x1), min(m.y0, g.y0), max(m.y1, g.y1))
+        else:
+            out.append(g)
+    return out
+
+
+def _looks_printed(strip: np.ndarray, ref: np.ndarray, gx: int, gy: int, gw: int, gh: int,
+                   pad: int = 6, min_ncc: float = 0.5, search: tuple[int, int] = (8, 56)) -> bool:
+    """Does the scan around this glyph match the reference somewhere nearby
+    (i.e. it's print)? Searching a few rows up/down keeps column headers
+    recognised when the table is mapped a row off; handwriting matches no
+    printed text at any offset."""
+    y0, y1 = max(0, gy - pad), min(strip.shape[0], gy + gh + pad)
+    x0, x1 = max(0, gx - pad), min(strip.shape[1], gx + gw + pad)
+    patch = strip[y0:y1, x0:x1]
+    sx, sy = search
+    ry0, ry1 = max(0, y0 - sy), min(ref.shape[0], y1 + sy)
+    rx0, rx1 = max(0, x0 - sx), min(ref.shape[1], x1 + sx)
+    area = ref[ry0:ry1, rx0:rx1]
+    if area.shape[0] < patch.shape[0] or area.shape[1] < patch.shape[1] or patch.std() < 1:
+        return False
+    return float(cv2.matchTemplate(area, patch, cv2.TM_CCOEFF_NORMED).max()) >= min_ncc
+
+
+def _text_lines(glyphs: list[Glyph], row_h: float) -> list[list[Glyph]]:
+    """Group glyphs whose vertical centres lie within half a row of the line's
+    running median."""
+    lines: list[list[Glyph]] = []
+    for g in sorted(glyphs, key=lambda g: (g.y0 + g.y1) / 2):
+        cy = (g.y0 + g.y1) / 2
+        if lines and abs(cy - np.median([(o.y0 + o.y1) / 2 for o in lines[-1]])) < 0.5 * row_h:
+            lines[-1].append(g)
+        else:
+            lines.append([g])
+    return lines
+
+
+def line_slots(glyphs: list[Glyph], digits: int, row_w: float) -> list[Glyph] | None:
+    """Character boxes for one written line, or None if it can't be segmented."""
+    merged = _merge(glyphs)
+    if abs(len(merged) - digits) <= 2 and len(merged) >= 4:
+        return merged
+    left, right = merged[0].x0, max(g.x1 for g in merged)
+    top, bottom = min(g.y0 for g in merged), max(g.y1 for g in merged)
+    if right - left < 0.15 * row_w:
+        return None
+    step = (right - left) / digits  # joined-up digits: equal slots
+    return [Glyph(round(left + i * step), round(left + (i + 1) * step), top, bottom) for i in range(digits)]
+
+
+def pick_hidden(n: int, k: int, rng: random.Random, max_run: int = 2) -> list[int]:
+    """Random k of n slots to hide, leaving no more than ``max_run`` visible
+    slots side by side (a visible run is what makes a number usable)."""
+    for _ in range(200):
+        hidden = set(rng.sample(range(n), k))
+        run = best = 0
+        for i in range(n):
+            run = 0 if i in hidden else run + 1
+            best = max(best, run)
+        if best <= max_run:
+            return sorted(hidden)
+    # k too small for the constraint: hide every slot not needed to keep runs short
+    return [i for i in range(n) if i % (max_run + 1) == rng.randrange(max_run + 1) or i in hidden]
+
+
+def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zone],
+                   s: MaskSettings, rng: random.Random, margin: tuple[float, float] = (0.0, 0.0),
+                   ref: np.ndarray | None = None) -> list[dict]:
+    """Hide a random subset of characters in every cell of one table column.
+
+    ``margin`` (px above, px below) widens the search when the column's
+    position is uncertain (table rules couldn't be matched): every line of
+    writing found there is masked as belonging to the nearest row.
+
+    ``ref`` is the template's reference image (handwriting removed). A glyph
+    whose surroundings look the same in the scan and in the reference is
+    printed text (a column header) and is left alone. Appearance, not just
+    position: if the table is mapped a row off, handwriting lands where the
+    reference has printed text, and only a look-alike test keeps it from
+    being mistaken for print. Header text that no longer lines up just gets
+    masked too: over-masking, never a leak."""
+    cells = sorted(cells, key=lambda z: z.rect[1])
+    x, y, w = cells[0].rect[:3]
+    bottom = cells[-1].rect[1] + cells[-1].rect[3]
+    vpad = s.vpad + margin[0]
+    sw, sh = max(1, round(w)), max(1, round(bottom - y + vpad + s.vpad + margin[1]))
+    oy = y - vpad
+    # strip pixel -> template -> scan, sampled per pixel so curled pages work
+    gx, gy = np.meshgrid(np.arange(sw, dtype=np.float64) + x, np.arange(sh, dtype=np.float64) + oy)
+    m = f(np.stack([gx.ravel(), gy.ravel()], 1)).astype(np.float32).reshape(sh, sw, 2)
+    strip = cv2.remap(gray, m[..., 0], m[..., 1], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    to_template = np.float64([x, oy])
+    row_h = float(np.median([z.rect[3] for z in cells]))
+    ink = ink_mask(strip, row_h)
+
+    # cell bands in strip coordinates
+    bands = [(z.rect[1] - y + vpad, z.rect[1] - y + vpad + z.rect[3]) for z in cells]
+    per_row: list[list[Glyph]] = [[] for _ in cells]
+    _, _, st, _ = cv2.connectedComponentsWithStats(ink)
+    R = None
+    if ref is not None:
+        # reference crop in the same (template) coordinates as the strip
+        R = np.full((sh, sw), 255, np.uint8)
+        x0, y0 = int(round(x)), int(round(oy))
+        sy0, sx0 = max(0, -y0), max(0, -x0)
+        crop = ref[max(0, y0):y0 + sh, max(0, x0):x0 + sw]
+        R[sy0:sy0 + crop.shape[0], sx0:sx0 + crop.shape[1]] = crop
+    found = []
+    for gx, gy, gw, gh, area in st[1:]:
+        if gh < s.min_glyph_h * row_h or area <= 30:
+            continue
+        if R is not None and _looks_printed(strip, R, gx, gy, gw, gh):
+            continue
+        found.append(Glyph(int(gx), int(gx + gw), int(gy), int(gy + gh)))
+    # Each written line is masked on its own, using its own glyph boxes, so
+    # masks follow the writing even when the row bands are a little off.
+    # Lines are assigned to rows only to tell empty rows from unreadable ones,
+    # and for the report. Writing sits on a row's bottom rule and descenders
+    # cross it, so the upper part of a line says more about its row than its
+    # centre does. A line in the search margin goes to the nearest row:
+    # writing is never skipped.
+    per_row: list[list[dict]] = [[] for _ in cells]
+    for line in _text_lines(found, row_h):
+        cy = float(np.median([g.y0 + 0.35 * (g.y1 - g.y0) for g in line]))
+        i = int(np.argmin([0 if b0 <= cy < b1 else min(abs(cy - b0), abs(cy - b1)) for b0, b1 in bands]))
+        top, bot = min(g.y0 for g in line), max(g.y1 for g in line)
+        slots = line_slots(line, cells[i].digits, w)
+        if slots is None:  # can't segment this line: hide it whole
+            quad = np.float64([[0, top], [w, top], [w, bot], [0, bot]])
+            _fill(img, f, _grow(quad, s.mask_vpad + 4) + to_template)
+            per_row[i].append({"mode": "full"})
+            continue
+        k = min(len(slots), max(1, math.ceil(s.fraction * len(slots))))
+        for j in pick_hidden(len(slots), k, rng):
+            g = slots[j]
+            p = s.slot_pad * (g.x1 - g.x0)
+            quad = np.float64([[g.x0 - p, top], [g.x1 + p, top], [g.x1 + p, bot], [g.x0 - p, bot]])
+            _fill(img, f, _grow(quad, s.mask_vpad, 0) + to_template)
+        per_row[i].append({"mode": "partial", "slots": len(slots), "hidden": k})
+
+    # Rows with no line of writing: empty, or ink we couldn't make glyphs of.
+    stray = ink.copy()
+    for g in found:
+        stray[g.y0:g.y1, g.x0:g.x1] = 0
+    report = []
+    for z, (b0, b1), lines in zip(cells, bands, per_row):
+        if lines:
+            modes = {l["mode"] for l in lines}
+            report.append({"zone": z.name, "mode": "full" if modes == {"full"} else "partial",
+                           "lines": len(lines), "slots": sum(l.get("slots", 0) for l in lines),
+                           "hidden": sum(l.get("hidden", 0) for l in lines)})
+            continue
+        share = stray[int(b0):int(b1)].mean() / 255 if b1 > b0 else 0.0
+        if share >= 3 * s.empty_ink:
+            blackout(img, f, z, s.mask_vpad + 4)
+            report.append({"zone": z.name, "mode": "full"})
+        else:
+            report.append({"zone": z.name, "mode": "empty"})
+    return report
+
+
+def verify_column(out: np.ndarray, f: Mapper, cells: list[Zone], ref: np.ndarray | None,
+                  s: MaskSettings, window: tuple[float, float] = (60.0, 110.0), max_run: int = 5) -> str:
+    """Independent leak check on the redacted image: re-read the column over
+    a window (px above, below) at least as wide as the one used for masking --
+    drift on bent pages is downward, and the declaration with the officers'
+    names sits just above the table -- and look for ``max_run`` or
+    more written characters in a row with no mask between them. A masked line
+    is broken up every few characters; a missed one isn't.
+    Returns a reason, or "" if clean."""
+    cells = sorted(cells, key=lambda z: z.rect[1])
+    x, y, w = cells[0].rect[:3]
+    bottom = cells[-1].rect[1] + cells[-1].rect[3]
+    sw, sh = max(1, round(w)), max(1, round(bottom - y + window[0] + window[1]))
+    oy = y - window[0]
+    gx, gy = np.meshgrid(np.arange(sw, dtype=np.float64) + x, np.arange(sh, dtype=np.float64) + oy)
+    m = f(np.stack([gx.ravel(), gy.ravel()], 1)).astype(np.float32).reshape(sh, sw, 2)
+    gray = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY) if out.ndim == 3 else out
+    strip = cv2.remap(gray, m[..., 0], m[..., 1], cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE)
+    masked = cv2.dilate((strip == 0).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    row_h = float(np.median([z.rect[3] for z in cells]))
+    ink = ink_mask(np.where(masked, 255, strip).astype(np.uint8), row_h)
+    R = None
+    if ref is not None:
+        R = np.full((sh, sw), 255, np.uint8)
+        x0, y0 = int(round(x)), int(round(oy))
+        crop = ref[max(0, y0):y0 + sh, max(0, x0):x0 + sw]
+        R[max(0, -y0):max(0, -y0) + crop.shape[0], max(0, -x0):max(0, -x0) + crop.shape[1]] = crop
+    _, _, st, _ = cv2.connectedComponentsWithStats(ink)
+    glyphs = [Glyph(int(a), int(a + b), int(c), int(c + d)) for a, c, b, d, area in st[1:]
+              if d >= s.min_glyph_h * row_h and area > 30
+              and not (R is not None and _looks_printed(strip, R, a, c, b, d))]
+    for line in _text_lines(glyphs, row_h):
+        line = _merge(line)
+        top, bot = min(g.y0 for g in line), max(g.y1 for g in line)
+        run = best = 1
+        for a, b in zip(line, line[1:]):
+            gap = masked[top:bot, a.x1:max(a.x1 + 1, b.x0)]
+            run = 1 if gap.any() else run + 1
+            best = max(best, run)
+        if best >= max_run:
+            name = cells[0].group or cells[0].name
+            return f"{name}: {best} written characters in a row left unmasked"
+    return ""
+
+
+def check_column_edges(gray: np.ndarray, f: Mapper, cells: list[Zone], tol: float = 14.0,
+                       margin: float = 40.0, require: bool = False) -> str:
+    """Is the column where we think it is? Straighten it with a horizontal
+    margin and compare the printed vertical rules at its edges with any found
+    elsewhere. A table matched one rule off puts a column's real bounding rule
+    well inside or outside its edges; checking the masks against the same
+    mapping can't see that, so this checks the mapping against the paper.
+
+    Fails when a rule away from an edge is clearly stronger than the one at
+    it. With ``require`` (table position not verified by its rules), also
+    fails when no rule is visible at an edge at all.
+    Returns a reason, or "" if the column looks right."""
+    cells = sorted(cells, key=lambda z: z.rect[1])
+    x, y, w = cells[0].rect[:3]
+    bottom = cells[-1].rect[1] + cells[-1].rect[3]
+    sw, sh = max(1, round(w + 2 * margin)), max(1, round(bottom - y))
+    gx, gy = np.meshgrid(np.arange(sw, dtype=np.float64) + x - margin, np.arange(sh, dtype=np.float64) + y)
+    m = f(np.stack([gx.ravel(), gy.ravel()], 1)).astype(np.float32).reshape(sh, sw, 2)
+    strip = cv2.remap(gray, m[..., 0], m[..., 1], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    bw = cv2.adaptiveThreshold(cv2.GaussianBlur(strip, (3, 3), 0), 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                               cv2.THRESH_BINARY_INV, 31, 6)
+    row_h = float(np.median([z.rect[3] for z in cells]))
+    rules = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, int(row_h))))
+    profile = cv2.GaussianBlur((rules > 0).sum(axis=0).astype(np.float32).reshape(1, -1), (5, 1), 0).ravel()
+    edges = (margin, margin + w)
+    near = np.zeros(sw, bool)
+    for e in edges:
+        near[int(max(0, e - tol)):int(min(sw, e + tol + 1))] = True
+    elsewhere = float(profile[~near].max(initial=0))
+    name = cells[0].group or cells[0].name
+    for e, label in zip(edges, ("left", "right")):
+        at = float(profile[int(max(0, e - tol)):int(min(sw, e + tol + 1))].max(initial=0))
+        if elsewhere >= 0.15 * sh and at < 0.6 * elsewhere:
+            return f"{name}: printed rule found off the column's {label} edge (table placed wrong)"
+        if require and at < 0.1 * sh:
+            return f"{name}: can't see the printed rule at the column's {label} edge"
+    return ""

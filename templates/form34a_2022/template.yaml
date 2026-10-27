@@ -1,0 +1,41 @@
+# Form 34A, 2022 General Election (presidential result at the polling station),
+# as photographed and transmitted by KIEMS kits. Reference is 1654x2340, the
+# native size of the KIEMS image; handwriting has been erased from it (printed
+# rules kept).
+name: form34a_2022
+form: 34A
+reference: reference.png
+padding: 8
+structure:
+  # Agents table incl. its top border; its printed rules position every zone
+  # below (photos of curled pages put the global fit rows off down here).
+  - name: agents
+    rect: [60, 1500, 1530, 480]
+zones:
+  # Presiding officer + deputy signatures (one box spans both lines, with
+  # room for signatures that stray above the line or toward the stamp).
+  - name: officer_signatures
+    action: blackout
+    rect: [1008, 1310, 330, 175]
+    region: agents
+  # Agents table, 11 rows. Names stay visible.
+  - name: agent_id
+    action: partial
+    digits: 8
+    rect: [500, 1562, 178, 36.4]
+    rows: 11
+    row_step: 36.4
+    region: agents
+  - name: agent_phone
+    action: partial
+    digits: 10
+    rect: [1050, 1566, 171, 36.4]
+    rows: 11
+    row_step: 36.4
+    region: agents
+  # Whole signature column, header row to below the bottom border, so a
+  # table mapped a row off is still covered.
+  - name: agent_signatures
+    action: blackout
+    rect: [1221, 1522, 225, 490]
+    region: agents

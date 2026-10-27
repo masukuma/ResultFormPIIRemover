@@ -1,135 +1,203 @@
 # Design: PII removal for published election result forms
 
-## Problem
+## Goal
 
-Polling-station result forms are scanned and published so anyone can check the
-tallies. Their **results** (station, candidates, votes) must stay readable.
-Their **declaration blocks** (names, national ID numbers, phone numbers and
-signatures of presiding officers and party agents) must not be published.
+Polling-station result forms (Form 34A and others) are photographed and
+transmitted by KIEMS kits and then published. Their **results** (station,
+candidates, votes) and the officials' and agents' **names** must stay readable,
+and readers must still be able to see that a form is genuine. Each kind of
+personal data gets a different treatment:
 
-Constraints:
-
-- **Volume and deadline.** Tens of thousands of forms arrive within hours of
-  polls closing, and publishing them quickly matters.
-- **Inputs.** Scans and phone photos, as PDFs or images: skewed, rotated,
-  perspective-distorted, unevenly lit, sometimes with an OCR text layer.
-- **Fixed layout.** Each form type always prints its PII in the same boxes.
-- **Asymmetric cost.** One leaked ID number is a real harm. One delayed form is
-  an inconvenience.
-
-## Approach: register to a template, mask fixed zones
-
-Because the layout is fixed, the tool never has to *find* PII. It only has to
-work out *where the form is* in the image. That gives:
-
-- **Speed.** No OCR or NER. Per page the work is feature extraction, matching, a
-  homography and one mask warp: about 75–160 ms on one CPU core.
-- **Handwriting coverage.** OCR+NER misses handwritten names, scribbled IDs and
-  signatures. Zone masking covers whatever is written in the box.
-- **Predictable failure.** Alignment either succeeds, with measurable
-  confidence, or it doesn't. It never "mostly works" in ways nobody can see.
-
-```
-scan/PDF ─► rasterize ─► grayscale ─► ORB features (downscaled)
-                                         │
-              templates (precomputed) ─► match ─► USAC/MAGSAC homography
-                                                   │
-                                     ┌── checks ───┤ inliers, inlier ratio,
-                                     │             │ geometry, NCC score
-                               fail  ▼             ▼ pass
-                          review queue      warp padded zone mask ─► fill black
-                       (never published)                    │
-                                             rebuild image-only PDF, no metadata
-```
-
-### 1. Templates (`templates/<form>/template.yaml`)
-Each template is a reference image of the blank form plus zones (rectangles or
-polygons) in reference-pixel coordinates. Every zone gets a **padding**
-(default 12 px) to absorb small alignment error and handwriting that strays
-outside its box. `rfpii preview` draws the padded zones over the reference so
-they can be signed off by eye. Templates are reviewed configuration, so treat
-changes to them like code changes.
-
-When several form types exist (e.g. per-station, per-constituency and
-per-county tallies), each page is matched against every template and the best
-passing one wins. Template keypoints are computed once per worker.
-
-### 2. Alignment (`align.py`)
-- ORB keypoints are extracted on a copy scaled to 1200 px on the long side, then
-  scaled back to full resolution.
-- Matching uses brute-force Hamming kNN with Lowe's ratio test.
-- The homography is fitted with `USAC_MAGSAC`, which copes with rotation (180°
-  included), scale and perspective from phone photos.
-- Phone-photo EXIF orientation is applied when the image is loaded.
-
-### 3. Fail-closed checks
-A page is released only if **all** of these pass:
-
-| Check | Default | Catches |
-|---|---|---|
-| Inlier count | ≥ 40 | wrong form, blank page, unreadable scan |
-| Inlier ratio | ≥ 0.15 | ambiguous or accidental matches |
-| Geometry | convex, ≥ 15% of image, opposite sides within 2× | degenerate or mirrored fits |
-| Alignment score | NCC ≥ 0.35 | "valid" homography that's actually off by a row |
-
-The **alignment score** is an independent check of the homography. The scan is
-warped back into template space, and its normalized cross-correlation with the
-reference is measured outside the PII zones. On synthetic scans a correct fit
-scores about 0.75.
-
-If any page in a document fails, the **whole document** is withheld. The
-document gets a JSON report in `review/` and an entry in
-`review/report.jsonl`. Nothing partial is ever published.
-
-### 4. Redaction
-The template-space mask, with padding already applied, is warped into scan space
-with nearest-neighbour interpolation, and those pixels are set to solid black.
-Solid fill, unlike blur or pixelation, cannot be reversed.
-
-### 5. Output sanitization (`io.py`)
-The output is always a *new* PDF built from the redacted pixels. It has no text
-or OCR layer, no annotations, no embedded original, no XMP and no Info
-metadata, and images are re-encoded without EXIF. This matters because a scan
-PDF with an invisible OCR layer would otherwise leak the very names that were
-blacked out. The tests cover this case.
-
-### 6. Throughput
-- One process per core, using the `spawn` start method. Forking after OpenCV
-  has started its thread pool deadlocks. OpenCV is limited to one thread per
-  worker.
-- Measured on synthetic A4 at 1.3× scale, one core:
-
-  | `max_dim` / `n_features` | features | match + fit + score | inliers |
-  |---|---|---|---|
-  | 1200 / 5000 (default) | 23 ms | 140 ms | ~200 |
-  | 1000 / 3000 | 17 ms | 56 ms | ~95 |
-  | 800 / 2000 | 12 ms | 26 ms | ~65 |
-
-  The end-to-end demo ran at about 14 files/s on 4 cores with defaults,
-  including JPEG decode and PDF encode. 30k forms take about 35 min on 4 cores,
-  or about 4 min on 32 cores.
-- Matching dominates. If more speed is needed: lower `n_features`, or swap the
-  brute-force matcher for FLANN-LSH. The run is idempotent and skips existing
-  outputs unless `--overwrite` is given, so it can be re-run after a crash or
-  as new scans arrive.
-
-## Residual risks and mitigations
-
-| Risk | Mitigation |
+| Field | Treatment |
 |---|---|
-| Writing outside a box (e.g. a signature across the margin) | Generous padding; choose zones covering whole declaration blocks rather than individual fields |
-| Form folded or torn, so a single homography doesn't fit | NCC score drops and the form goes to review. Optional extension: local refinement (ECC per zone) |
-| New or revised form version | Low inliers or score, so it goes to review. Add a template and re-run |
-| PII written in a non-PII area (e.g. a note in the results table) | Not covered by zones. Optional second pass: OCR the unredacted area and flag ID/phone-number patterns for review |
-| Template zones drawn wrong | `rfpii preview`, plus a sample audit of the first N outputs per template before bulk publishing |
-| Thresholds tuned on synthetic data | Calibrate `min_inliers` and `min_score` on a few hundred real scans; log their distributions from `report.jsonl` |
+| Signatures (officers, agents) | **Blacked out** completely |
+| National ID / passport numbers | **Random part masked**: about 60% of the characters, never leaving more than two neighbouring characters visible |
+| Phone numbers | Same as IDs |
+| Names | Left visible |
+| QR code, stamp, station codes, votes | Left visible: these are what make the form verifiable |
 
-## Operational flow
-1. Build a template per form type: scan a blank form, define zones, run
-   `rfpii preview`, get sign-off.
-2. Calibrate on a pilot batch of real scans and review the score distribution.
-3. Bulk run:
-   `rfpii redact incoming/ --templates templates/ --out public/ --review review/`
-4. Publish only `public/`. A person clears the review queue, either by fixing
-   the template or by redacting by hand.
-5. Spot-audit a random sample of published files.
+## Inputs: KIEMS results transmission
+
+The kits produce PDFs that wrap a single photo of the form, at 1654×2340 px.
+Their file names encode the transmission:
+
+```
+1_34_A_007029014000102_F230450M00203609_20220810_132155.PDF
+│ │  │ └ station (county 007, const. 029, ward 0140, centre 001, stream 02)
+│ │  │                   └ KIEMS kit serial     └ capture date/time
+│ │  └ form suffix
+│ └ form number (34 = presidential)
+└ election type (1 = presidential)
+```
+
+The printed form carries a QR code. On Form 34A it encodes the station code
+followed by `34`, and on Form 34B election, county, constituency, form and
+page (`GE2022040228FORM34B03`). `kiems.py` parses both:
+
+- **Template choice:** the form type picks the template, so a 34B page is never
+  redacted with a 34A layout. A form with no template goes to review.
+- **Consistency check:** a QR code that disagrees with the file name sends the
+  document to review rather than publishing it under the wrong station.
+- **Provenance sidecar:** each published PDF gets `<name>.json` with station,
+  kit, capture time and the SHA-256 of the original transmission. It contains
+  no personal data. Readers can use it to tie the redacted form to the original.
+
+On 215 real Forms 34A (Lamu and Diaspora), all file names parsed. The QR
+decoded on 90% of them and agreed with the file name every time.
+
+Inputs can be PDFs, images, directories, or the county zip archives directly
+(`archive.zip::member.pdf`). PDFs are rendered at the embedded photo's native
+resolution.
+
+## Pipeline
+
+```
+photo ─► page alignment (ORB + MAGSAC) ─► table snapping (printed rules) ─► masking ─► gates ─► publish
+               │ fails                         │ fails                                    │ fail
+               ▼                               ▼                                          ▼
+            review               widened zones (or review with --strict-structure)     review
+```
+
+### 1. Page alignment (`align.py`)
+ORB features are matched to the template's reference image, and a homography is
+fitted with USAC/MAGSAC. This handles rotation (including upside-down and
+sideways photos), scale and perspective. The fit is checked by inlier count,
+inlier ratio, plausible geometry, and normalised cross-correlation (NCC)
+between the reference and the scan warped back. A page failing any check is
+withheld.
+
+### 2. Table snapping (`structure.py`)
+KIEMS photos are of booklet pages that **curl**. All the distinctive features
+are in the header (logo, QR code, title), while the PII is in the agents table
+at the bottom. A single homography extrapolated that far can be several rows
+off. On the real samples, before this step existed, it produced a form whose
+last three agents' IDs, phones and signatures were completely unmasked.
+
+Templates therefore declare `structure` regions, such as the agents table. For
+each one:
+
+1. **Find the rules.** Horizontal and vertical printed rules are detected in the
+   scan within a generous search window.
+2. **Column rules first.** Handwriting never makes long vertical lines, so the
+   column rules give the x positions. Where they start and end gives the
+   table's real top and bottom border.
+3. **Row rules second.** Rows are matched by a 1-D scale/offset search pinned to
+   that top and bottom, because rows repeat and an unpinned match can lock on
+   one or two rows off. When the rows match cleanly, every row is placed
+   exactly; otherwise rows are interpolated between the verified borders.
+4. **Mesh mapping.** Zones are mapped through a bilinear mesh over the rule
+   intersections rather than a homography, so they follow the curl. Points
+   outside the table are extrapolated with the whole grid's average spacing.
+
+If the table can't be matched, its zones fall back to the page alignment but
+are widened 50 px up and 200 px down: more than the worst drift seen, which is
+always downward. With `--strict-structure`, such pages go to review instead.
+
+### 3. Masking (`masking.py`)
+
+**Blackout zones** (signatures) are solid fills, mapped edge by edge so they
+stay covered on curled pages.
+
+**Partial zones** (ID and phone columns) work on a whole table column at once:
+
+1. **Straighten the column.** It is extracted with a remap at template scale,
+   extending at least 60 px above and below the table so that writing on a
+   table placed a row off is still inside.
+2. **Extract the ink.** Contrast is normalised, because KIEMS photos range from
+   crisp to grey-on-grey. Then three things are removed:
+   - table rules;
+   - the long diagonal strike-through lines officials draw through unused rows.
+     Only segments at least four rows long count, because shorter "lines" can be
+     chance alignments of digits in stacked rows, and erasing them hid digits in
+     testing;
+   - leftover thin fragments of rules.
+3. **Ignore print.** A glyph whose surroundings look like the reference at about
+   the same spot is printed text (column headers) and is skipped. This test
+   compares appearance, not just position: if the table is a row off, written
+   digits land where the reference has print, and a position test would skip
+   them.
+4. **Group into lines.** Glyphs are grouped into written lines, and each line is
+   segmented into character slots: connected components when they look like
+   separate characters, otherwise `digits` equal slots.
+5. **Hide characters.** About 60% of the slots are hidden at random
+   (`SystemRandom`, different per cell and per run), never leaving more than two
+   neighbouring slots visible. A line that can't be segmented is hidden whole.
+6. **Assign rows.** Lines are assigned to rows only to tell empty rows from
+   unreadable ones, and for the report. Masks follow the writing itself.
+
+### 4. Gates (fail-closed)
+A document is published only if every page passes:
+
+| Gate | Catches |
+|---|---|
+| Page alignment checks | unknown form or layout, blank or garbage page |
+| Form type has a template | 34B, 35A, 36A, … until templates exist |
+| QR code vs file name | form uploaded under the wrong station |
+| **Column edge check** | table matched one rule off. The straightened column must have its printed rules at its own edges, not a stronger rule somewhere else. This compares the mapping against the paper, because comparing the masks against the same mapping can't detect it |
+| **Leak check** | the redacted column is re-read over a wider window; 5 or more written characters in a row with no mask between them means something was missed |
+| VLM audit (optional) | anything still readable anywhere: free-text comments, signatures outside the boxes |
+
+The edge check and the leak check were both added after reviewing real outputs
+showed misses that geometry alone allowed through.
+
+### 5. Output
+The output is a new image-only PDF with no text layer, annotations or metadata
+(`io.py`), plus the provenance sidecar. Documents that fail go to `review/`,
+each with a JSON report of why. `review/report.jsonl` logs every document.
+
+## VLM assistance (`vlm.py`, Ollama)
+
+A local vision model, e.g. `qwen2.5vl:7b` via Ollama, is used where judgement
+helps and speed doesn't matter:
+
+- **`--vlm-audit`:** before publishing, ask whether a complete ID number, phone
+  number or signature is readable anywhere. A "yes" sends the form to review.
+  This covers things templates can't, such as officers signing again in the
+  comments area or writing their own ID number at the bottom. It is a gate, not
+  a guarantee: a model can miss things.
+- **`--vlm-fallback`:** for documents no template handles, the model locates
+  signatures, IDs and phones, and the same masking is applied. Results go to
+  `review/vlm/` for a person to approve. They are never auto-published.
+- **`rfpii propose`:** drafts a new template's zones from a reference image, for
+  a person to check with `rfpii preview`.
+
+The model is asked for strict JSON (Ollama `format` with a schema, temperature
+0), and images are sent at sizes that are multiples of 28 so that box
+coordinates map back exactly.
+
+## Results on real data (Form 34A, 215 KIEMS PDFs, two county zips)
+
+| Outcome | Count |
+|---|---|
+| Published (table snapped) | 173 |
+| Published (widened fallback) | 15 |
+| Review: page alignment failed | 4 |
+| Review: column edge check | 22 |
+| Review: leak check | 1 |
+
+That is 188 of 215 (87%) published, at about 7 files/s on 4 cores. Several
+random samples of the published forms were reviewed by eye. Every review that
+found a problem led to a fix, and those cases are now caught by the gates
+above. Withheld forms are a mix of genuinely misplaced tables and forms whose
+faint rules can't be confirmed. The VLM fallback, a person, or a better
+template can clear them.
+
+## Templates
+
+| Template | Status |
+|---|---|
+| `form34a_2022` (2022 Form 34A, KIEMS) | Built from a real form and validated |
+| Form 34B (multi-page; agents and CRO details on the last page) | Not yet; routed to review |
+| 2021 by-election Forms 35A / 36A / 38A | Not yet; routed to review |
+
+A template's reference image must have its handwriting erased, keeping the
+printed rules (see `README.md`). The form's PII must never end up in the repo.
+
+## Known limits
+- **PII outside template zones** is only caught by the VLM audit. This includes
+  officers re-signing beside the stamp, IDs written in the comments, and an
+  agent's ID written into the name column.
+- **Faint or heavily curled tables** go to review rather than being published.
+  That's by design.
+- **Thresholds come from 215 forms in two counties.** Run a pilot on other
+  counties and look at `report.jsonl` before trusting a full run.

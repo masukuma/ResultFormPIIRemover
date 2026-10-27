@@ -4,20 +4,31 @@ A template lives in its own directory:
 
     templates/<name>/
         template.yaml
-        reference.png      # clean scan or render of the blank form
+        reference.png      # clean scan or photo of the form type
 
 template.yaml:
 
-    name: form_a
+    name: form34a_2022
+    form: 34A              # matched against the form code in the QR / KIEMS file name
     reference: reference.png
-    padding: 12            # px (template space) added around every zone
-    zones:
-      - name: presiding_officer_name
+    padding: 8             # px (template space) added around every zone
+    structure:             # printed tables whose rules re-position their zones
+      - name: agents
         rect: [x, y, w, h]
-      - name: agent_signatures
-        polygon: [[x1, y1], [x2, y2], ...]
+    zones:
+      - name: officer_signatures
+        action: blackout   # solid fill (signatures)
+        rect: [x, y, w, h]
+      - name: agent_id
+        action: partial    # mask random digits, keep the rest visible
+        digits: 8          # expected digit count (ID 8, phone 10)
+        rect: [x, y, w, h] # one cell...
+        rows: 11           # ...repeated down a table
+        row_step: 36.4
+        region: agents     # placed by the table's rules; page fails if they can't be matched
 
-All coordinates are pixels in the reference image.
+Names are deliberately not zones: they stay visible. All coordinates are pixels
+in the reference image.
 """
 
 from __future__ import annotations
@@ -29,11 +40,27 @@ import cv2
 import numpy as np
 import yaml
 
+ACTIONS = ("blackout", "partial")
+
 
 @dataclass
 class Zone:
     name: str
-    polygon: np.ndarray  # (N, 2) float32, template pixel coords
+    rect: tuple[float, float, float, float]  # x, y, w, h in template pixels
+    action: str = "blackout"
+    digits: int = 0  # partial only
+    group: str = ""  # table column this cell belongs to ("" = standalone)
+    row: int = 0
+    region: str = ""  # structure region whose printed rules position this zone
+
+    @property
+    def polygon(self) -> np.ndarray:
+        x, y, w, h = self.rect
+        return np.float32([[x, y], [x + w, y], [x + w, y + h], [x, y + h]])
+
+    def padded(self, pad: float) -> np.ndarray:
+        x, y, w, h = self.rect
+        return Zone(self.name, (x - pad, y - pad, w + 2 * pad, h + 2 * pad)).polygon
 
 
 @dataclass
@@ -41,8 +68,11 @@ class Template:
     name: str
     image: np.ndarray  # grayscale reference
     zones: list[Zone]
-    padding: int = 12
+    padding: int = 8
+    form: str = ""
+    structure: dict = field(default_factory=dict)  # region name -> rect (x, y, w, h)
     # Filled in by prepare(): computed once per worker, reused for every page.
+    regions: dict = field(default_factory=dict, repr=False)  # name -> structure.Region
     mask: np.ndarray | None = field(default=None, repr=False)
     keypoints: np.ndarray | None = field(default=None, repr=False)
     descriptors: np.ndarray | None = field(default=None, repr=False)
@@ -53,26 +83,32 @@ class Template:
         return w, h
 
     def build_mask(self) -> np.ndarray:
-        """Template-space mask (255 = redact) with padding applied."""
+        """Template-space mask (255 = any zone) with padding applied."""
         h, w = self.image.shape[:2]
         mask = np.zeros((h, w), np.uint8)
         for z in self.zones:
-            cv2.fillPoly(mask, [np.round(z.polygon).astype(np.int32)], 255)
-        if self.padding > 0:
-            k = 2 * self.padding + 1
-            mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
+            cv2.fillPoly(mask, [np.round(z.padded(self.padding)).astype(np.int32)], 255)
         return mask
 
 
-def _zone_from_spec(spec: dict) -> Zone:
-    if "rect" in spec:
-        x, y, w, h = spec["rect"]
-        poly = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
-    elif "polygon" in spec:
-        poly = spec["polygon"]
-    else:
-        raise ValueError(f"zone {spec.get('name')!r} needs 'rect' or 'polygon'")
-    return Zone(spec.get("name", "zone"), np.asarray(poly, np.float32))
+def _zones_from_spec(spec: dict) -> list[Zone]:
+    name = spec.get("name", "zone")
+    action = spec.get("action", "blackout")
+    if action not in ACTIONS:
+        raise ValueError(f"zone {name!r}: action must be one of {ACTIONS}")
+    if "rect" not in spec:
+        raise ValueError(f"zone {name!r} needs 'rect'")
+    digits = int(spec.get("digits", 0))
+    if action == "partial" and digits < 2:
+        raise ValueError(f"zone {name!r}: partial zones need 'digits' >= 2")
+    x, y, w, h = map(float, spec["rect"])
+    rows = int(spec.get("rows", 1))
+    step = float(spec.get("row_step", h))
+    return [
+        Zone(f"{name}[{r}]" if rows > 1 else name, (x, y + r * step, w, h), action, digits,
+             name if rows > 1 else "", r, str(spec.get("region", "")))
+        for r in range(rows)
+    ]
 
 
 def load_template(directory: str | Path) -> Template:
@@ -81,10 +117,15 @@ def load_template(directory: str | Path) -> Template:
     image = cv2.imread(str(directory / spec.get("reference", "reference.png")), cv2.IMREAD_GRAYSCALE)
     if image is None:
         raise FileNotFoundError(f"reference image missing for template in {directory}")
-    zones = [_zone_from_spec(z) for z in spec.get("zones", [])]
-    if not zones:
-        raise ValueError(f"template {directory} defines no zones")
-    return Template(spec.get("name", directory.name), image, zones, int(spec.get("padding", 12)))
+    # A template may have no zones: pages of a known form that carry no PII
+    # (e.g. Form 34B results pages) still have to be recognised to be published.
+    zones = [z for s in spec.get("zones") or [] for z in _zones_from_spec(s)]
+    structure = {r["name"]: tuple(map(float, r["rect"])) for r in spec.get("structure") or []}
+    for z in zones:
+        if z.region and z.region not in structure:
+            raise ValueError(f"zone {z.name!r} refers to unknown structure region {z.region!r}")
+    return Template(spec.get("name", directory.name), image, zones,
+                    int(spec.get("padding", 8)), str(spec.get("form", "")), structure)
 
 
 def load_templates(root: str | Path) -> list[Template]:

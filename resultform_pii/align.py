@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from . import structure
 from .templates import Template
 
 
@@ -37,6 +38,28 @@ class Alignment:
     score: float
     ok: bool
     reason: str = ""
+    src: np.ndarray | None = None  # inlier points, template space
+    dst: np.ndarray | None = None  # inlier points, scan space
+
+    def local(self, center, radius: float = 350.0, min_points: int = 15, max_shift: float = 40.0) -> np.ndarray:
+        """Homography fitted only to inliers near ``center`` (template coords).
+
+        Photographed forms are rarely flat (KIEMS photos of booklet pages curl),
+        so one global homography can be off by 10-20 px in places. A local fit
+        tightens zones; it falls back to the global H when there's too little
+        support or it disagrees wildly with the global fit."""
+        if self.src is None:
+            return self.H
+        near = np.linalg.norm(self.src - np.float32(center), axis=1) < radius
+        if near.sum() < min_points:
+            return self.H
+        Hl, _ = cv2.findHomography(self.src[near], self.dst[near], cv2.RANSAC, 4.0)
+        if Hl is None:
+            return self.H
+        c = np.float32([[center]])
+        if np.linalg.norm(cv2.perspectiveTransform(c, Hl) - cv2.perspectiveTransform(c, self.H)) > max_shift:
+            return self.H
+        return Hl
 
 
 def _features(gray: np.ndarray, s: AlignSettings) -> tuple[np.ndarray, np.ndarray | None]:
@@ -51,6 +74,7 @@ def _features(gray: np.ndarray, s: AlignSettings) -> tuple[np.ndarray, np.ndarra
 def prepare(template: Template, s: AlignSettings) -> Template:
     template.keypoints, template.descriptors = _features(template.image, s)
     template.mask = template.build_mask()
+    template.regions = {n: structure.prepare_region(template.image, n, r) for n, r in template.structure.items()}
     return template
 
 
@@ -111,14 +135,23 @@ def align(scan_gray: np.ndarray, template: Template, s: AlignSettings,
     if reason := _geometry_ok(H, template, scan_gray.shape, s):
         return fail(reason, n_in, len(good))
     score = _score(H, template, scan_gray)
-    if score < s.min_score:
-        return Alignment(template, H, n_in, len(good), score, False, f"low alignment score ({score:.2f})")
-    return Alignment(template, H, n_in, len(good), score, True)
+    keep = inl.ravel().astype(bool)
+    ok = score >= s.min_score
+    return Alignment(template, H, n_in, len(good), score, ok,
+                     "" if ok else f"low alignment score ({score:.2f})", src[keep], dst[keep])
 
 
-def best_alignment(scan_gray: np.ndarray, templates: list[Template], s: AlignSettings) -> Alignment:
-    """Try every template; return the passing alignment with the most inliers, or the
-    best failure (for the review report) if none pass."""
+def best_alignment(scan_gray: np.ndarray, templates: list[Template], s: AlignSettings,
+                   form: str | None = None) -> Alignment:
+    """Try every template (only those for ``form`` if it is known, e.g. from the
+    QR code); return the passing alignment with the most inliers, or the best
+    failure (for the review report) if none pass."""
+    if form:
+        # The form type is known (QR / KIEMS file name): only its templates may
+        # match. A 34B page must never be redacted with a 34A layout.
+        templates = [t for t in templates if not t.form or t.form == form]
+        if not templates:
+            return Alignment(None, None, 0, 0, 0.0, False, f"no template for form {form}")
     feats = _features(scan_gray, s)
     results = [align(scan_gray, t, s, feats) for t in templates]
     passing = [r for r in results if r.ok]

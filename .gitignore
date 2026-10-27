@@ -8,3 +8,7 @@ scans/
 public/
 review/
 demo/
+realdata/
+*.zip
+*.PDF
+review*/
