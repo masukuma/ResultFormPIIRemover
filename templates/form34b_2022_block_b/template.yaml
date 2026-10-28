@@ -1,0 +1,72 @@
+# Form 34B, 2022 General Election, layout B: the block that ends the form
+# (aggregate results, voter turnout, the agents table, the Constituency
+# Returning Officer). There is no handing over / taking over section. Found
+# wherever it is on a page, like the layout A block.
+#
+# Reference: cut from a scanned page (Budalangi, page 2), keeping printed
+# text and rules only: all handwriting, the stamp, the typed results and the
+# turnout figures are erased, and the printed rules redrawn where they ran
+# under them. Coordinates are pixels in it.
+name: form34b_2022_block_b
+form: 34B
+reference: reference.png
+page_long_side: 4064  # the reference is cut from a 2873x4064 page
+padding: 8
+# These scans are large (up to 4960 px) with a dense security-print
+# background: features are taken at 2400 px with a larger budget.
+feature_dim: 2400
+n_features: 20000
+min_area_frac: 0.05
+priority: 1
+once: true
+protect:
+  - name: aggregate_results_and_turnout   # votes per candidate, in figures and words; turnout
+    rect: [20, 0, 2110, 695]
+structure:
+  - name: agents
+    rect: [25, 750, 2510, 400]
+zones:
+  # Agents table: 5 rows. Columns (x): No. 35-383, name -1143, ID -1364,
+  # party -1676, phone -1887, signature -2206, date -2522. Names, parties
+  # and dates stay visible.
+  - name: agent_id
+    action: partial
+    rule: id
+    digits: 8
+    rect: [1146, 880, 215, 51]
+    rows: 5
+    row_step: 51.6
+    search: [4, 4]   # the Returning Officer's name starts right below the table
+    region: agents
+  - name: agent_phone
+    action: partial
+    rule: phone
+    digits: 10
+    rect: [1679, 880, 205, 51]
+    rows: 5
+    row_step: 51.6
+    search: [4, 4]   # the Returning Officer's name starts right below the table
+    region: agents
+  - name: agent_signatures
+    action: signature
+    rect: [1890, 880, 313, 51]
+    rows: 5
+    row_step: 51.6
+    search: [6, 20]   # not up into the printed "Signature" header
+    region: agents
+  # Constituency Returning Officer; underlines at y 1215 (name), 1271 (ID),
+  # 1350 (signature), 1407 (date). Each zone spans from just below the
+  # previous underline to just below its own, anchored to the "ID Number:"
+  # label like the layout A fields.
+  - name: ro_id
+    anchor: [43, 1246, 143, 24]
+    action: partial
+    rule: id
+    digits: 8
+    rect: [190, 1219, 800, 56]   # IDs are written near the label; the name runs on further right
+    search: [0, 6]
+  - name: ro_signature
+    anchor: [43, 1246, 143, 24]
+    action: signature
+    rect: [165, 1275, 1085, 79]
+    search: [0, 10]

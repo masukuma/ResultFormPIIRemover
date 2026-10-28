@@ -68,6 +68,38 @@ def blackout(img: np.ndarray, f: Mapper, zone: Zone, pad: float) -> None:
     _fill(img, f, zone.padded(pad))
 
 
+def _remove_dotted_leaders(ink: np.ndarray, row_h: float, min_dots: int = 6) -> None:
+    """Erase printed dotted leaders ("ID Number: ..........") in place: runs
+    of at least ``min_dots`` tiny blobs on one line at an even pitch. Writing
+    on the line keeps its strokes (they are not tiny); a handwritten full
+    stop has no run of evenly spaced neighbours."""
+    n, lab, st, cen = cv2.connectedComponentsWithStats(ink)
+    small = [i for i in range(1, n) if st[i][3] <= max(6, 0.15 * row_h) and st[i][2] <= max(10, 0.3 * row_h)]
+    if len(small) < min_dots:
+        return
+    rows: list[list[int]] = []
+    for i in sorted(small, key=lambda i: cen[i][1]):
+        for r in rows:
+            if abs(np.mean([cen[j][1] for j in r]) - cen[i][1]) <= 3:
+                r.append(i)
+                break
+        else:
+            rows.append([i])
+    for r in rows:
+        r.sort(key=lambda i: cen[i][0])
+        run = [r[0]]
+        for a, b in zip(r, r[1:] + [None]):
+            gap = cen[b][0] - cen[a][0] if b is not None else None
+            if gap is not None and run and (len(run) < 2 or abs(gap - (cen[run[1]][0] - cen[run[0]][0])) <= 3) \
+                    and 4 <= gap <= max(25, 0.5 * row_h):
+                run.append(b)
+                continue
+            if len(run) >= min_dots:
+                for j in run:
+                    ink[lab == j] = 0
+            run = [b] if b is not None else []
+
+
 def ink_mask(strip: np.ndarray, row_h: float, signature: bool = False) -> np.ndarray:
     """Binary ink of a rectified strip, with rules, strike lines and the
     security-print background removed.
@@ -109,6 +141,7 @@ def ink_mask(strip: np.ndarray, row_h: float, signature: bool = False) -> np.nda
             cv2.line(ink, (int(x1), int(y1)), (int(x2), int(y2)), 0, 7)
     ink[:, :4] = 0  # column rules at the edges
     ink[:, -4:] = 0
+    _remove_dotted_leaders(ink, rh)
     # Leftover pieces of those lines and of rules: thin strokes lying closer to
     # horizontal than vertical. (A handwritten "1" is thin too, but near-vertical.)
     n, lab, st, _ = cv2.connectedComponentsWithStats(ink)

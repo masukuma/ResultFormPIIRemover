@@ -1,0 +1,22 @@
+# Form 34B, 2022 General Election, layout C (Garissa county's printing): a
+# results page, recognised by its title, the "Form 34 B / Constituency /
+# County" lines and the column-header row. No zones: nothing on a results page
+# is ever changed.
+#
+# Reference: that header, cut from a scanned page (Daadab, page 1); the
+# constituency, county and codes are erased. Typed text only.
+name: form34b_2022_results_layout_c
+form: 34B
+reference: reference.png
+page_long_side: 4960  # cut from a 3507x4960 page
+# These scans are large (up to 4960 px) with a dense security-print
+# background: features are taken at 2400 px with a larger budget.
+feature_dim: 2400
+n_features: 20000
+min_area_frac: 0.03
+min_inliers: 30
+min_score: 0.22
+protect:
+  - name: results_header
+    rect: [0, 0, 3030, 358]
+zones: []

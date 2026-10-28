@@ -1,0 +1,22 @@
+# Form 34B, 2022 General Election, layout B: a results page, recognised by its
+# title line and the column-header row (polling station code and name,
+# registered voters, the four candidates, totals). Results pages carry no
+# personal data: no zones, nothing on them is ever changed.
+#
+# Reference: that header, cut from a scanned page (Budalangi, page 1); the
+# constituency name and code are erased. Typed text only.
+name: form34b_2022_results_layout_b
+form: 34B
+reference: reference.png
+page_long_side: 4240  # cut from a 2998x4240 page
+# These scans are large (up to 4960 px) with a dense security-print
+# background: features are taken at 2400 px with a larger budget.
+feature_dim: 2400
+n_features: 20000
+min_area_frac: 0.03
+min_inliers: 30
+min_score: 0.22
+protect:
+  - name: results_header
+    rect: [0, 0, 2095, 421]
+zones: []

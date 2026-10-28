@@ -32,6 +32,19 @@ def test_block_must_be_on_exactly_one_page(pages, ok):
     assert (document_rules(_doc(*pages), ts) == []) == ok
 
 
+@pytest.mark.parametrize("pages,ok", [
+    (("results_b", "block_b"), True),
+    (("results", "results", "block"), True),
+    (("results_b", "results_b"), False),
+    (("results", "block", "block_b"), False),  # two blocks, whatever their layouts
+])
+def test_block_layouts_are_alternatives(pages, ok):
+    """One block template per layout: a document needs exactly one block page
+    of any layout, not one of each."""
+    ts = [_t("results"), _t("results_b"), _t("block", once=True, priority=1), _t("block_b", once=True, priority=1)]
+    assert (document_rules(_doc(*pages), ts) == []) == ok
+
+
 def test_mixed_forms_are_rejected():
     ts = [_t("a34", form="34A"), _t("results"), _t("block", once=True)]
     assert "different forms" in document_rules(_doc("a34", "block"), ts)[0]

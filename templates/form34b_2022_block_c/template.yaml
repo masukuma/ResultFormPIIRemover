@@ -1,0 +1,94 @@
+# Form 34B, 2022 General Election, layout C (Garissa county's printing): the
+# block after the results table (agents table, the Constituency Returning
+# Officer on dotted lines, handing over / taking over). Found wherever it is
+# on a page.
+#
+# Reference: cut from a scanned page (Daadab, page 2), keeping printed text and
+# rules only: handwriting, the stamp and the green header fill are erased, and
+# the rules and dotted leaders redrawn where they ran under them.
+name: form34b_2022_block_c
+form: 34B
+reference: reference.png
+page_long_side: 4960  # the reference is cut from a 3507x4960 page
+padding: 8
+# These scans are large (up to 4960 px) with a dense security-print
+# background: features are taken at 2400 px with a larger budget.
+feature_dim: 2400
+n_features: 20000
+min_area_frac: 0.05
+priority: 1
+once: true
+protect:
+  - name: form34a_counts      # "Number of FORM 34 A submitted / received"
+    rect: [15, 860, 2470, 55]
+structure:
+  - name: agents
+    rect: [10, 40, 2490, 380]
+zones:
+  # Agents table: 3 rows.
+  - name: agent_id
+    action: partial
+    rule: id
+    digits: 8
+    rect: [1054, 202, 218, 69]
+    rows: 3
+    row_step: 69
+    search: [4, 4]   # the Returning Officer's name starts right below the table
+    region: agents
+  - name: agent_phone
+    action: partial
+    rule: phone
+    digits: 10
+    rect: [1844, 202, 314, 69]
+    rows: 3
+    row_step: 69
+    search: [4, 4]   # the Returning Officer's name starts right below the table
+    region: agents
+  - name: agent_signatures
+    action: signature
+    rect: [2164, 202, 319, 69]
+    rows: 3
+    row_step: 69
+    search: [6, 20]
+    region: agents
+  # Constituency Returning Officer; dotted leaders at y 500 (name), 551 (ID),
+  # 603 (signature), 653 (date). The lines are close together and
+  # handwriting is taller than the spacing, so the signature's search reaches
+  # well below its line (into the date, which may be masked with it).
+  - name: ro_id
+    anchor: [25, 523, 220, 35]
+    action: partial
+    rule: id
+    digits: 8
+    rect: [240, 502, 1660, 56]
+    search: [0, 8]
+  - name: ro_signature
+    anchor: [25, 523, 220, 35]
+    action: signature
+    rect: [205, 558, 1700, 52]
+    search: [4, 40]
+  # Handing over (Returning Officer) / taking over (Commission Chairperson).
+  - name: handover_ro_id
+    anchor: [26, 1076, 215, 36]
+    action: partial
+    rule: id
+    digits: 8
+    rect: [245, 1050, 800, 62]
+    search: [0, 8]
+  - name: handover_ro_signature
+    anchor: [26, 1076, 215, 36]
+    action: signature
+    rect: [210, 1135, 835, 85]
+    search: [0, 10]
+  - name: chair_id
+    anchor: [1437, 1074, 231, 38]
+    action: partial
+    rule: id
+    digits: 8
+    rect: [1672, 1050, 810, 62]
+    search: [0, 8]
+  - name: chair_signature
+    anchor: [1437, 1074, 231, 38]
+    action: signature
+    rect: [1655, 1135, 827, 85]
+    search: [0, 10]

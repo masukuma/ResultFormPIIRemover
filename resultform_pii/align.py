@@ -63,11 +63,11 @@ class Alignment:
 
 
 def _features(gray: np.ndarray, s: AlignSettings, page_long_side: float | None = None,
-              n_features: int | None = None) -> tuple[np.ndarray, np.ndarray | None]:
+              n_features: int | None = None, max_dim: int | None = None) -> tuple[np.ndarray, np.ndarray | None]:
     """ORB features on a copy scaled so the *page* is ``max_dim`` long. For a
     template cut from a page (``page_long_side``), that is the page it came
     from, so its text is at the same size as in a scanned page."""
-    scale = min(1.0, s.max_dim / (page_long_side or max(gray.shape[:2])))
+    scale = min(1.0, (max_dim or s.max_dim) / (page_long_side or max(gray.shape[:2])))
     small = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else gray
     orb = cv2.ORB_create(nfeatures=n_features or s.n_features, fastThreshold=10)
     kps, desc = orb.detectAndCompute(small, None)
@@ -76,7 +76,8 @@ def _features(gray: np.ndarray, s: AlignSettings, page_long_side: float | None =
 
 
 def prepare(template: Template, s: AlignSettings) -> Template:
-    template.keypoints, template.descriptors = _features(template.image, s, template.page_long_side)
+    template.keypoints, template.descriptors = _features(template.image, s, template.page_long_side,
+                                                         template.n_features, template.feature_dim)
     template.mask = template.build_mask()
     template.regions = {n: structure.prepare_region(template.image, n, r) for n, r in template.structure.items()}
     return template
@@ -119,7 +120,8 @@ def _score(H: np.ndarray, template: Template, scan_gray: np.ndarray, size: int =
 
 def align(scan_gray: np.ndarray, template: Template, s: AlignSettings,
           scan_feats: tuple[np.ndarray, np.ndarray | None] | None = None) -> Alignment:
-    pts, desc = scan_feats if scan_feats is not None else _features(scan_gray, s)
+    pts, desc = scan_feats if scan_feats is not None else \
+        _features(scan_gray, s, n_features=template.n_features, max_dim=template.feature_dim)
     fail = lambda reason, inl=0, m=0: Alignment(template, None, inl, m, 0.0, False, reason)  # noqa: E731
     if desc is None or template.descriptors is None or len(desc) < 2:
         return fail("no features")
@@ -159,8 +161,15 @@ def best_alignment(scan_gray: np.ndarray, templates: list[Template], s: AlignSet
         templates = [t for t in templates if not t.form or t.form == form]
         if not templates:
             return Alignment(None, None, 0, 0, 0.0, False, f"no template for form {form}")
-    feats = _features(scan_gray, s)
-    results = [align(scan_gray, t, s, feats) for t in templates]
+    feats: dict = {}  # the scan's features, once per feature setting
+
+    def scan_feats(t: Template):
+        key = (t.feature_dim, t.n_features)
+        if key not in feats:
+            feats[key] = _features(scan_gray, s, n_features=t.n_features, max_dim=t.feature_dim)
+        return feats[key]
+
+    results = [align(scan_gray, t, s, scan_feats(t)) for t in templates]
     passing = [r for r in results if r.ok]
     pool = passing or results
     # Priority first: a 34B page showing the declaration block must be

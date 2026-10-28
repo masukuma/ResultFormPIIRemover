@@ -175,3 +175,15 @@ def test_each_signature_gets_its_own_box():
     assert masking.verify_signatures(img, out, IDENTITY, cells, None, MaskSettings()) == ""
     assert "not fully masked" in masking.verify_signatures(img, cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), IDENTITY,
                                                            cells, None, MaskSettings())
+
+
+def test_dotted_leaders_are_print_not_writing():
+    from resultform_pii.masking import ink_mask
+    strip = np.full((60, 700), 235, np.uint8)
+    for x in range(20, 680, 14):  # "ID Number: ..........."
+        cv2.rectangle(strip, (x, 44), (x + 5, 47), 30, -1)
+    assert ink_mask(strip, 56).sum() == 0  # an empty field
+    cv2.putText(strip, "2345678", (120, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, 20, 3)
+    ink = ink_mask(strip, 56)
+    assert ink[:, 120:330].sum() > 0  # the digits stay
+    assert ink[44:48, 400:680].sum() == 0  # the leader beyond them goes

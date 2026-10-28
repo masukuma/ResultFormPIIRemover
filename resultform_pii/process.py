@@ -64,22 +64,26 @@ def document_rules(doc: DocResult, templates: list[Template]) -> list[str]:
     """Checks across the pages of one document.
 
     - All pages must be of one form type.
-    - A template marked ``once`` (e.g. the Form 34B declaration block) must
-      match exactly one page. Zero means the block wasn't recognised (a bad
-      scan, or a layout we don't know) and the page holding it might
-      otherwise be published as a plain results page; two or more means a
-      split block or a merged document. Either way: review, not publication."""
+    - Templates marked ``once`` (the Form 34B declaration block, one per
+      layout) are alternatives: exactly one page must match one of them.
+      Zero means the block wasn't recognised (a bad scan, or a layout we
+      don't know) and the page holding it might otherwise be published as a
+      plain results page; two or more means a split block, a merged
+      document, or two layouts in one. Either way: review, not publication."""
     by_name = {t.name: t for t in templates}
     used = [by_name.get(p.template) for p in doc.pages if p.ok]
     forms = {t.form for t in used if t and t.form}
     problems = []
     if len(forms) > 1:
         problems.append(f"pages match different forms: {', '.join(sorted(forms))}")
-    for t in templates:
-        if t.once and t.form in forms:
-            n = sum(1 for u in used if u is t)
-            if n != 1:
-                problems.append(f"Form {t.form}: {t.name} found on {n} pages (expected exactly 1)")
+    for form in sorted(forms):
+        blocks = [t for t in templates if t.once and t.form == form]
+        if not blocks:
+            continue
+        found = [u.name for u in used if u and u.once and u.form == form]
+        if len(found) != 1:
+            names = ", ".join(found) if found else " / ".join(t.name for t in blocks)
+            problems.append(f"Form {form}: declaration block ({names}) found on {len(found)} pages (expected exactly 1)")
     return problems
 
 

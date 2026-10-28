@@ -87,6 +87,12 @@ class Template:
     page_long_side: float | None = None  # reference cut from a page: that page's long side (px)
     min_inliers: int | None = None  # override AlignSettings thresholds for this template
     min_score: float | None = None
+    # Feature extraction for this template, and for the scans it is tried
+    # on: the page's long side in px, and the number of features. Large
+    # scans with a security-print background need more of both, or the
+    # background's corners crowd out the printed text's.
+    feature_dim: int | None = None
+    n_features: int | None = None
     # Filled in by prepare(): computed once per worker, reused for every page.
     regions: dict = field(default_factory=dict, repr=False)  # name -> structure.Region
     mask: np.ndarray | None = field(default=None, repr=False)
@@ -154,7 +160,9 @@ def load_template(directory: str | Path) -> Template:
                     int(spec.get("priority", 0)), bool(spec.get("once", False)),
                     float(spec["page_long_side"]) if "page_long_side" in spec else None,
                     int(spec["min_inliers"]) if "min_inliers" in spec else None,
-                    float(spec["min_score"]) if "min_score" in spec else None)
+                    float(spec["min_score"]) if "min_score" in spec else None,
+                    int(spec["feature_dim"]) if "feature_dim" in spec else None,
+                    int(spec["n_features"]) if "n_features" in spec else None)
 
 
 def load_templates(root: str | Path) -> list[Template]:
