@@ -4,7 +4,9 @@ Removes personal data from photographed election result forms (KIEMS Form
 34A and others) before publication. Each published form comes with evidence
 that **nothing but the personal data was touched**.
 
-- **Signatures** are blacked out, each on its own box.
+- **Signatures** are masked by a black band through the middle of each:
+  the tops and bottoms of the strokes show that the form was signed, the
+  signature itself can't be made out.
 - **ID and passport numbers** have 3 random characters hidden.
 - **Phone numbers** keep their first digits; 3 of the last 6 are hidden.
 - **Names, results, stamps and QR codes** stay readable. A stamp is never

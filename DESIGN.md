@@ -10,7 +10,7 @@ personal data gets a different treatment:
 
 | Field | Treatment |
 |---|---|
-| Signatures (officers, agents) | **Blacked out** completely |
+| Signatures (officers, agents) | **Masked through the middle**: a black band along each signature; the tops and bottoms of its strokes show that it was signed |
 | National ID / passport numbers | **3 random characters hidden** |
 | Phone numbers | **First digits kept, 3 of the last 6 hidden**: `0734471897` keeps `0734` and hides 3 of `471897` |
 | Names | Left visible |
@@ -110,8 +110,10 @@ always downward. With `--strict-structure`, such pages go to review instead.
 
 ### 3. Masking (`masking.py`)
 
-**Signature zones** (`action: signature`) get one black box **per signature**,
-not one block per region:
+**Signature zones** (`action: signature`) get one black band **per signature**,
+through its middle, not one block per region. Readers see that a form was
+signed (the tops and bottoms of the strokes show above and below the band),
+not the signature itself:
 
 1. **Find the ink.** The column is straightened and searched 24 px beyond each
    side, and 30 px further down, because signatures overrun their box and bent
@@ -132,7 +134,14 @@ not one block per region:
    writing cut off by the window's bottom edge that starts well below the
    last row is the next line's (an officer's name written large under the
    agents table), not a signature running over its row.
-4. **Mask.** Each signature gets its own padded box. Empty rows are untouched.
+4. **Mask.** Each signature gets its own band, along it through its middle.
+   The band follows the writing in 24 px pieces, so a signature rising or
+   falling along its line is covered all along. It is half the signature's
+   height thick (the height of its taller pieces, so a long flat tail
+   doesn't thin it; at least 10 px). Each piece is centred on the middle
+   row of its own ink and on that of the writing around it (the median of
+   the middles of the two pieces either side); where they differ (a loop,
+   a tall letter) it covers both. Empty rows are untouched.
 
 **Underlined fields** (a signature on a line, not in a table) take only
 writing on their own line. The date is written on the next line, often so
@@ -158,14 +167,15 @@ date was masked with it:
 - a field's line is at most two thin lines. A scan striped all over with
   long horizontal lines has no line taken out at all: every stripe would
   have been taken for it, and the signature written across them with it;
-- each signature is masked in one box on its line and one per stroke
-  above or below it, so a loop reaching down covers its own width of the
-  line below, and two strokes reaching down don't cover the date written
-  between them. With a reference, the printed line is found where the
-  reference has it however many long strokes an officer drew beside it.
+- with a reference, the printed line is found where the reference has it,
+  however many long strokes an officer drew beside it.
 
-A coverage check then finds signatures again on the original and requires
-each to be at least 90% under black in the output. Blackout zones (plain
+The band hides the signature's middle, not the strokes running down into
+the date line, so a date written under a signature stays readable.
+
+A coverage check then finds signatures again on the original, works out each
+one's band the same way, and requires the ink inside it to be at least 90%
+under black in the output. Blackout zones (plain
 rectangles) remain available for areas that must be hidden entirely, and are
 mapped edge by edge so they stay covered on curled pages.
 
@@ -717,7 +727,8 @@ the protected stamps outlined and the blacked blocks shaded:
 
 - Every stamp is found and untouched (the IEBC logo is often taken for one
   as well, which does no harm).
-- Signatures in the declaration and the agents table are masked, and so are
+- Signatures in the declaration and the agents table are masked through
+  the middle, and so are
   the officers' sign-offs under the comments.
 - IDs and phone numbers, in the table or written elsewhere, keep all but 3
   digits.
@@ -752,10 +763,14 @@ by a test where one can be written:
 - **Faint strokes of a signature can show.** A stroke too faint to read
   as ink (a thin flourish between a signature's initial and its final
   tick) is not masked; the parts either side of it are, each on its own.
-- **Signature boxes merge in dense tables.** Where agents sign across
-  neighbouring rows, the boxes merge into one patch. Any writing inside a
-  signature box (e.g. a phone number continued into the column, or part of
-  the "Signature" label) is hidden with it.
+- **Writing joined to a signature is banded with it.** Writing that touches
+  a signature (a phone number continued into the column, part of the
+  "Signature" label) is taken as part of it and loses its middle too.
+- **How much of a signature shows is a judgement.** The band hides the
+  middle half of each signature's height; the tops and bottoms of the
+  strokes show. A signature made mostly of tall loops shows more of them
+  than a compact one. Masks are applied in whole 8×8 blocks, which adds up
+  to 7 px to the band at each edge.
 - **Thin pen strokes on embossed forms.** On a form whose background
   scans as thin lines (below), pen strokes as thin as that background (a
   fine, flat flourish) are dropped with it and stay visible; the rest of

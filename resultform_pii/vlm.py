@@ -4,7 +4,7 @@ The template pipeline is the fast path; a VLM is slow (seconds per page on a
 GPU), so it is used where judgement helps and speed doesn't matter:
 
 audit      After redaction, ask whether any complete ID number, phone number or
-           signature is still readable anywhere on the page, including
+           unmasked signature is still visible anywhere on the page, including
            free-text areas such as the presiding officer's comments. A "yes"
            sends the form to review. A gate, not a guarantee: a VLM can miss
            things, so it adds to the template's guarantees rather than
@@ -66,6 +66,9 @@ Black rectangles are intentional redactions. Each ID/passport number has 3 of it
 characters covered by black boxes, and each phone number keeps its first 4 digits
 (e.g. 0734) and has 3 of its remaining 6 digits covered. So most digits of these
 numbers are meant to be visible; what must never be visible is a COMPLETE number.
+Each signature has a black band across its middle: the tops and bottoms of its
+strokes showing above and below the band are intended (they show that the form
+was signed). What must never be visible is a signature with no band across it.
 Names of officials and agents are allowed to be visible. Official stamps (the round
 "I.E.B.C. PRESIDING OFFICER" stamp) must never be covered, so writing that lies inside
 a stamp is left visible on purpose: ignore anything inside a stamp.
@@ -74,7 +77,7 @@ Look at the whole page, including tables, margins, stamps and handwritten commen
 Answer:
 - id_number_visible: is any national ID or passport number fully readable, with no black box hiding any of its characters?
 - phone_number_visible: is any phone number (07XXXXXXXX, 01XXXXXXXX, +254...) fully readable, with no black box hiding any digit?
-- signature_visible: is any handwritten signature visible that is not covered by black (outside stamps)?
+- signature_visible: is any handwritten signature visible with no black band across its middle (outside stamps)?
 - stamp_covered: does any black box cover part of an official stamp?
 - details: one short sentence naming where, if anything is wrong."""
 

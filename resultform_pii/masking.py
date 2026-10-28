@@ -663,6 +663,12 @@ SIG_MIN_INK = 40  # ink pixels for a blob to count as (part of) a signature
 SIG_JOIN = 9  # px: strokes closer than this belong to the same signature
 SIG_MIN_H = 8  # px: anything flatter is a printed rule, not a signature
 SIG_BELOW = 30.0  # extra px searched below: drift on bent pages is downward
+# A signature is masked by a band through its middle: that a signature is
+# there stays visible (the tops and bottoms of its strokes), the signature
+# itself can't be made out.
+SIG_BAND_H = 0.5  # the band's thickness: this share of the signature's height...
+SIG_BAND_MIN = 10.0  # ...and at least this, px
+SIG_CHUNK = 24  # px: the band follows the writing in pieces this wide
 
 
 def _column_strip(gray: np.ndarray, f: Mapper, cells: list[Zone], above: float, below: float, extra: float):
@@ -718,18 +724,51 @@ def _inside_stamp(xs: np.ndarray, ys: np.ndarray, stamps, share: float = 0.9) ->
     return False
 
 
+def _middle_band(xs: np.ndarray, ys: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """Boxes (x0, y0, x1, y1) hiding the middle of one signature's ink: a band
+    along it, its tops and bottoms left showing.
+
+    The band is SIG_BAND_H of the signature's height thick (at least
+    SIG_BAND_MIN px; the height of its taller pieces, so that a long flat
+    tail doesn't thin it) and follows the writing piece by piece (SIG_CHUNK
+    px wide): each piece is centred on the middle of the writing around it
+    (the median of the middle rows of it and two pieces either side), and
+    where the piece's own middle lies outside that, covers it too. So a signature rising or falling along its line
+    is covered all along, and a loop or a tall letter is covered through its
+    middle as well as the body it hangs from."""
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    starts = list(range(x0, x1, SIG_CHUNK))
+    own = [(xs >= a) & (xs < a + SIG_CHUNK) for a in starts]
+    heights = [np.quantile(ys[k], 0.95) - np.quantile(ys[k], 0.05) + 1 for k in own if k.sum() >= 4]
+    if not heights:
+        return [(x0, int(ys.min()), x1, int(ys.max()) + 1)]
+    half = max(SIG_BAND_MIN, SIG_BAND_H * float(np.quantile(heights, 0.75))) / 2
+    mids = [float(np.median(ys[k])) if k.sum() >= 4 else np.nan for k in own]
+    boxes = []
+    for i, (a, k) in enumerate(zip(starts, own)):
+        if k.sum() < 4:
+            continue  # a few pixels of a thin joining stroke need no box
+        # the middle of the writing around: the median of the pieces' middles,
+        # which one loop or tall letter among them doesn't move
+        c_near = float(np.nanmedian(mids[max(i - 2, 0):i + 3]))
+        # a piece whose own middle the band already covers keeps to the band's
+        # line, so the band reads as one bar
+        own_mid = mids[i] if abs(mids[i] - c_near) > half / 2 else c_near
+        lo, hi = min(own_mid, c_near), max(own_mid, c_near)
+        boxes.append((a, int(np.floor(lo - half)), min(a + SIG_CHUNK, x1), int(np.ceil(hi + half))))
+    return boxes
+
+
 def _signature_blobs(strip: np.ndarray, ink: np.ndarray, extra: float,
                      w: float, min_ink: int, bands: list[tuple[float, float]],
-                     stamps=(), bridge: np.ndarray | None = None, line: tuple[int, int] | None = None) -> list:
+                     stamps=(), bridge: np.ndarray | None = None) -> list:
     """Separate signatures: strokes joined mostly sideways (signatures run
     horizontally; rows are stacked). A blob spanning several rows (strokes of
     neighbouring rows touching) is cut at the row boundaries, one box per row.
     ``bridge``: print (a field's underline) that joins the strokes touching
     it without being part of any signature.
-    Returns (x0, y0, x1, y1, ink_pixels, boxes) per part that is mostly inside
-    the column. ``boxes`` cover its ink: one box, or with ``line`` (the
-    field's line, top and bottom rows), one for the ink on the line and one
-    for each stroke above or below it."""
+    Returns (x0, y0, x1, y1, ink_pixels, band) per part that is mostly inside
+    the column; ``band``: the boxes that mask it (see ``_middle_band``)."""
     joined = cv2.dilate(ink if bridge is None else ink | bridge,
                         cv2.getStructuringElement(cv2.MORPH_RECT, (SIG_JOIN + 6, 5)))
     n, lab = cv2.connectedComponents(joined)
@@ -764,16 +803,7 @@ def _signature_blobs(strip: np.ndarray, ink: np.ndarray, extra: float,
         # No "looks printed" test here, unlike for digits: in testing, a faint
         # trace in the reference matched real signatures well enough to skip
         # them. Masking a printed "Signature" label is the safe failure.
-        boxes = [(x0, y0, x1, y1)]
-        if line is not None:
-            # On the line one box; above and below it one per stroke, so a
-            # loop reaching down covers its own width of the next line, and
-            # two strokes reaching down don't cover the date between them.
-            sec, strokes = np.digitize(ys, line), own[ys, xs]
-            sel = [sec == 1] + [(sec == i) & (strokes == k) for i in (0, 2) for k in np.unique(strokes[sec == i])]
-            boxes = [(int(xs[k].min()), int(ys[k].min()), int(xs[k].max()) + 1, int(ys[k].max()) + 1)
-                     for k in sel if k.any()]
-        blobs.append((x0, y0, x1, y1, len(xs), boxes))
+        blobs.append((x0, y0, x1, y1, len(xs), _middle_band(xs, ys)))
     return blobs
 
 
@@ -844,7 +874,7 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=Non
         ink[_ref_crop(255 - printed, origin, strip.shape) < 128] = 0
     stamps = _remove_stamp_rings(ink)
     lo, hi = int(bands[0][0]), int(np.ceil(bands[-1][1]))
-    bridge = line = None
+    bridge = None
     if centered:
         # Strokes lying mostly on the line below or above (the date, the ID)
         # are no part of the signature, even where they run close enough to
@@ -881,8 +911,7 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=Non
         off = inside < 0.3 * np.maximum(np.bincount(lab[on], minlength=n), 1)
         off[0] = False
         ink[off[lab]] = 0
-        line = (lo, hi)
-    blobs = _signature_blobs(strip, ink, SIG_OVERRUN, cells[0].rect[2], SIG_MIN_INK, bands, stamps, bridge, line)
+    blobs = _signature_blobs(strip, ink, SIG_OVERRUN, cells[0].rect[2], SIG_MIN_INK, bands, stamps, bridge)
     # Writing cut off by the window's bottom edge that starts well below the
     # last row is the next line's (an officer's name written large under a
     # table), not a signature running over its row: that starts in the row.
@@ -908,18 +937,19 @@ def signature_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Z
                      margin: tuple[float, float] = (0.0, 0.0), ref: np.ndarray | None = None,
                      pad: float = 6.0, printed: np.ndarray | None = None, centered: bool = False,
                      strikes: list[Strike] | None = None, exclude: np.ndarray | None = None) -> list[dict]:
-    """Black out each signature on its own box, instead of the whole column.
+    """Mask each signature by a band through its middle (``_middle_band``):
+    a reader sees that it is signed, not the signature.
 
     Ink in the column (plus SIG_OVERRUN px each side, plus the zone's search
-    margin above/below) is split into signatures; each gets its own padded
-    box. Empty rows stay untouched."""
+    margin above/below) is split into signatures; each gets its own band,
+    ``pad`` px longer at each end. Empty rows stay untouched."""
     blobs, origin, bands, cells = _find_signatures(gray, f, cells, s, margin, ref, SIG_BELOW, printed, centered,
                                                    strikes, exclude)
     counts = [0] * len(cells)
-    for x0, y0, x1, y1, _, boxes in blobs:
-        for bx0, by0, bx1, by1 in boxes:
-            quad = np.float64([[bx0 - pad, by0 - pad], [bx1 + pad, by0 - pad], [bx1 + pad, by1 + pad],
-                               [bx0 - pad, by1 + pad]])
+    for x0, y0, x1, y1, _, band in blobs:
+        for bx0, by0, bx1, by1 in band:
+            bx0, bx1 = bx0 - (pad if bx0 == x0 else 0), bx1 + (pad if bx1 == x1 else 0)
+            quad = np.float64([[bx0, by0], [bx1, by0], [bx1, by1], [bx0, by1]])
             _fill(img, f, quad + origin)
         cy = (y0 + y1) / 2
         i = int(np.argmin([0 if b0 <= cy < b1 else min(abs(cy - b0), abs(cy - b1)) for b0, b1 in bands]))
@@ -933,9 +963,9 @@ def verify_signatures(gray: np.ndarray, out: np.ndarray, f: Mapper, cells: list[
                       keep: np.ndarray | None = None, printed: np.ndarray | None = None,
                       centered: bool = False, strikes: list[Strike] | None = None,
                       exclude: np.ndarray | None = None) -> str:
-    """Coverage check: find signatures again on the *original* image, over a
-    window reaching further down (drift on bent pages is downward), and
-    require each to be at least 90% under black in the redacted image.
+    """Coverage check: find signatures again on the *original* image and
+    require the ink in each one's middle band (``_middle_band``, from the
+    original) to be at least 90% under black in the redacted image.
 
     ``keep`` (image-sized, nonzero = must stay visible: stamps) is left out
     of the count: a signature written across a stamp is masked only outside
@@ -951,12 +981,12 @@ def verify_signatures(gray: np.ndarray, out: np.ndarray, f: Mapper, cells: list[
     ink = ink_mask(gstrip, float(np.median([z.rect[3] for z in cells])), signature=True)
     _erase_strikes(ink, origin, strikes)
     bad = 0
-    for x0, y0, x1, y1, n, boxes in blobs:
+    for x0, y0, x1, y1, n, band in blobs:
         if n < 2 * SIG_MIN_INK:
             continue
         sel = np.zeros((y1 - y0, x1 - x0), bool)
-        for bx0, by0, bx1, by1 in boxes:
-            sel[by0 - y0:by1 - y0, bx0 - x0:bx1 - x0] = True
+        for bx0, by0, bx1, by1 in band:
+            sel[max(by0 - y0, 0):max(by1 - y0, 0), bx0 - x0:bx1 - x0] = True
         sel &= ink[y0:y1, x0:x1] > 0
         if kstrip is not None:
             kept = kstrip[y0:y1, x0:x1] > 0
@@ -967,7 +997,7 @@ def verify_signatures(gray: np.ndarray, out: np.ndarray, f: Mapper, cells: list[
             bad += 1
     if bad:
         name = cells[0].group or cells[0].name
-        return f"{name}: {bad} signature(s) not fully masked"
+        return f"{name}: {bad} signature(s) not masked through the middle"
     return ""
 
 

@@ -33,6 +33,22 @@ def _cells(digits: int = 8) -> list[Zone]:
 IDENTITY = masking.homography(np.eye(3))
 
 
+def _middle_hidden(canvas: np.ndarray, sig: np.ndarray, chunk: int = 24) -> bool:
+    """One signature's ink (``sig``) is masked as prescribed: in every piece
+    along it, the middle of its rows is under black, while a fair share of
+    its ink (its tops and bottoms) stays visible."""
+    ys, xs = np.nonzero(sig)
+    covered = canvas[ys, xs] == 0
+    for a in range(xs.min(), xs.max() + 1, chunk):
+        sel = (xs >= a) & (xs < a + chunk)
+        if sel.sum() < 10 or np.ptp(xs[sel]) < 0.75 * chunk:
+            continue  # little ink, or the last few px at an end
+        lo, hi = np.quantile(ys[sel], (0.4, 0.6))
+        if covered[sel & (ys >= lo) & (ys <= hi)].mean() < 0.8:
+            return False
+    return 0.2 < covered.mean() < 0.85
+
+
 def _visible_runs(row_out: np.ndarray, row_in: np.ndarray) -> list[int]:
     """Runs of character columns left untouched in one row."""
     ink = (row_in < 120).any(axis=0)
@@ -150,14 +166,16 @@ def _signature_table(rows: dict[int, int]) -> np.ndarray:
     for x in (X, X + W):
         cv2.line(img, (x, Y - 40), (x, Y + ROWS * ROW_H), 60, 2)
     rng = np.random.default_rng(0)
-    for r, dx in rows.items():
-        pts = np.cumsum(rng.integers(-6, 7, (30, 2)), axis=0) + (X + dx, Y + r * ROW_H + 18)
-        pts[:, 0] = np.linspace(X + dx, X + dx + 70, 30)
+    for r, dx in rows.items():  # cursive: up and down strokes, 20 px tall
+        x = np.linspace(X + dx, X + dx + 70, 40)
+        pts = np.column_stack([x, Y + r * ROW_H + 18 + 9 * np.sin((x - X - dx) / 4) + rng.integers(-1, 2, len(x))])
         cv2.polylines(img, [pts.astype(np.int32)], False, 20, 2)
     return img
 
 
-def test_each_signature_gets_its_own_box():
+def test_each_signature_is_masked_through_its_middle():
+    """One band per signature, through its middle: that it is signed stays
+    visible, the signature can't be made out. Empty rows are untouched."""
     img = _signature_table({0: 20, 3: 110})
     cells = [Zone(f"s[{r}]", (X, Y + r * ROW_H, W, ROW_H), "signature", group="s", row=r) for r in range(ROWS)]
     canvas = np.full(img.shape, 255, np.uint8)
@@ -167,14 +185,18 @@ def test_each_signature_gets_its_own_box():
     sig_ink[:Y + 2] = False
     for r in range(ROWS + 1):  # printed rules are not signatures
         sig_ink[Y + r * ROW_H - 3:Y + r * ROW_H + 3] = False
-    assert (canvas[sig_ink] == 0).mean() > 0.97  # signatures covered
+    for r in (0, 3):
+        assert _middle_hidden(canvas, sig_ink & (np.abs(np.arange(img.shape[0]) - (Y + r * ROW_H + 18)) < 18)[:, None])
     hidden = canvas[Y:Y + ROWS * ROW_H, X:X + W] == 0
     assert hidden.mean() < 0.35  # far from the whole column
     assert not hidden[1 * ROW_H + 8:3 * ROW_H - 8].any()  # empty rows untouched
     out = cv2.cvtColor(np.where(canvas == 0, 0, img).astype(np.uint8), cv2.COLOR_GRAY2BGR)
     assert masking.verify_signatures(img, out, IDENTITY, cells, None, MaskSettings()) == ""
-    assert "not fully masked" in masking.verify_signatures(img, cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), IDENTITY,
-                                                           cells, None, MaskSettings())
+    assert "not masked through the middle" in masking.verify_signatures(img, cv2.cvtColor(img, cv2.COLOR_GRAY2BGR),
+                                                                        IDENTITY, cells, None, MaskSettings())
+    writing = cv2.dilate((sig_ink * 255).astype(np.uint8), np.ones((7, 7), np.uint8)) > 0
+    full = cv2.cvtColor(np.where(writing, 0, img).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+    assert masking.verify_signatures(img, full, IDENTITY, cells, None, MaskSettings()) == ""  # more is fine
 
 
 def test_dotted_leaders_are_print_not_writing():
@@ -223,15 +245,14 @@ def test_the_date_below_an_underlined_signature_stays_visible(underline):
     """An officer's signature on its line, a loop of it running down beside
     the date written on the line below: joined into one blob, the date was
     masked with it. Strokes mostly on the next line are not the signature's,
-    the loop (cut off where the underline is taken out) still is, and neither
-    the underline nor the loop stretches the mask over the date."""
+    and neither the underline nor the loop stretches the mask over the
+    date: the band through the signature's middle leaves the loop's foot,
+    beside the date, showing."""
     img = np.full((320, 900), 235, np.uint8)
     cv2.line(img, (60, 200), (60 + underline, 200), 60, 2)  # "Signature: ____"
     cv2.line(img, (60, 250), (780, 250), 60, 2)  # "Date: ____"
-    rng = np.random.default_rng(1)
-    pts = np.cumsum(rng.integers(-5, 6, (60, 2)), axis=0) + (150, 178)
-    pts[:, 0] = np.linspace(150, 400, 60)
-    pts = np.clip(pts, (0, 160), (900, 192))
+    x = np.linspace(150, 400, 120)  # cursive, 30 px tall
+    pts = np.column_stack([x, 177 + 14 * np.sin((x - 150) / 5)])
     cv2.polylines(img, [pts.astype(np.int32)], False, 20, 2)
     cv2.polylines(img, [np.int32([[300, 185], [310, 228], [330, 230], [338, 186]])], False, 20, 2)  # the loop
     cv2.putText(img, "11-08-2022", (420, 242), cv2.FONT_HERSHEY_SIMPLEX, 1.0, 20, 2)
@@ -242,16 +263,15 @@ def test_the_date_below_an_underlined_signature_stays_visible(underline):
     sig_ink[:, :140] = sig_ink[:, 410:] = sig_ink[196:205] = sig_ink[246:] = False
     canvas = np.full(img.shape, 255, np.uint8)
     masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), centered=True)
-    assert (canvas[sig_ink] == 0).mean() > 0.97  # the loop below the line included
+    main = sig_ink & (np.arange(img.shape[0]) < 196)[:, None]
+    assert _middle_hidden(canvas, main)
     assert (canvas[date_ink] == 0).mean() == 0
     assert (canvas[150:205, 415:] == 255).all()  # the underline beyond the signature
-    assert (canvas[212:, :290] == 255).all() and (canvas[212:, 350:] == 255).all()  # below: the loop only
+    assert (canvas[205:, :290] == 255).all() and (canvas[205:, 350:] == 255).all()  # below the line: the loop only
     out = cv2.cvtColor(np.where(canvas == 0, 0, img).astype(np.uint8), cv2.COLOR_GRAY2BGR)
     assert masking.verify_signatures(img, out, IDENTITY, field, None, MaskSettings(), centered=True) == ""
-    unmasked = np.where(sig_ink[:, :, None], 235, out).astype(np.uint8)
-    unmasked[sig_ink & (np.arange(img.shape[0]) > 205)[:, None]] = 20  # only the loop left showing
-    assert "not fully masked" in masking.verify_signatures(img, unmasked, IDENTITY, field, None, MaskSettings(),
-                                                           centered=True)
+    assert "not masked through the middle" in masking.verify_signatures(
+        img, cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), IDENTITY, field, None, MaskSettings(), centered=True)
 
 
 def _underlined_signature(line) -> tuple[np.ndarray, np.ndarray, list[Zone]]:
@@ -259,8 +279,8 @@ def _underlined_signature(line) -> tuple[np.ndarray, np.ndarray, list[Zone]]:
     img = np.full((320, 900), 235, np.uint8)
     line(img)
     rng = np.random.default_rng(1)
-    pts = np.cumsum(rng.integers(-5, 6, (60, 2)), axis=0) + (150, 178)
-    pts[:, 0] = np.linspace(150, 400, 60)
+    x = np.linspace(150, 400, 120)  # cursive: up and down strokes, 30 px tall
+    pts = np.column_stack([x, 178 + 14 * np.sin((x - 150) / 5) + rng.integers(-2, 3, len(x))])
     pts = np.clip(pts, (0, 160), (900, 196))
     cv2.polylines(img, [pts.astype(np.int32)], False, 20, 2)
     sig = np.zeros(img.shape, np.uint8)
@@ -279,7 +299,7 @@ def test_a_broken_underline_does_not_stretch_the_signature_mask():
     img, sig, field = _underlined_signature(dashed)
     canvas = np.full(img.shape, 255, np.uint8)
     masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), centered=True)
-    assert (canvas[sig] == 0).mean() > 0.97
+    assert _middle_hidden(canvas, sig)
     assert (canvas[:, 420:] == 255).all()
 
 
@@ -297,9 +317,9 @@ def test_a_striped_scan_is_no_underline():
     img, sig, field = _underlined_signature(stripes)
     canvas = np.full(img.shape, 255, np.uint8)
     masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), centered=True)
-    assert (canvas[sig] == 0).mean() > 0.97
+    assert _middle_hidden(canvas, sig)
     out = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    assert "not fully masked" in masking.verify_signatures(img, out, IDENTITY, field, None, MaskSettings(),
+    assert "not masked through the middle" in masking.verify_signatures(img, out, IDENTITY, field, None, MaskSettings(),
                                                            centered=True)
 
 
@@ -321,8 +341,8 @@ def test_a_flat_flourish_is_not_the_printed_line(with_ref):
         cv2.line(ref, (60, 208), (780, 208), 60, 2)  # a layout variant: 8 px off
     canvas = np.full(img.shape, 255, np.uint8)
     masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), ref=ref, centered=True)
-    assert (canvas[sig] == 0).mean() > 0.97
-    assert (canvas[tail > 0] == 0).mean() > 0.97
+    assert _middle_hidden(canvas, sig)
+    assert (canvas[tail > 0] == 0).mean() > 0.97  # here the tail is the middle
     assert (canvas[150:205, 740:] == 255).all()  # the line beyond the tail
 
 
@@ -376,7 +396,7 @@ def test_print_sitting_on_the_line_is_not_joined_to_the_signature():
     img, sig, field = _underlined_signature(line)
     canvas = np.full(img.shape, 255, np.uint8)
     masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), centered=True)
-    assert (canvas[sig] == 0).mean() > 0.97
+    assert _middle_hidden(canvas, sig)
     assert (canvas[150:205, 420:550] == 255).all()
 
 
@@ -430,7 +450,7 @@ def test_an_embossed_background_in_empty_fields_is_not_writing():
     img, sig, field = _underlined_signature(lambda im: (embossed(im), cv2.line(im, (60, 200), (780, 200), 30, 2)))
     canvas = np.full(img.shape, 255, np.uint8)
     rep = masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), centered=True)
-    assert rep[0]["mode"] == "signature" and (canvas[sig] == 0).mean() > 0.97
+    assert rep[0]["mode"] == "signature" and _middle_hidden(canvas, sig)
     assert (canvas[:, 430:] == 255).all()  # the empty rest of the field
     empty = np.full((320, 900), 235, np.uint8)
     embossed(empty)
@@ -462,9 +482,5 @@ def test_strokes_reaching_down_cover_only_their_own_width_of_the_date():
     cv2.line(ref, (60, 200), (780, 200), 60, 2)
     canvas = np.full(img.shape, 255, np.uint8)
     masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), ref=ref, centered=True)
-    assert (canvas[sig] == 0).mean() > 0.97
-    tails = np.zeros(img.shape, bool)
-    tails[206:238] = img[206:238] < 120
-    tails[:, 160:390] = False
-    assert (canvas[tails] == 0).mean() > 0.97  # the signature's own strokes below its line
+    assert (canvas[sig] == 0).mean() > 0.6  # between the long strokes, most of it is the middle
     assert (canvas[date_ink] == 0).mean() < 0.05
