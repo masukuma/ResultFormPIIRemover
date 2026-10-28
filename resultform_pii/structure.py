@@ -251,7 +251,11 @@ def snap(gray: np.ndarray, H: np.ndarray, region: Region, margin: float = 0.5,
     bots = np.float64([vs[b].hi for _, b in pv])
     top, bot = float(np.median(tops)), float(np.median(bots))
     t_top, t_bot = region.top - sy, region.bottom - sy  # template, patch frame
-    if region.open_top:
+    # Rules running on up past the table, with their lower ends where the
+    # table ends: a table hung under another (``open_top``), or a scan's dark
+    # band above the table that the rules seem to run into. The lower ends
+    # place the table.
+    if region.open_top or (abs(bot - t_bot) <= 20 and top < t_top - 80):
         if abs(bot - t_bot) > 80 or top > t_top + 0.25 * (t_bot - t_top):
             return Snap(False, f"{region.name}: column rules don't reach the table", 0, len(pv))
         top = bot - (t_bot - t_top)

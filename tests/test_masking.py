@@ -378,3 +378,34 @@ def test_print_sitting_on_the_line_is_not_joined_to_the_signature():
     masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), centered=True)
     assert (canvas[sig] == 0).mean() > 0.97
     assert (canvas[150:205, 420:550] == 255).all()
+
+
+def test_the_next_line_cut_off_below_a_signature_column_is_not_a_signature():
+    """The window below a table reaches the top of an officer's name written
+    large on the next line; cut off by the window's edge, its letters were
+    masked as a signature."""
+    img = _signature_table({0: 20})
+    bottom = Y + ROWS * ROW_H
+    cv2.putText(img, "NA", (X + 40, bottom + 120), cv2.FONT_HERSHEY_SIMPLEX, 2.0, 20, 4)  # top ~ bottom + 75
+    cells = [Zone(f"s[{r}]", (X, Y + r * ROW_H, W, ROW_H), "signature", group="s", row=r) for r in range(ROWS)]
+    canvas = np.full(img.shape, 255, np.uint8)
+    rep = masking.signature_column(canvas, img, IDENTITY, cells, MaskSettings())
+    assert [r["mode"] for r in rep] == ["signature"] + ["empty"] * (ROWS - 1)
+    assert (canvas[bottom + 10:] == 255).all()
+
+
+def test_crumbs_of_print_in_an_empty_field_are_not_a_signature():
+    """What is left of a security print's lettering is crumbs; close
+    together they were joined into a "signature" and masked in empty fields."""
+    def line(img):
+        cv2.line(img, (60, 200), (780, 200), 60, 2)
+    img, _, field = _underlined_signature(line)
+    img[150:197] = 235  # no signature: an empty field...
+    rng = np.random.default_rng(4)
+    for x in range(420, 600, 12):  # ...with crumbs of print in it, close together
+        for y in range(160, 192, 7):
+            x0, y0 = x + int(rng.integers(0, 3)), y + int(rng.integers(0, 3))
+            img[y0:y0 + 2, x0:x0 + int(rng.integers(4, 9))] = 40
+    canvas = np.full(img.shape, 255, np.uint8)
+    rep = masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), centered=True)
+    assert rep[0]["mode"] == "empty" and (canvas == 255).all()

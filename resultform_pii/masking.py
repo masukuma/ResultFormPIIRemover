@@ -715,6 +715,9 @@ def _signature_blobs(strip: np.ndarray, ink: np.ndarray, extra: float,
     joined = cv2.dilate(ink if bridge is None else ink | bridge,
                         cv2.getStructuringElement(cv2.MORPH_RECT, (SIG_JOIN + 6, 5)))
     n, lab = cv2.connectedComponents(joined)
+    _, own = cv2.connectedComponents((ink > 0).astype(np.uint8))
+    stroke = np.bincount(own.ravel())  # ink pixels of each unbroken stroke
+    stroke[0] = 0
     edges = [bands[0][0]] + [(a[1] + b[0]) / 2 for a, b in zip(bands, bands[1:])] + [bands[-1][1]]
     parts = []
     for i in range(1, n):
@@ -730,6 +733,11 @@ def _signature_blobs(strip: np.ndarray, ink: np.ndarray, extra: float,
     for xs, ys in parts:
         if ((xs >= extra) & (xs < extra + w)).mean() < 0.5:
             continue  # writing from the neighbouring column
+        if stroke[own[ys, xs]].max() < min_ink:
+            # Only crumbs (what is left of a security print's lettering, or of
+            # a striped scan's stripes), joined into a "signature" by being
+            # close together: writing has unbroken strokes.
+            continue
         if _inside_stamp(xs, ys, stamps):
             continue
         x0, x1, y0, y1 = int(xs.min()), int(xs.max()) + 1, int(ys.min()), int(ys.max()) + 1
@@ -850,6 +858,11 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=Non
         ink[off[lab]] = 0
         line = (lo, hi)
     blobs = _signature_blobs(strip, ink, SIG_OVERRUN, cells[0].rect[2], SIG_MIN_INK, bands, stamps, bridge, line)
+    # Writing cut off by the window's bottom edge that starts well below the
+    # last row is the next line's (an officer's name written large under a
+    # table), not a signature running over its row: that starts in the row.
+    end, sh = bands[-1][1], strip.shape[0]
+    blobs = [b for b in blobs if not (b[3] >= sh - 1 and b[1] > end + 0.5 * (sh - end))]
     if centered:
         # A blob belongs to the field when a good share of its ink is on the
         # field's line: tails and loops (a "g", a flourish) reach far above

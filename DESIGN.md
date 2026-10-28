@@ -126,7 +126,12 @@ not one block per region:
    - flat strokes 8 px or less in height, which are pieces of rules.
 3. **Group strokes.** Strokes that touch, mostly sideways, form one signature.
    A group spanning several rows (neighbours' strokes touching) is cut at the
-   row boundaries.
+   row boundaries. A group counts only if one of its strokes is unbroken
+   for 40 ink pixels or more: crumbs of a security print's lettering, close
+   together, were joined into "signatures" and masked in empty fields. And
+   writing cut off by the window's bottom edge that starts well below the
+   last row is the next line's (an officer's name written large under the
+   agents table), not a signature running over its row.
 4. **Mask.** Each signature gets its own padded box. Empty rows are untouched.
 
 **Underlined fields** (a signature on a line, not in a table) take only
@@ -548,6 +553,12 @@ Two things these layouts needed:
   (layouts B and C), or 20 px below (layout A, whose name line is further
   down).
 
+- **Rules that seem to run on up.** On some scans a dark band across the
+  top of the page makes the agents table's column rules seem to run on up
+  past it. Where their lower ends are where the table ends (within 20 px),
+  they place the table, as for a table hung under another (below);
+  otherwise the zones fell back to windows widened 200 px down, which took
+  in the officer's name.
 - **A table hung under another.** In layout C the agents table sits right
   under the results table, with the same columns, so its column rules run
   on up into the results table and their top end doesn't mark the agents
@@ -728,10 +739,10 @@ by a test where one can be written:
   neighbouring rows, the boxes merge into one patch. Any writing inside a
   signature box (e.g. a phone number continued into the column, or part of
   the "Signature" label) is hidden with it.
-- **Striped scans get small masks on empty fields.** One 34B scan
-  (Diaspora) is covered in broken horizontal stripes. Pieces of them in
-  signature fields and columns are taken for writing and masked, so empty
-  fields there show scattered black bars. That over-masks; telling stripe
+- **Striped scans get masks on empty fields.** One 34B scan (Diaspora) is
+  covered in broken horizontal stripes. Pieces of them in signature and ID
+  fields are taken for writing and masked, so empty fields there show black
+  bars. That over-masks; telling stripe
   pieces from a faint signature's broken strokes would risk the reverse.
 - **Block granularity.** Blocks are 8 px wide and a handwritten digit is about
   15–20 px, so a black block can also clip the edge of a neighbouring visible

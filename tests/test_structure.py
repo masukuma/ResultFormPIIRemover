@@ -49,11 +49,26 @@ def test_snap_a_table_hung_under_another():
         for y in range(120, 500, 40):
             cv2.line(img, (100, y + dy), (1560, y + dy), 50, 2)
         return img
-    ref, scan = _grid(), page(dy=20)
+    ref, scan = _grid(), page(dy=40)
     closed = structure.prepare_region(ref, "agents", (80, 480, 1500, 480))
     assert not structure.snap(scan, np.eye(3), closed).ok
     region = structure.prepare_region(ref, "agents", (80, 480, 1500, 480), open_top=True)
     sn = structure.snap(scan, np.eye(3), region)
     assert sn.ok, sn.reason
     p = sn.map(np.float64([[500, ROWS[5]]]))
-    assert abs(p[0, 1] - (ROWS[5] + 20)) < 4
+    assert abs(p[0, 1] - (ROWS[5] + 40)) < 4
+
+
+def test_rules_running_up_past_a_table_that_ends_where_expected():
+    """A scan's dark band above the table can make its column rules seem to
+    run on up the page. Where their lower ends are where the table ends, the
+    table is placed by them, as for a table hung under another; otherwise its
+    zones fell back to widened windows that took in the next lines."""
+    scan = _grid(dy=6)
+    for x in V_LINES:
+        cv2.line(scan, (x, 250), (x, 506), 50, 2)
+    region = structure.prepare_region(_grid(), "agents", (80, 480, 1500, 480))
+    sn = structure.snap(scan, np.eye(3), region)
+    assert sn.ok, sn.reason
+    p = sn.map(np.float64([[500, ROWS[5]]]))
+    assert abs(p[0, 1] - (ROWS[5] + 6)) < 4
