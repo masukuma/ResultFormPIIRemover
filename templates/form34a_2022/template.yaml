@@ -21,10 +21,13 @@ protect:
 structure:
   # Agents table incl. its top border; its printed rules position every zone
   # below (photos of curled pages put the global fit rows off down here).
+  # When they can't be matched, the zones' search is widened, up to the
+  # `fence` labels: the table's title and headers and the "Reasons for
+  # Refusal to Sign" label below it, found on the page.
   - name: agents
     rect: [60, 1500, 1530, 480]
 zones:
-  # Presiding officer and deputy: each signature blacked out on its own box.
+  # Presiding officer and deputy: each signature masked by a band through its middle.
   # Two cells, one per signature line; strokes found a little above/below
   # (signatures stray off the line) are included.
   - name: officer_signatures
@@ -34,6 +37,8 @@ zones:
     row_step: 56
     search: [12, 24]
     region: agents
+    fence:
+      below: [82, 1474, 378, 36]      # "Agents or Candidates (if present)"
   # Agents table, 11 rows. Names stay visible.
   - name: agent_id
     action: partial
@@ -43,6 +48,9 @@ zones:
     rows: 11
     row_step: 36.4
     region: agents
+    fence:
+      above: [524, 1529, 146, 28]     # "ID/Passport No."
+      below: [62, 1984, 236, 34]      # "Reasons for Refusal"
   - name: agent_phone
     action: partial
     rule: phone        # keep the prefix (0734...), hide 3 of the last 6 digits
@@ -51,10 +59,16 @@ zones:
     rows: 11
     row_step: 36.4
     region: agents
-  # Agents' signatures: each one blacked out on its own box; empty rows untouched.
+    fence:
+      above: [1078, 1537, 118, 26]    # "Tel. Contact"
+      below: [62, 1984, 236, 34]
+  # Agents' signatures: each masked by a band through its middle; empty rows untouched.
   - name: agent_signatures
     action: signature
     rect: [1221, 1562, 225, 36.4]
     rows: 11
     row_step: 36.4
     region: agents
+    fence:
+      above: [1290, 1543, 104, 25]    # "Signature"
+      below: [62, 1984, 236, 34]

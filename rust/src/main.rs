@@ -548,8 +548,9 @@ fn cmd_keygen(dir: &Path) -> Result<i32> {
     Ok(0)
 }
 
-/// Draw zones (red blackout, purple signature, blue partial) and protected
-/// results regions (green) over the reference so they can be checked by eye.
+/// Draw zones (red blackout, purple signature, blue partial), protected
+/// results regions (green) and fence labels (orange) over the reference so
+/// they can be checked by eye.
 fn cmd_preview(template: &Path, output: &Path) -> Result<i32> {
     let t = load_templates(template)?.remove(0);
     let mut img = opencv::core::Mat::default();
@@ -570,6 +571,13 @@ fn cmd_preview(template: &Path, output: &Path) -> Result<i32> {
     for (name, [x, y, w, h]) in &t.protect {
         imgproc::rectangle_points(&mut out, Point::new(*x as i32, *y as i32), Point::new((x + w) as i32, (y + h) as i32), Scalar::new(0.0, 160.0, 0.0, 0.0), 3, imgproc::LINE_8, 0)?;
         imgproc::put_text(&mut out, &format!("protected: {}", name), Point::new(*x as i32 + 4, *y as i32 + 18), imgproc::FONT_HERSHEY_SIMPLEX, 0.55, Scalar::new(0.0, 140.0, 0.0, 0.0), 2, imgproc::LINE_8, false)?;
+    }
+    // fence labels (orange): where a widened search stops
+    let mut fences: Vec<[f64; 4]> = t.zones.iter().flat_map(|z| z.fence.iter().flatten().copied()).collect();
+    fences.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    fences.dedup();
+    for [x, y, w, h] in fences {
+        imgproc::rectangle_points(&mut out, Point::new(x as i32, y as i32), Point::new((x + w) as i32, (y + h) as i32), Scalar::new(0.0, 140.0, 255.0, 0.0), 2, imgproc::LINE_8, 0)?;
     }
     for z in &t.zones {
         let q = z.polygon();

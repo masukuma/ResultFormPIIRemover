@@ -127,7 +127,8 @@ Useful flags:
      - {name: signatures, action: signature, rect: [x, y, w, row_h],
         rows: 4, row_step: 36.4, region: agents}
      - {name: agent_id, action: partial, rule: id, digits: 8, rect: [x, y, w, row_h],
-        rows: 4, row_step: 36.4, region: agents}
+        rows: 4, row_step: 36.4, region: agents,
+        fence: {above: [x, y, w, h], below: [x, y, w, h]}}  # printed labels a widened search stops at
    protect:                      # results regions no mask may ever touch
      - {name: votes, rect: [x, y, w, h]}
    ```

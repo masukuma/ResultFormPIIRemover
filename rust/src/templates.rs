@@ -32,7 +32,12 @@
 //!     rect: [x, y, w, h] # one cell...
 //!     rows: 11           # ...repeated down a table
 //!     row_step: 36.4
-//!     region: agents     # placed by the table's rules; page fails if they can't be matched
+//!     region: agents     # placed by the table's rules (search widened if they can't be matched)
+//!     fence:             # printed labels the widened search stops at, found on the page
+//!       above: [x, y, w, h]  # e.g. the column's header
+//!       below: [x, y, w, h]  # e.g. the label under the table
+//!   - name: officer_line
+//!     anchor: [x, y, w, h]   # a printed label the zone moves with (layout variants)
 //! ```
 //!
 //! Names are deliberately not zones: they stay visible. All coordinates are
@@ -60,6 +65,10 @@ pub struct Zone {
     pub rule: String,   // partial zones: "phone" or "id"
     pub search: Option<[f64; 2]>, // px searched above / below the cells
     pub anchor: Option<[f64; 4]>, // printed label (x, y, w, h) the zone moves with
+    /// Printed labels (x, y, w, h) just above / below the zone's table
+    /// column: when its table can't be snapped and the search is widened,
+    /// the search stops at them.
+    pub fence: [Option<[f64; 4]>; 2],
 }
 
 impl Zone {
@@ -75,6 +84,7 @@ impl Zone {
             rule: String::new(),
             search: None,
             anchor: None,
+            fence: [None, None],
         }
     }
 
@@ -189,6 +199,17 @@ fn zones_from_spec(spec: &Value) -> Result<Vec<Zone>> {
         None => None,
     };
     let region = spec.get("region").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let mut fence = [None, None];
+    if let Some(v) = spec.get("fence") {
+        if v.as_mapping().is_none() {
+            bail!("zone {:?}: fence must have 'above' and/or 'below'", name);
+        }
+        for (i, side) in ["above", "below"].iter().enumerate() {
+            if let Some(r) = v.get(*side) {
+                fence[i] = Some(rect4(r, &name)?);
+            }
+        }
+    }
     Ok((0..rows)
         .map(|r| Zone {
             name: if rows > 1 { format!("{}[{}]", name, r) } else { name.clone() },
@@ -201,6 +222,7 @@ fn zones_from_spec(spec: &Value) -> Result<Vec<Zone>> {
             rule: rule.clone(),
             search,
             anchor,
+            fence,
         })
         .collect())
 }
@@ -299,4 +321,22 @@ pub fn load_templates(root: &Path) -> Result<Vec<Template>> {
         bail!("no templates found under {}", root.display());
     }
     dirs.iter().map(|d| load_template(d)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fences_are_read_for_every_row() {
+        let spec: Value = serde_yaml::from_str(
+            "name: agent_id\naction: partial\ndigits: 8\nrect: [500, 1562, 178, 36.4]\nrows: 3\nrow_step: 36.4\nregion: agents\nfence:\n  above: [524, 1529, 146, 28]\n  below: [62, 1984, 236, 34]\n",
+        )
+        .unwrap();
+        let zs = zones_from_spec(&spec).unwrap();
+        assert_eq!(zs.len(), 3);
+        assert!(zs.iter().all(|z| z.fence == [Some([524.0, 1529.0, 146.0, 28.0]), Some([62.0, 1984.0, 236.0, 34.0])]));
+        let bad: Value = serde_yaml::from_str("name: x\nrect: [0, 0, 1, 1]\nfence: [1, 2]\n").unwrap();
+        assert!(zones_from_spec(&bad).is_err());
+    }
 }

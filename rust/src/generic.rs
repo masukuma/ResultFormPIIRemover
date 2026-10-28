@@ -1350,10 +1350,10 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
             masking::fill(&mut canvas, &f, &[[x, y], [x + w, y], [x + w, y + h], [x, y + h]])?;
             report.push(json!({"zone": fl.zones[0].name, "mode": "signature", "signatures": 1}));
         } else if fl.kind == "signature" {
-            let opts = SigOptions { margin: (0.0, 0.0), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref() };
+            let opts = SigOptions { reach: masking::Reach::default(), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref() };
             report.extend(masking::signature_column(&mut canvas, &gray, &f, &fl.zones, ms, &opts)?);
         } else {
-            report.extend(masking::partial_column(&mut canvas, &gray, &f, &fl.zones, &field_settings(fl), rng, (0.0, 0.0), Some(&print_ref), struck(fl), stamp_ink.as_ref())?);
+            report.extend(masking::partial_column(&mut canvas, &gray, &f, &fl.zones, &field_settings(fl), rng, masking::Reach::default(), Some(&print_ref), struck(fl), stamp_ink.as_ref())?);
         }
     }
     let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &on_page, r_range, None)?;
@@ -1377,10 +1377,10 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
                 continue; // masked whole, box and all
             }
             let r = if fl.kind == "signature" {
-                let opts = SigOptions { margin: (0.0, 0.0), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref() };
+                let opts = SigOptions { reach: masking::Reach::default(), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref() };
                 masking::verify_signatures(&gray, &out, &f, &fl.zones, ms, Some(&keep), &opts)?
             } else {
-                masking::verify_column(&out, &f, &fl.zones, Some(&print_ref), &field_settings(fl), struck(fl), stamp_ink.as_ref())?
+                masking::verify_column(&out, &f, &fl.zones, Some(&print_ref), &field_settings(fl), masking::Reach::default(), struck(fl), stamp_ink.as_ref())?
             };
             if !r.is_empty() {
                 leaks.push(r);

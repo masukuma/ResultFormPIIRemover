@@ -14,7 +14,7 @@ const Y: i32 = 200;
 const W: i32 = 220;
 
 fn none() -> SigOptions<'static> {
-    SigOptions { margin: (0.0, 0.0), reference: None, printed: None, centered: false, strikes: None, exclude: None }
+    SigOptions { reach: Reach::default(), reference: None, printed: None, centered: false, strikes: None, exclude: None }
 }
 
 fn centered() -> SigOptions<'static> {
@@ -22,7 +22,7 @@ fn centered() -> SigOptions<'static> {
 }
 
 fn partial(canvas: &mut Mat, img: &Mat, cells: &[Zone], s: &MaskSettings, seed: u64) -> Vec<Value> {
-    partial_column(canvas, img, &identity(), cells, s, &mut PyRandom::new(seed), (0.0, 0.0), None, None, None).unwrap()
+    partial_column(canvas, img, &identity(), cells, s, &mut PyRandom::new(seed), Reach::default(), None, None, None).unwrap()
 }
 
 fn sigs(canvas: &mut Mat, img: &Mat, cells: &[Zone], o: &SigOptions) -> Vec<Value> {
@@ -136,7 +136,7 @@ fn partial_masks_pass_the_leak_check() {
     let img = table(&[(0, "36676945"), (2, "0719108076")], false);
     let mut out = to_bgr(&img);
     partial(&mut out, &img, &cells(8), &MaskSettings::default(), 1);
-    assert_eq!(verify_column(&out, &identity(), &cells(8), None, &MaskSettings::default(), None, None).unwrap(), "");
+    assert_eq!(verify_column(&out, &identity(), &cells(8), None, &MaskSettings::default(), Reach::default(), None, None).unwrap(), "");
 }
 
 #[test]
@@ -177,7 +177,7 @@ fn img_channel0(out: &Mat) -> Img {
 fn verify_flags_unmasked_number() {
     let img = table(&[(1, "0719108076")], false);
     let out = to_bgr(&img); // nothing masked
-    assert!(verify_column(&out, &identity(), &cells(10), None, &MaskSettings::default(), None, None).unwrap().contains("unmasked"));
+    assert!(verify_column(&out, &identity(), &cells(10), None, &MaskSettings::default(), Reach::default(), None, None).unwrap().contains("unmasked"));
 }
 
 #[test]
@@ -315,7 +315,7 @@ fn a_line_drawn_through_empty_rows_is_not_writing() {
     let cs: Vec<Zone> = (0..rows).map(|i| Zone { digits: 8, rule: "id".into(), ..zone(&format!("id[{}]", i), [403, 60 + i * row_h + 3, 294, row_h - 6], "partial") }).collect();
     let (h, w) = (img.rows(), img.cols());
     let mut canvas = gray(h, w, 255);
-    let rep = partial_column(&mut canvas, &img, &identity(), &cs, &MaskSettings::default(), &mut PyRandom::new(1), (0.0, 0.0), None, Some(&strikes), None).unwrap();
+    let rep = partial_column(&mut canvas, &img, &identity(), &cs, &MaskSettings::default(), &mut PyRandom::new(1), Reach::default(), None, Some(&strikes), None).unwrap();
     assert!(rep[0]["mode"] == "partial" && rep[0]["lines"].as_array().unwrap().len() == 1); // the written ID
     assert!(rep[1..].iter().all(|r| r["mode"] == "empty"), "{:?}", rep); // struck rows: nothing masked
     let mut canvas2 = gray(h, w, 255);
@@ -483,7 +483,7 @@ fn the_name_above_reaching_into_an_id_field_is_not_part_of_the_id() {
     let rep = partial(&mut canvas, &img, &field, &s, 3);
     assert!(rep[0]["mode"] == "partial" && rep[0]["lines"][0]["slots"] == 7, "{:?}", rep);
     assert!(all_eq(&canvas, 410, 100, 560, 150, 255)); // the name stays visible
-    assert_eq!(verify_column(&apply(&canvas, &img), &identity(), &field, None, &s, None, None).unwrap(), "");
+    assert_eq!(verify_column(&apply(&canvas, &img), &identity(), &field, None, &s, Reach::default(), None, None).unwrap(), "");
 }
 
 #[test]
@@ -621,6 +621,46 @@ fn digits_on_an_underline_are_not_mistaken_for_print() {
     text(&mut im, "23029912", (20, 66), 1.6, colour(20.0), 3, true);
     let cell = [Zone { digits: 8, rule: "id".into(), search: Some([0.0, 6.0]), ..zone("id", [0, 10, 600, 70], "partial") }];
     let mut canvas = gray(90, 600, 255);
-    let rep = partial_column(&mut canvas, &im, &identity(), &cell, &MaskSettings::default(), &mut PyRandom::new(0), (0.0, 0.0), Some(&reference), None, None).unwrap();
+    let rep = partial_column(&mut canvas, &im, &identity(), &cell, &MaskSettings::default(), &mut PyRandom::new(0), Reach::default(), Some(&reference), None, None).unwrap();
     assert!(rep[0]["mode"] == "partial" && rep[0]["lines"][0]["hidden"].as_array().unwrap().len() == 3);
+}
+
+#[test]
+fn reach_clips_at_fences() {
+    let r = Reach { margin: (50.0, 200.0), top: Some(90.0), bottom: Some(330.0) };
+    assert_eq!(r.clip(100.0, 300.0, 60.0, 60.0), (10.0, 30.0)); // stopped at the fences
+    assert_eq!(Reach::margin(50.0, 200.0).clip(100.0, 300.0, 60.0, 60.0), (110.0, 260.0)); // no fences: wide
+    assert_eq!(Reach { top: Some(110.0), ..r }.clip(100.0, 300.0, 60.0, 60.0).0, -10.0); // a label inside the cells as placed
+    assert_eq!(r.fences().clip(100.0, 300.0, 60.0, 110.0), (10.0, 30.0));
+}
+
+#[test]
+fn a_widened_search_stops_at_the_label_below_the_table() {
+    // A table that couldn't be snapped is searched with a wide margin below
+    // it; there, the comments written under the table are not the column's.
+    let bottom = Y + ROWS * ROW_H;
+    let mut img = table(&[(0, "36676945"), (5, "24571109")], false);
+    text(&mut img, "WRONG", (X + 8, bottom + 80), 0.85, colour(20.0), 2, true); // a comment under the table
+    let comment = |canvas: &Mat| (bottom + 50..bottom + 90).any(|y| (X..X + W).any(|x| img_of(canvas).at(x as usize, y as usize) == 0));
+    let cs = cells(8);
+    let wide = Reach::margin(50.0, 200.0);
+    let mut canvas = gray(600, 500, 255);
+    partial_column(&mut canvas, &img, &identity(), &cs, &MaskSettings::default(), &mut PyRandom::new(1), wide, None, None, None).unwrap();
+    assert!(comment(&canvas)); // taken for digits of the last row
+    let fenced = Reach { bottom: Some((bottom + 20) as f64), ..wide };
+    let mut canvas = gray(600, 500, 255);
+    let rep = partial_column(&mut canvas, &img, &identity(), &cs, &MaskSettings::default(), &mut PyRandom::new(1), fenced, None, None, None).unwrap();
+    assert!(!comment(&canvas));
+    assert!(rep[0]["lines"][0]["hidden"].as_array().unwrap().len() == 3 && rep[5]["lines"][0]["hidden"].as_array().unwrap().len() == 3);
+    assert_eq!(hidden_chars(&canvas, &img, 5, "24571109").len(), 3);
+    assert_eq!(verify_column(&apply(&canvas, &img), &identity(), &cs, None, &MaskSettings::default(), fenced, None, None).unwrap(), "");
+    // the signatures' search stops there too
+    let mut sig = signature_table(&[(5, 20)]);
+    text(&mut sig, "WRONG", (X + 8, bottom + 80), 0.85, colour(20.0), 2, true);
+    let mut canvas = gray(600, 500, 255);
+    sigs(&mut canvas, &sig, &sig_cells(), &SigOptions { reach: wide, ..none() });
+    assert!(comment(&canvas));
+    let mut canvas = gray(600, 500, 255);
+    let rep = sigs(&mut canvas, &sig, &sig_cells(), &SigOptions { reach: fenced, ..none() });
+    assert!(!comment(&canvas) && rep[5]["mode"] == "signature");
 }

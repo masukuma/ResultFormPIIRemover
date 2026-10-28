@@ -108,6 +108,19 @@ If the table can't be matched, its zones fall back to the page alignment but
 are widened 50 px up and 200 px down: more than the worst drift seen, which is
 always downward. With `--strict-structure`, such pages go to review instead.
 
+The widened search stops at the zones' **fences**: printed labels just
+outside the table, located on the page the way anchor labels are. For Form
+34A these are the column headers above the agents table ("ID/Passport No.",
+"Tel. Contact", "Signature"), "Agents or Candidates (if present)" below the
+officers' signatures, and "Reasons for Refusal to Sign" below the table.
+Without them the 200 px reached the Presiding Officer's comments, and the
+officers' signatures reached the table's headers: words of the comments and
+the printed headers were blacked out. A fence may cut half a row into the
+cells as placed; a label found deeper than that, or not found at all, leaves
+that side of the search wide, so a bad match can only mask more, never less.
+On the 215 Forms 34A this changed the 15 published pages that fall back, each
+with 10-37% fewer blocks blacked, and nothing else.
+
 ### 3. Masking (`masking.rs`)
 
 **Signature zones** (`action: signature`) get one black band **per signature**,
