@@ -40,6 +40,17 @@
 //!     anchor: [x, y, w, h]   # a printed label the zone moves with (layout variants)
 //! ```
 //!
+//! Areas where officers write freely (comments) can be listed too: they are
+//! read with OCR, as forms without a template are, and IDs, phone numbers and
+//! signatures written there are masked; the comments themselves stay.
+//!
+//! ```yaml
+//! text_h: 34.6           # printed text height in the reference (OCR box, px)
+//! free_text:
+//!   - name: comments
+//!     rect: [x, y, w, h]
+//! ```
+//!
 //! Names are deliberately not zones: they stay visible. All coordinates are
 //! pixels in the reference image.
 
@@ -126,6 +137,12 @@ pub struct Template {
     pub n_features: Option<i64>,
     pub open_top: Vec<String>,
     pub min_glyph_h: Option<f64>,
+    /// Areas of free writing (comments): read with OCR as forms without a
+    /// template are, for numbers and signatures written there.
+    pub free_text: Vec<(String, [f64; 4])>,
+    /// Height of printed text in the reference (OCR box, px): the scale the
+    /// free-text areas are read at.
+    pub text_h: Option<f64>,
     // filled in by align::prepare
     pub regions: Vec<(String, crate::structure::Region)>,
     pub mask: Mat,
@@ -270,6 +287,13 @@ pub fn load_template(dir: &Path) -> Result<Template> {
             protect.push((n.clone(), rect4(r.get("rect").unwrap_or(&Value::Null), &n)?));
         }
     }
+    let mut free_text = Vec::new();
+    if let Some(ps) = spec.get("free_text").and_then(|v| v.as_sequence()) {
+        for r in ps {
+            let n = r.get("name").and_then(|v| v.as_str()).unwrap_or("free_text").to_string();
+            free_text.push((n.clone(), rect4(r.get("rect").unwrap_or(&Value::Null), &n)?));
+        }
+    }
     let mut h = Sha256::new();
     h.update(&yaml_bytes);
     h.update(std::fs::read(&ref_path)?);
@@ -298,6 +322,8 @@ pub fn load_template(dir: &Path) -> Result<Template> {
         n_features: geti("n_features"),
         open_top,
         min_glyph_h: getf("min_glyph_h"),
+        free_text,
+        text_h: getf("text_h"),
         regions: Vec::new(),
         mask: crate::util::zeros_u8(image_rows, image_cols)?,
         keypoints: Vec::new(),
@@ -338,5 +364,12 @@ mod tests {
         assert!(zs.iter().all(|z| z.fence == [Some([524.0, 1529.0, 146.0, 28.0]), Some([62.0, 1984.0, 236.0, 34.0])]));
         let bad: Value = serde_yaml::from_str("name: x\nrect: [0, 0, 1, 1]\nfence: [1, 2]\n").unwrap();
         assert!(zones_from_spec(&bad).is_err());
+    }
+
+    #[test]
+    fn the_34a_comments_are_read_as_free_text() {
+        let t = load_template(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates/form34a_2022")).unwrap();
+        assert_eq!(t.free_text, vec![("comments".to_string(), [30.0, 1980.0, 1600.0, 360.0])]);
+        assert_eq!(t.text_h, Some(34.6));
     }
 }

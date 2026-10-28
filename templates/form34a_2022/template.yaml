@@ -18,6 +18,15 @@ protect:
     rect: [50, 480, 1560, 540]
   - name: counts_and_disputed
     rect: [50, 1020, 1560, 228]
+# Reasons for refusal and the Presiding Officer's comments, where officers
+# also sign (and may write an ID or phone number). Read with OCR, as forms
+# without a template are: numbers are partially masked, signatures hidden,
+# the comments themselves stay readable. `text_h`: printed text height in the
+# reference (OCR box, px), the scale they are read at.
+text_h: 34.6
+free_text:
+  - name: comments
+    rect: [30, 1980, 1600, 360]
 structure:
   # Agents table incl. its top border; its printed rules position every zone
   # below (photos of curled pages put the global fit rows off down here).

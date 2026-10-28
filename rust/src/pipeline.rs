@@ -358,8 +358,47 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
         report.extend(masking::partial_column(&mut canvas, &gray, &mapper(cells)?, cells, &zms(cells), rng, reach(cells), Some(&t.image), Some(st.as_slice()), stamp_ink.as_ref())?);
     }
 
+    // Areas of free writing (the comments): read as forms without a template
+    // are, for IDs, phone numbers and signatures written there. A signature
+    // found there is hidden whole, box and all.
+    let mut free: Vec<(String, crate::generic::FreeText)> = Vec::new();
+    if !t.free_text.is_empty() {
+        if let Err(e) = crate::ocr::check() {
+            return Ok(fail(format!("free text can't be read: {}", e), report, notes));
+        }
+        for (name, rect) in &t.free_text {
+            let hl = al.local([rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0])?;
+            let text_h = t.text_h.unwrap_or(crate::generic::TEXT_H);
+            let ft = crate::ocr::with_engine(|o| crate::generic::read_free_text(img, &hl, *rect, text_h, &on_page, Some(&t.image), o))?;
+            let f = ft.mapper();
+            for fl in &ft.layout.fields {
+                if fl.kind == "signature" {
+                    let [x, y, w, h] = fl.zones[0].rect;
+                    masking::fill(&mut canvas, &f, &[[x, y], [x + w, y], [x + w, y + h], [x, y + h]])?;
+                    report.push(json!({"zone": format!("{}:{}", name, fl.zones[0].name), "mode": "signature", "signatures": 1}));
+                } else {
+                    report.extend(masking::partial_column(&mut canvas, &gray, &f, &fl.zones, &crate::generic::field_settings(ms, fl), rng, Reach::default(), Some(&ft.print_ref), None, stamp_ink.as_ref())?);
+                }
+            }
+            notes.extend(ft.layout.notes.iter().map(|n| format!("{}: {}", name, n)));
+            free.push((name.clone(), ft));
+        }
+    }
+
     // Stamps: never masked.
-    let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &on_page, r_range, Some(&maps))?;
+    // stamps found while reading the free text are protected as well
+    let mut known = on_page.clone();
+    for (_, ft) in &free {
+        let f = ft.mapper();
+        for st in &ft.layout.stamps {
+            let p = f(&[[st.cx, st.cy], [st.cx + st.r, st.cy]]);
+            let r = (p[1][0] - p[0][0]).hypot(p[1][1] - p[0][1]);
+            if !known.iter().any(|k| (k.cx - p[0][0]).hypot(k.cy - p[0][1]) < k.r.max(r)) {
+                known.push(Stamp::new(p[0][0], p[0][1], r, st.coverage, &st.how));
+            }
+        }
+    }
+    let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &known, r_range, Some(&maps))?;
     notes.extend(stamp_notes);
     let (blocks, out) = apply(img, &canvas, Some(&keep))?;
 
@@ -396,6 +435,14 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
                 leaks.push(r);
             }
         }
+        for (_, ft) in &free {
+            for fl in ft.layout.fields.iter().filter(|fl| fl.kind != "signature") {
+                let r = masking::verify_column(&out, &ft.mapper(), &fl.zones, Some(&ft.print_ref), &crate::generic::field_settings(ms, fl), Reach::default(), None, stamp_ink.as_ref())?;
+                if !r.is_empty() {
+                    leaks.push(r);
+                }
+            }
+        }
     }
     if !leaks.is_empty() {
         return Ok(fail(format!("leak check: {}", leaks.join("; ")), report, notes));
@@ -413,7 +460,7 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
         blocks: Some(blocks),
         protected,
         h: Some(hh),
-        layout: None,
+        layout: if free.is_empty() { None } else { Some(json!({"free_text": free.iter().map(|(n, ft)| ft.record(n)).collect::<Vec<_>>()})) },
     })
 }
 

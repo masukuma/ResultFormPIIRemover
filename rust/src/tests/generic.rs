@@ -178,3 +178,59 @@ fn a_templated_form_is_never_read_without_a_template() {
     assert!(!r.ok && r.template != "generic");
     assert_eq!(run("35A").template, "generic");
 }
+
+#[test]
+fn readings_agree_across_any_two_passes() {
+    let r = |t: &str| (t.to_string(), vec![0.5; t.chars().count()]);
+    assert!(legible(&[r(""), r("MAPOA"), r("MAoA")], 120.0));
+    assert!(!legible(&[r(""), r("1015"), r("dol")], 120.0));
+}
+
+/// A comments area: a scribble signed before a date, a piece of it written
+/// apart above, and "08" handwritten on the same line that OCR missed.
+fn comments_area() -> Layout {
+    let (w, h) = (900, 260);
+    let mut g = gray(h, w, 255);
+    let (x0, yc) = (200.0, 150.0);
+    let pts: Vec<(i32, i32)> = (0..=400)
+        .map(|k| k as f64 * 10.0 * std::f64::consts::PI / 400.0)
+        .map(|t| ((x0 + 4.0 * t - 10.0 * t.sin()) as i32, (yc + 13.0 * t.cos() - t) as i32))
+        .collect();
+    crate::testutil::polyline(&mut g, &pts, colour(0.0), 3);
+    let top = pts.iter().filter(|p| p.0 >= 280).map(|p| p.1).min().unwrap();
+    imgproc::ellipse(&mut g, Point::new(300, top - 13), opencv::core::Size::new(20, 7), 0.0, 0.0, 360.0, colour(0.0), 2, imgproc::LINE_8, 0).unwrap();
+    text(&mut g, "08", (420, 150), 1.0, colour(0.0), 3, false);
+    let date = OLine::new([[600.0, 60.0], [800.0, 60.0], [800.0, 190.0], [600.0, 190.0]], "09-08-2022".into(), 0.95, (0..10).map(|i| (i as f64 + 0.5) / 10.0).collect(), vec![0.95; 10]);
+    Layout {
+        frame: Frame { k: 0, skew: 0.0, scale: 1.0, m: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], size: (w, h), text_h: TEXT_H },
+        image: crate::testutil::to_bgr(&g),
+        gray: g,
+        lines: vec![date],
+        fields: vec![],
+        protected: vec![],
+        stamps: vec![],
+        problems: vec![],
+        notes: vec![],
+        officer_names: BTreeSet::new(),
+    }
+}
+
+fn signature_spans(l: &Layout) -> Vec<(f64, f64)> {
+    let mut v: Vec<(f64, f64)> = l.fields.iter().filter(|f| f.kind == "signature").map(|f| (f.label_box.0, f.label_box.2)).collect();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v
+}
+
+#[test]
+fn in_comments_a_signature_needs_a_joined_stroke() {
+    let mut l = comments_area();
+    free_signatures(&mut l, 0.0, &[0, 1], false).unwrap();
+    let loose = signature_spans(&l);
+    assert!(loose.iter().any(|s| s.0 > 400.0), "digits OCR missed pass for a signature on other forms: {:?}", loose);
+    let mut l = comments_area();
+    free_signatures(&mut l, 0.0, &[0, 1], true).unwrap();
+    let strict = signature_spans(&l);
+    assert!(strict.iter().all(|s| s.1 < 400.0), "{:?}", strict); // the digits are left alone
+    assert!(strict.iter().any(|s| s.0 < 210.0 && s.1 > 320.0), "{:?}", strict); // the scribble
+    assert_eq!(strict.len(), 2, "{:?}", strict); // and the piece above it, too short alone
+}

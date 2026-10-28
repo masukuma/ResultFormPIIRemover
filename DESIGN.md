@@ -528,6 +528,10 @@ above. Withheld forms are a mix of genuinely misplaced tables and forms whose
 faint rules can't be confirmed. The VLM fallback, a person, or a better
 template can clear them.
 
+Since then the comments are read too (see "Comments on a templated form"):
+signatures written there are hidden on 21 pages, and six pieces of comment
+words on five pages are masked with them; the outcomes above are unchanged.
+
 ## Templates
 
 | Template | Status |
@@ -787,6 +791,53 @@ by a test where one can be written:
 - a signature merged with a printed label OCR missed;
 - a faint stamp the circle search fitted off its ring.
 
+### Comments on a templated form
+
+A template can name areas of free writing (`free_text`). Form 34A names its
+comments area, "Reasons for Refusal to Sign" and the Presiding Officer's
+comments, where officers often sign off and sometimes write an ID or phone
+number. The area is straightened to the working text height (`text_h`) and
+read the way steps 6 and 7 read a page without a template: numbers written
+there are partially masked and go through the leak check, and signatures are
+hidden whole (the box of the writing). The template's own printed letters
+are taken out first, and stamps found anywhere on the page are protected,
+including one the area cuts through.
+
+The rule is stricter here, because the comments are where most of the
+handwriting is: block capitals, often across the security print, which OCR
+misses much of. A word OCR never finds as a line reads as nothing, the same
+as a signature; read by the rule above, the first run took 145 pieces of
+writing on 68 pages for signatures, most of them comment words, names and
+dates. In the comments:
+- the area is read a third time, on its ink alone (security print and rules
+  removed), which finds lines the other two readings miss;
+- writing read as capitals or digits with fair confidence is text;
+- only a date or a number makes a sign-off line ("all agents signed" doesn't);
+- a signature needs a joined stroke at least 1.4 times the text height wide
+  that isn't a straight line, and fewer than 8 letter-sized pieces (a name
+  with a flourish is mostly letters); being next to a word in capitals is
+  not a reason (in the comments, that is usually another word);
+- unread writing within a stroke's gap of a signature is part of it.
+
+On the 215 Forms 34A the same 188 publish and all of them verify; `--rerun`
+reproduces each of the 27 with writing found in the comments. Every piece of
+writing masked there (45, on 26 pages) was checked by eye against the
+original:
+- 36 are signature strokes: 22 signatures on 21 pages, now hidden whole;
+- one is too faint to tell;
+- two don't matter to a reader: a line struck across the table, a mark by
+  the stamp;
+- six are parts of comment words, on five pages: "THE" (twice, on one page),
+  "fair", and the "Y", "L" and "WA" of words written just above a signature
+  whose strokes touch them.
+
+One ID written in the comments is partially masked. What stays visible:
+signatures made of short separate strokes or small initials, which these
+rules can't tell from block capitals (at least 13 of them among what the
+first run found), and any signature OCR reads as text. Forms 34B and the
+older forms are unchanged: no free-text areas there, and the rule for forms
+without a template is the same as before.
+
 ## Implementation
 
 The tool is written in Rust (`rust/`). It was first written in Python, which
@@ -856,10 +907,13 @@ results don't depend on how the work is split.
   phone number, leaves 1000 possible values. That is enough against casual
   reading, not against someone able to test candidates.
 - **PII outside template zones** is only caught by the VLM audit on templated
-  forms. This includes officers re-signing beside the stamp, IDs written in
-  the comments, and an agent's ID written into the name column. Forms read
-  without a template look for these (steps 6 and 7 above), but by rule, not
-  by understanding: run `--vlm-audit` on them.
+  forms, apart from the areas a template reads as free text (the Form 34A
+  comments). This includes officers re-signing beside the stamp above the
+  comments, and an agent's ID written into the name column. Forms read
+  without a template, and the Form 34A comments, are searched for these
+  (steps 6 and 7 above), but by rule, not by understanding: in the comments
+  some signatures are missed and a few words are masked (see "Comments on a
+  templated form"). Run `--vlm-audit` on them.
 - **Writing under a stamp stays visible.** A signature, ID or phone number
   that a stamp lies across is masked only outside the stamp. This is the
   stamp rule working as intended, and the page notes record it.
