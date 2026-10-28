@@ -48,6 +48,9 @@ class Region:
     vslope: float = 0.0
     top: float = 0.0  # template y where the column rules start / end (table top / bottom border)
     bottom: float = 0.0
+    # The table hangs under another with the same columns, so its column rules
+    # run on up into that one: only their lower end marks this table.
+    open_top: bool = False
 
 
 def _segments(mask: np.ndarray, horizontal: bool) -> list[Line]:
@@ -96,14 +99,14 @@ def detect_lines(gray: np.ndarray, min_h: float, min_v: float) -> tuple[list[Lin
     return hs, vs
 
 
-def prepare_region(ref: np.ndarray, name: str, rect) -> Region:
+def prepare_region(ref: np.ndarray, name: str, rect, open_top: bool = False) -> Region:
     x, y, w, h = map(int, rect)
     hs, vs = detect_lines(ref[y:y + h, x:x + w], 0.5 * w, 0.5 * h)
     return Region(name, (x, y, w, h), sorted(l.at(w / 2) + y for l in hs), sorted(l.at(h / 2) + x for l in vs),
                   float(np.median([l.slope for l in hs])) if hs else 0.0,
                   float(np.median([l.slope for l in vs])) if vs else 0.0,
                   float(np.median([l.lo for l in vs])) + y if vs else 0.0,
-                  float(np.median([l.hi for l in vs])) + y if vs else 0.0)
+                  float(np.median([l.hi for l in vs])) + y if vs else 0.0, open_top)
 
 
 def match_1d(expected: list[float], found: list[float], tol: float, scale=(0.75, 1.35),
@@ -248,7 +251,12 @@ def snap(gray: np.ndarray, H: np.ndarray, region: Region, margin: float = 0.5,
     bots = np.float64([vs[b].hi for _, b in pv])
     top, bot = float(np.median(tops)), float(np.median(bots))
     t_top, t_bot = region.top - sy, region.bottom - sy  # template, patch frame
-    if not 0.75 <= (bot - top) / (t_bot - t_top) <= 1.35 or abs(top - t_top) > 80:
+    if region.open_top:
+        if abs(bot - t_bot) > 80 or top > t_top + 0.25 * (t_bot - t_top):
+            return Snap(False, f"{region.name}: column rules don't reach the table", 0, len(pv))
+        top = bot - (t_bot - t_top)
+        tops = np.full_like(tops, top)
+    elif not 0.75 <= (bot - top) / (t_bot - t_top) <= 1.35 or abs(top - t_top) > 80:
         return Snap(False, f"{region.name}: column rules don't span the table", 0, len(pv))
     # a rule cut short (stamp, fold) takes the common end instead
     tops = np.where(np.abs(tops - top) > 20, top, tops)

@@ -79,7 +79,8 @@ def prepare(template: Template, s: AlignSettings) -> Template:
     template.keypoints, template.descriptors = _features(template.image, s, template.page_long_side,
                                                          template.n_features, template.feature_dim)
     template.mask = template.build_mask()
-    template.regions = {n: structure.prepare_region(template.image, n, r) for n, r in template.structure.items()}
+    template.regions = {n: structure.prepare_region(template.image, n, r, n in template.open_top)
+                        for n, r in template.structure.items()}
     return template
 
 

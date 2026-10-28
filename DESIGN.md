@@ -484,10 +484,17 @@ Two things these layouts needed:
   window of an empty last row reached it. Those columns search 4 px above
   and below.
 
-On layout C the lines are 51 px apart and handwriting is taller than that,
-so the Returning Officer's ID zone can catch the foot of the name above it.
-That part of the name is then masked with the ID: more is hidden, never
-less.
+- **A table hung under another.** In layout C the agents table sits right
+  under the results table, with the same columns, so its column rules run
+  on up into the results table and their top end doesn't mark the agents
+  table. Snapping first failed there, and the ID and phone columns fell back
+  to zones widened 200 px downward, which swept up the Returning Officer's
+  name. That region is marked `open_top`: only the rules' lower end, and
+  the row rules, place the table.
+
+On layout C the lines are 51 px apart and handwriting is often taller than
+that, so the Returning Officer's signature mask can reach into the date
+below it. That over-masks; it never hides less.
 
 **Single underlined fields** (the RO's and Chairperson's ID and signature)
 are handled differently from table cells:

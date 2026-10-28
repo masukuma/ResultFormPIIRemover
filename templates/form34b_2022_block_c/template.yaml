@@ -24,6 +24,7 @@ protect:
 structure:
   - name: agents
     rect: [10, 40, 2490, 380]
+    open_top: true   # hung under the results table, same columns: its rules run on up
 zones:
   # Agents table: 3 rows.
   - name: agent_id
@@ -60,12 +61,12 @@ zones:
     action: partial
     rule: id
     digits: 8
-    rect: [240, 502, 1660, 56]
+    rect: [240, 502, 1360, 56]   # the dotted leader, not the stamp beyond it
     search: [0, 8]
   - name: ro_signature
     anchor: [25, 523, 220, 35]
     action: signature
-    rect: [205, 558, 1700, 52]
+    rect: [205, 558, 1500, 52]
     search: [4, 40]
   # Handing over (Returning Officer) / taking over (Commission Chairperson).
   - name: handover_ro_id

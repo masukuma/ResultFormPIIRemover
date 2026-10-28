@@ -36,3 +36,24 @@ def test_snap_finds_shifted_table():
     p = sn.map(np.float64([[500, ROWS[5]], [1220, ROWS[-1]]]))
     expect = np.float64([[500, 530 + (ROWS[5] - 500) * 1.05], [1220, 530 + (ROWS[-1] - 500) * 1.05]])
     assert np.abs(p - expect).max() < 4
+
+
+def test_snap_a_table_hung_under_another():
+    """Layout C: the agents table hangs under the results table, with the same
+    columns, so the column rules run on up into it. Only their lower end marks
+    the table; without ``open_top`` the span check rejects it."""
+    def page(dy=0):
+        img = _grid(dy)
+        for x in V_LINES:  # the results table above, same columns
+            cv2.line(img, (x, 120 + dy), (x, 500 + dy), 50, 2)
+        for y in range(120, 500, 40):
+            cv2.line(img, (100, y + dy), (1560, y + dy), 50, 2)
+        return img
+    ref, scan = _grid(), page(dy=20)
+    closed = structure.prepare_region(ref, "agents", (80, 480, 1500, 480))
+    assert not structure.snap(scan, np.eye(3), closed).ok
+    region = structure.prepare_region(ref, "agents", (80, 480, 1500, 480), open_top=True)
+    sn = structure.snap(scan, np.eye(3), region)
+    assert sn.ok, sn.reason
+    p = sn.map(np.float64([[500, ROWS[5]]]))
+    assert abs(p[0, 1] - (ROWS[5] + 20)) < 4
