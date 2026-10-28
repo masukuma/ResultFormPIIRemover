@@ -13,6 +13,11 @@ name: form34b_2022_results_b
 form: 34B
 reference: reference.png
 page_long_side: 3307  # cut from a 2340x3307 scan
+# Features at 2400 px with a larger budget, as for layouts B and C: at the
+# default 1200 px the security-print background crowds out the text's
+# features on large scans (pages up to 4960 px).
+feature_dim: 2400
+n_features: 20000
 min_area_frac: 0.03   # just the header row
 # A small reference has fewer features and its NCC is more sensitive to a
 # pixel or two of misfit. Lower bars are safe here: this template has no zones
