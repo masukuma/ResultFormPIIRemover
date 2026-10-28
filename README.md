@@ -36,8 +36,9 @@ model on Ollama Cloud or a local Ollama audits pages. See
 The tool is written in Rust (`rust/`). It runs on the same native libraries
 the reference implementation used, so it produces the same output: OpenCV
 5.0, MuPDF 1.28, ONNX Runtime with the PP-OCR models (for older forms read
-without a template, on the CPU, nothing leaves the machine) and numpy's
-OpenBLAS.
+without a template and the comments on Form 34A; on the CPU, nothing leaves
+the machine) and numpy's OpenBLAS. Without the OCR models, those pages go to
+review.
 
 ```bash
 sudo rust/scripts/setup-deps.sh     # once: the native libraries, under /opt
@@ -127,9 +128,13 @@ Useful flags:
      - {name: signatures, action: signature, rect: [x, y, w, row_h],
         rows: 4, row_step: 36.4, region: agents}
      - {name: agent_id, action: partial, rule: id, digits: 8, rect: [x, y, w, row_h],
-        rows: 4, row_step: 36.4, region: agents}
+        rows: 4, row_step: 36.4, region: agents,
+        fence: {above: [x, y, w, h], below: [x, y, w, h]}}  # printed labels a widened search stops at
    protect:                      # results regions no mask may ever touch
      - {name: votes, rect: [x, y, w, h]}
+   text_h: 34.6                  # printed text height in the reference (OCR box, px)
+   free_text:                    # free writing (comments): read with OCR for
+     - {name: comments, rect: [x, y, w, h]}  # numbers and signatures written there
    ```
 
    For a section that floats or varies between layouts (like the Form 34B

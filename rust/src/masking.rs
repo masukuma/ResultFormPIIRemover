@@ -50,6 +50,45 @@ impl Default for MaskSettings {
     }
 }
 
+/// How far a column's search window may reach beyond its cells: its usual
+/// search plus `margin` px (up, down), widened when its table couldn't be
+/// snapped; but never past `top` / `bottom` (template y: printed labels
+/// found just outside the table, such as its header or the next section's).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Reach {
+    pub margin: (f64, f64),
+    pub top: Option<f64>,
+    pub bottom: Option<f64>,
+}
+
+impl Reach {
+    pub fn margin(up: f64, down: f64) -> Self {
+        Reach { margin: (up, down), ..Reach::default() }
+    }
+
+    /// px the window extends above the cells' top `y` and below their
+    /// `bottom`, for a usual search of `above` / `below`. Negative where a
+    /// fence lies inside the cells as placed (a table placed a little off):
+    /// the window then starts or ends at the fence.
+    pub fn clip(&self, y: f64, bottom: f64, above: f64, below: f64) -> (f64, f64) {
+        let mut a = above + self.margin.0;
+        let mut b = below + self.margin.1;
+        if let Some(t) = self.top {
+            a = a.min(y - t);
+        }
+        if let Some(t) = self.bottom {
+            b = b.min(t - bottom);
+        }
+        (a, b)
+    }
+
+    /// The same fences, without the widening (for the leak checks, whose
+    /// windows are wide already).
+    pub fn fences(&self) -> Reach {
+        Reach { margin: (0.0, 0.0), ..*self }
+    }
+}
+
 /// Template -> scan point mapping: a homography, or a mesh that follows a
 /// curled page (structure::Snap::map).
 pub type Mapper = Arc<dyn Fn(&[[f64; 2]]) -> Vec<[f64; 2]> + Send + Sync>;
@@ -727,7 +766,7 @@ pub fn partial_column(
     cells: &[Zone],
     s: &MaskSettings,
     rng: &mut PyRandom,
-    margin: (f64, f64),
+    reach: Reach,
     reference: Option<&Mat>,
     strikes: Option<&[Strike]>,
     exclude: Option<&Mat>,
@@ -737,8 +776,8 @@ pub fn partial_column(
     let [x, y, w, _] = cells[0].rect;
     let bottom = cells.last().unwrap().rect[1] + cells.last().unwrap().rect[3];
     let (above, below) = cells[0].search.map(|s| (s[0], s[1])).unwrap_or((s.vpad, s.vpad));
-    let vpad = above + margin.0;
-    let (sw, sh) = ((round_even(w) as usize).max(1), (round_even(bottom - y + vpad + below + margin.1) as usize).max(1));
+    let (vpad, below) = reach.clip(y, bottom, above, below);
+    let (sw, sh) = ((round_even(w) as usize).max(1), (round_even(bottom - y + vpad + below) as usize).max(1));
     let oy = y - vpad;
     let maps = strip_maps(f, x, oy, sw, sh)?;
     let strip = remap(gray, &maps, imgproc::INTER_LINEAR, core::BORDER_REPLICATE)?;
@@ -865,6 +904,7 @@ pub fn verify_column(
     cells: &[Zone],
     reference: Option<&Mat>,
     s: &MaskSettings,
+    reach: Reach,
     strikes: Option<&[Strike]>,
     exclude: Option<&Mat>,
 ) -> Result<String> {
@@ -873,6 +913,7 @@ pub fn verify_column(
     let cells = sorted_cells(cells);
     let [x, y, w, _] = cells[0].rect;
     let bottom = cells.last().unwrap().rect[1] + cells.last().unwrap().rect[3];
+    let window = reach.fences().clip(y, bottom, window.0, window.1);
     let (sw, sh) = ((round_even(w) as usize).max(1), (round_even(bottom - y + window.0 + window.1) as usize).max(1));
     let oy = y - window.0;
     let maps = strip_maps(f, x, oy, sw, sh)?;
@@ -1226,14 +1267,16 @@ fn own_rule(strip: &Mat, lo: i64, hi: i64, reference: Option<&Img>) -> Result<Im
     Img::from_mat(&util::dilate(&rule.to_mat()?, &util::ones_kernel(3, 3)?)?)
 }
 
-fn sig_window(cells: &[Zone], s: &MaskSettings, margin: (f64, f64), more_below: f64) -> (f64, f64) {
-    let above = cells[0].search.map(|v| v[0]).unwrap_or(s.vpad) + margin.0;
-    let below = cells[0].search.map(|v| v[1]).unwrap_or(s.vpad) + margin.1 + more_below;
-    (above, below)
+fn sig_window(cells: &[Zone], s: &MaskSettings, reach: Reach, more_below: f64) -> (f64, f64) {
+    let y = cells.iter().map(|z| z.rect[1]).fold(f64::INFINITY, f64::min);
+    let bottom = cells.iter().map(|z| z.rect[1] + z.rect[3]).fold(f64::NEG_INFINITY, f64::max);
+    let above = cells[0].search.map(|v| v[0]).unwrap_or(s.vpad);
+    let below = cells[0].search.map(|v| v[1]).unwrap_or(s.vpad) + more_below;
+    reach.clip(y, bottom, above, below)
 }
 
 pub struct SigOptions<'a> {
-    pub margin: (f64, f64),
+    pub reach: Reach,
     pub reference: Option<&'a Mat>,
     pub printed: Option<&'a Mat>,
     pub centered: bool,
@@ -1249,7 +1292,7 @@ pub struct SigOptions<'a> {
 /// the neighbouring lines). Strokes mostly on the next line belong to it; an
 /// underline joins only the strokes crossing it.
 fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, more_below: f64, o: &SigOptions) -> Result<(Vec<SigBlob>, [f64; 2], Vec<(f64, f64)>, Vec<Zone>, Img)> {
-    let (above, below) = sig_window(cells, s, o.margin, more_below);
+    let (above, below) = sig_window(cells, s, o.reach, more_below);
     let cs = column_strip(gray, f, cells, above, below, SIG_OVERRUN)?;
     let row_h = median_row_h(&cs.cells);
     let mut ink_m = ink_mask(&cs.strip, row_h, true)?;
@@ -1404,7 +1447,7 @@ pub fn signature_column(img: &mut Mat, gray: &Mat, f: &Mapper, cells: &[Zone], s
 pub fn verify_signatures(gray: &Mat, out: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, keep: Option<&Mat>, o: &SigOptions) -> Result<String> {
     let (blobs, origin, _, cells2, _) = find_signatures(gray, f, cells, s, SIG_BELOW, o)?;
     let _ = origin;
-    let (above, below) = sig_window(&cells2, s, o.margin, SIG_BELOW);
+    let (above, below) = sig_window(&cells2, s, o.reach, SIG_BELOW);
     let og = util::gray(out)?;
     let ostrip = Img::from_mat(&column_strip(&og, f, &cells2, above, below, SIG_OVERRUN)?.strip)?;
     let gstrip = column_strip(gray, f, &cells2, above, below, SIG_OVERRUN)?;

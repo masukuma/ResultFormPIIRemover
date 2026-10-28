@@ -32,7 +32,23 @@
 //!     rect: [x, y, w, h] # one cell...
 //!     rows: 11           # ...repeated down a table
 //!     row_step: 36.4
-//!     region: agents     # placed by the table's rules; page fails if they can't be matched
+//!     region: agents     # placed by the table's rules (search widened if they can't be matched)
+//!     fence:             # printed labels the widened search stops at, found on the page
+//!       above: [x, y, w, h]  # e.g. the column's header
+//!       below: [x, y, w, h]  # e.g. the label under the table
+//!   - name: officer_line
+//!     anchor: [x, y, w, h]   # a printed label the zone moves with (layout variants)
+//! ```
+//!
+//! Areas where officers write freely (comments) can be listed too: they are
+//! read with OCR, as forms without a template are, and IDs, phone numbers and
+//! signatures written there are masked; the comments themselves stay.
+//!
+//! ```yaml
+//! text_h: 34.6           # printed text height in the reference (OCR box, px)
+//! free_text:
+//!   - name: comments
+//!     rect: [x, y, w, h]
 //! ```
 //!
 //! Names are deliberately not zones: they stay visible. All coordinates are
@@ -60,6 +76,10 @@ pub struct Zone {
     pub rule: String,   // partial zones: "phone" or "id"
     pub search: Option<[f64; 2]>, // px searched above / below the cells
     pub anchor: Option<[f64; 4]>, // printed label (x, y, w, h) the zone moves with
+    /// Printed labels (x, y, w, h) just above / below the zone's table
+    /// column: when its table can't be snapped and the search is widened,
+    /// the search stops at them.
+    pub fence: [Option<[f64; 4]>; 2],
 }
 
 impl Zone {
@@ -75,6 +95,7 @@ impl Zone {
             rule: String::new(),
             search: None,
             anchor: None,
+            fence: [None, None],
         }
     }
 
@@ -116,6 +137,12 @@ pub struct Template {
     pub n_features: Option<i64>,
     pub open_top: Vec<String>,
     pub min_glyph_h: Option<f64>,
+    /// Areas of free writing (comments): read with OCR as forms without a
+    /// template are, for numbers and signatures written there.
+    pub free_text: Vec<(String, [f64; 4])>,
+    /// Height of printed text in the reference (OCR box, px): the scale the
+    /// free-text areas are read at.
+    pub text_h: Option<f64>,
     // filled in by align::prepare
     pub regions: Vec<(String, crate::structure::Region)>,
     pub mask: Mat,
@@ -189,6 +216,17 @@ fn zones_from_spec(spec: &Value) -> Result<Vec<Zone>> {
         None => None,
     };
     let region = spec.get("region").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let mut fence = [None, None];
+    if let Some(v) = spec.get("fence") {
+        if v.as_mapping().is_none() {
+            bail!("zone {:?}: fence must have 'above' and/or 'below'", name);
+        }
+        for (i, side) in ["above", "below"].iter().enumerate() {
+            if let Some(r) = v.get(*side) {
+                fence[i] = Some(rect4(r, &name)?);
+            }
+        }
+    }
     Ok((0..rows)
         .map(|r| Zone {
             name: if rows > 1 { format!("{}[{}]", name, r) } else { name.clone() },
@@ -201,6 +239,7 @@ fn zones_from_spec(spec: &Value) -> Result<Vec<Zone>> {
             rule: rule.clone(),
             search,
             anchor,
+            fence,
         })
         .collect())
 }
@@ -248,6 +287,13 @@ pub fn load_template(dir: &Path) -> Result<Template> {
             protect.push((n.clone(), rect4(r.get("rect").unwrap_or(&Value::Null), &n)?));
         }
     }
+    let mut free_text = Vec::new();
+    if let Some(ps) = spec.get("free_text").and_then(|v| v.as_sequence()) {
+        for r in ps {
+            let n = r.get("name").and_then(|v| v.as_str()).unwrap_or("free_text").to_string();
+            free_text.push((n.clone(), rect4(r.get("rect").unwrap_or(&Value::Null), &n)?));
+        }
+    }
     let mut h = Sha256::new();
     h.update(&yaml_bytes);
     h.update(std::fs::read(&ref_path)?);
@@ -276,6 +322,8 @@ pub fn load_template(dir: &Path) -> Result<Template> {
         n_features: geti("n_features"),
         open_top,
         min_glyph_h: getf("min_glyph_h"),
+        free_text,
+        text_h: getf("text_h"),
         regions: Vec::new(),
         mask: crate::util::zeros_u8(image_rows, image_cols)?,
         keypoints: Vec::new(),
@@ -299,4 +347,29 @@ pub fn load_templates(root: &Path) -> Result<Vec<Template>> {
         bail!("no templates found under {}", root.display());
     }
     dirs.iter().map(|d| load_template(d)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fences_are_read_for_every_row() {
+        let spec: Value = serde_yaml::from_str(
+            "name: agent_id\naction: partial\ndigits: 8\nrect: [500, 1562, 178, 36.4]\nrows: 3\nrow_step: 36.4\nregion: agents\nfence:\n  above: [524, 1529, 146, 28]\n  below: [62, 1984, 236, 34]\n",
+        )
+        .unwrap();
+        let zs = zones_from_spec(&spec).unwrap();
+        assert_eq!(zs.len(), 3);
+        assert!(zs.iter().all(|z| z.fence == [Some([524.0, 1529.0, 146.0, 28.0]), Some([62.0, 1984.0, 236.0, 34.0])]));
+        let bad: Value = serde_yaml::from_str("name: x\nrect: [0, 0, 1, 1]\nfence: [1, 2]\n").unwrap();
+        assert!(zones_from_spec(&bad).is_err());
+    }
+
+    #[test]
+    fn the_34a_comments_are_read_as_free_text() {
+        let t = load_template(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates/form34a_2022")).unwrap();
+        assert_eq!(t.free_text, vec![("comments".to_string(), [30.0, 1980.0, 1600.0, 360.0])]);
+        assert_eq!(t.text_h, Some(34.6));
+    }
 }

@@ -157,6 +157,8 @@ pub fn bare_template(name: &str, form: &str, once: bool, priority: i64) -> crate
         n_features: None,
         open_top: vec![],
         min_glyph_h: None,
+        free_text: vec![],
+        text_h: None,
         regions: vec![],
         mask: Mat::default(),
         keypoints: vec![],

@@ -116,7 +116,8 @@ no red block should touch one.
   from the recorded random seed, with the recorded code and template versions.
   It must give a bit-identical result, which shows the published file is
   exactly what the documented process produces. For forms read without a
-  template, the manifest also records the OCR models' hashes; the re-run
+  template, and Forms 34A (whose comments are read with OCR), the manifest
+  also records the OCR models' hashes; the re-run
   checks that the same models are installed (`setup-deps.sh` puts them in
   `/opt/rfpii/models`).
 

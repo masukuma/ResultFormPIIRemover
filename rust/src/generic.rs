@@ -958,9 +958,13 @@ fn legible(reads: &[(String, Vec<f64>)], width: f64) -> bool {
         }
         texts.push(t);
     }
-    let (a, b) = (&texts[0], &texts[1]);
-    let (la, lb) = (a.chars().count(), b.chars().count());
-    la.min(lb) as f64 >= need && 1.0 - ocr::edits_str(a, b) as f64 / la.max(lb) as f64 >= 0.5
+    (0..texts.len()).any(|i| {
+        (i + 1..texts.len()).any(|j| {
+            let (a, b) = (&texts[i], &texts[j]);
+            let (la, lb) = (a.chars().count(), b.chars().count());
+            la.min(lb) as f64 >= need && 1.0 - ocr::edits_str(a, b) as f64 / la.max(lb) as f64 >= 0.5
+        })
+    })
 }
 
 /// Read as joined-up lower case (letters whose capital looks different).
@@ -1005,7 +1009,24 @@ fn name_match(word: &str, name: &str) -> bool {
     ocr::edits_str(&a, &b) <= if m < 5 { 1 } else if m < 8 { 2 } else { 3 }
 }
 
-fn free_signatures(l: &mut Layout, top: f64, band_from: usize) -> Result<()> {
+/// Read as block capitals or digits with fair confidence: how comments, names
+/// and dates are written on these forms; a signature is not.
+fn in_capitals(reads: &[(String, Vec<f64>)], width: f64) -> bool {
+    let need = (0.3 * width / TEXT_H).max(1.0);
+    reads.iter().any(|(text, probs)| {
+        let al: Vec<char> = text.chars().filter(|c| c.is_alphanumeric()).collect();
+        let caps = al.iter().filter(|c| c.is_ascii_uppercase() || c.is_ascii_digit()).count();
+        !al.is_empty() && al.len() as f64 >= need && caps as f64 >= 0.7 * al.len() as f64 && util::np_mean(probs) >= 0.5
+    })
+}
+
+/// `strict` (the comments of a templated form, where sentences run close to
+/// the officers' sign-off lines): only a date or a number makes a sign-off
+/// line ("all agents signed" doesn't), writing read as capitals or digits
+/// with fair confidence is text, and a signature needs a joined stroke wider
+/// than a letter (OCR misses much of the handwriting, so "not read" says
+/// little there); unread writing within a stroke's gap of it is part of it.
+fn free_signatures(l: &mut Layout, top: f64, passes: &[usize], strict: bool) -> Result<()> {
     let h = TEXT_H;
     let (_, hh_total) = l.frame.size;
     let y0 = top.max(0.0) as i32;
@@ -1021,10 +1042,12 @@ fn free_signatures(l: &mut Layout, top: f64, band_from: usize) -> Result<()> {
     }
     let idx: Vec<usize> = (0..l.lines.len()).filter(|&i| l.lines[i].cy() >= top && !stamps::is_stamp_text(&l.lines[i].text)).collect();
     let lines: Vec<&OLine> = idx.iter().map(|&i| &l.lines[i]).collect();
-    let passes: Vec<Vec<&OLine>> = vec![
-        idx.iter().filter(|&&i| i < band_from).map(|&i| &l.lines[i]).collect(),
-        idx.iter().filter(|&&i| i >= band_from).map(|&i| &l.lines[i]).collect(),
-    ];
+    let passes: Vec<Vec<&OLine>> = (0..passes.len())
+        .map(|k| {
+            let (a, b) = (passes[k], passes.get(k + 1).copied().unwrap_or(usize::MAX));
+            idx.iter().filter(|&&i| a <= i && i < b).map(|&i| &l.lines[i]).collect()
+        })
+        .collect();
     let (mut vetoed, mut strong, mut weak, mut worded, mut zones): (Vec<BoxF>, Vec<BoxF>, Vec<BoxF>, Vec<BoxF>, Vec<BoxF>) = Default::default();
     for ln in &lines {
         if has(&REFUSAL_COMMENT, &ln.text) || has(&PRINTED_LINE, &ln.text) {
@@ -1051,7 +1074,7 @@ fn free_signatures(l: &mut Layout, top: f64, band_from: usize) -> Result<()> {
         if na {
             continue;
         }
-        if has(&STRONG_NUM, &ln.text) || has(&STRONG_WORD, &ln.text) {
+        if has(&STRONG_NUM, &ln.text) || (!strict && has(&STRONG_WORD, &ln.text)) {
             strong.push(lb);
         } else if has(&CAPS4, &ln.text) {
             weak.push(lb);
@@ -1085,6 +1108,7 @@ fn free_signatures(l: &mut Layout, top: f64, band_from: usize) -> Result<()> {
     let (wlab, wst, _) = util::components(&groups)?;
     let wlabv = util::labels_vec(&wlab)?;
     let iw = ink.cols() as usize;
+    let mut found: Vec<(BoxF, &str, bool)> = Vec::new();
     for k in 1..wst.len() {
         let [x, y, w, hh, _] = wst[k];
         if (w as f64) < 1.0 * h || (hh as f64) < 0.4 * h {
@@ -1108,13 +1132,13 @@ fn free_signatures(l: &mut Layout, top: f64, band_from: usize) -> Result<()> {
         }
         let bx: BoxF = (x as f64, y as f64 + y0 as f64, (x + w) as f64, (y + hh) as f64 + y0 as f64);
         let (cx, cy) = ((bx.0 + bx.2) / 2.0, (bx.1 + bx.3) / 2.0);
-        if covered(l, cx, cy, h, 0.0) {
+        if covered(l, cx, cy, h, 0.0) || (!strict && inside(cx, cy, &found.iter().map(|f| f.0).collect::<Vec<_>>())) {
             continue;
         }
         let reads = readings(&passes, bx);
         let signing = inside(cx, cy, &zones) || near(bx, &strong, 8.0 * h, 2.5 * h);
         let signed = signing && cursive(&reads) && !on_line(bx, &worded, 2.0 * h);
-        if legible(&reads, w as f64) && !signed {
+        if (legible(&reads, w as f64) || (strict && in_capitals(&reads, w as f64))) && !signed {
             continue;
         }
         let unread = !reads.iter().any(|(t, _)| !t.trim().is_empty());
@@ -1129,14 +1153,44 @@ fn free_signatures(l: &mut Layout, top: f64, band_from: usize) -> Result<()> {
             "on a sign-off line, not legible as text"
         } else if signed || (signing && joined && unread) {
             "joined strokes next to a name, date or ID"
-        } else if joined && unread && on_line(bx, &weak, 8.0 * h) {
+        } else if !strict && joined && unread && on_line(bx, &weak, 8.0 * h) {
             "joined strokes next to a word in capitals"
         } else if few && (joined || unread) && on_line(bx, &stamped, 3.0 * h) {
             "unreadable strokes beside the stamp"
+        } else if strict {
+            "" // may yet be part of a signature beside it
         } else {
             continue;
         };
-        let mut z = Zone::new(&format!("signature-text@{:.0},{:.0}", x, cy), [bx.0 - 4.0, bx.1 - 4.0, w as f64 + 8.0, hh as f64 + 8.0], "signature");
+        // in comments, a joined stroke wider than a letter: block capitals
+        // written close together and digits OCR missed are not that, and a
+        // run of letters with a flourish is a name
+        let stroke = parts.iter().filter(|&&j| !straight(&sub_lab, w as usize, &[j], h).unwrap_or(true)).map(|&j| st[j as usize][2]).max().unwrap_or(0) as f64;
+        let letters = parts.iter().filter(|&&j| (st[j as usize][2] as f64) <= 1.0 * h && (st[j as usize][3] as f64) <= 1.4 * h).count();
+        found.push((bx, why, !strict || (!why.is_empty() && stroke >= 1.4 * h && letters < 8)));
+    }
+    if strict {
+        // unread writing within a stroke's gap of a signature is part of it
+        loop {
+            let sure: Vec<BoxF> = found.iter().filter(|f| f.2).map(|f| f.0).collect();
+            let mut more = false;
+            for f in found.iter_mut().filter(|f| !f.2) {
+                if near(f.0, &sure, 0.2 * h, 0.2 * h) {
+                    *f = (f.0, "part of the signature beside it", true);
+                    more = true;
+                }
+            }
+            if !more {
+                break;
+            }
+        }
+    }
+    for (bx, why, sure) in found {
+        if !sure {
+            continue;
+        }
+        let cy = (bx.1 + bx.3) / 2.0;
+        let mut z = Zone::new(&format!("signature-text@{:.0},{:.0}", bx.0, cy), [bx.0 - 4.0, bx.1 - 4.0, bx.2 - bx.0 + 8.0, bx.3 - bx.1 + 8.0], "signature");
         z.search = Some([0.3 * h, 0.3 * h]);
         l.fields.push(Field { kind: "signature".into(), zones: vec![z], source: "free-text".into(), label: format!("unlabelled signature ({})", why), label_box: bx });
         l.notes.push(format!("unlabelled handwriting at y={:.0} taken for a signature ({})", cy, why));
@@ -1252,7 +1306,7 @@ pub fn analyze(img: &Mat, o: &mut Ocr) -> Result<Analysis> {
     let band_from = l.lines.len();
     l.lines.extend(band);
     free_text(&mut l, &used, boundary);
-    free_signatures(&mut l, free_top, band_from)?;
+    free_signatures(&mut l, free_top, &[0, band_from], false)?;
     let kinds: BTreeSet<String> = l.fields.iter().filter(|fl| fl.source == "table").map(|fl| fl.kind.clone()).collect();
     let all: BTreeSet<String> = ["id", "phone", "signature"].iter().map(|s| s.to_string()).collect();
     if !kinds.is_empty() && kinds != all {
@@ -1284,6 +1338,127 @@ fn fail(t0: Instant, prefix: &str, reason: String, report: Vec<Value>, notes: Ve
     }
 }
 
+/// Mask settings for a field read here: glyph sizes scaled to the text height.
+pub fn field_settings(ms: &MaskSettings, fl: &Field) -> MaskSettings {
+    let row_h = median(&fl.zones.iter().map(|z| z.rect[3]).collect::<Vec<_>>());
+    let g = ms.min_glyph_h.min(0.3 * TEXT_H / row_h);
+    let mut m = ms.clone();
+    m.min_glyph_h = g;
+    m.min_glyph_h_out = g;
+    m
+}
+
+/// What was found in an area of free writing on a templated form.
+pub struct FreeText {
+    /// Working frame (the area, upright, printed text TEXT_H px high) -> image.
+    pub to_image: [[f64; 3]; 3],
+    /// The area, read: OCR lines, and the fields found in it.
+    pub layout: Layout,
+    /// Printed text OCR found there (mask, reference), as `printed`.
+    pub print_mask: Mat,
+    pub print_ref: Mat,
+}
+
+impl FreeText {
+    pub fn mapper(&self) -> masking::Mapper {
+        masking::homography(self.to_image)
+    }
+
+    pub fn record(&self, name: &str) -> Value {
+        let f = self.mapper();
+        let ti: Vec<Value> = self.to_image.iter().map(|r| json!(r.iter().map(|&x| pyjson::np_round(x, 8)).collect::<Vec<_>>())).collect();
+        json!({"name": name, "to_image": ti, "fields": self.layout.fields.iter().map(|fl| fl.record(&f)).collect::<Vec<_>>()})
+    }
+}
+
+/// Read an area of free writing on a templated form (the comments under the
+/// agents table) as a form without a template is read below its tables
+/// (steps 6 and 7): IDs and phone numbers written there, and signatures
+/// that aren't legible as text. `h` maps template -> image; `rect` is the
+/// area and `text_h` the reference's printed text height, both template px.
+/// `known`: stamps found on the whole page (image px); one the area cuts
+/// through can't be found in the area alone, and its half ring would pass
+/// for joined strokes. `reference`: the template's reference image, whose
+/// printed labels and rules are no one's signature.
+pub fn read_free_text(img: &Mat, h: &[[f64; 3]; 3], rect: [f64; 4], text_h: f64, known: &[Stamp], reference: Option<&Mat>, o: &mut Ocr) -> Result<FreeText> {
+    let s = TEXT_H / text_h;
+    let [x, y, w, hh] = rect;
+    // working <- template: the area, scaled so printed text is TEXT_H high
+    let m = [[s, 0.0, -s * x], [0.0, s, -s * y], [0.0, 0.0, 1.0]];
+    let to_image = util::mul3(h, &util::inv3(&m)?);
+    let size = ((w * s).ceil() as i32, (hh * s).ceil() as i32);
+    let mut work = Mat::default();
+    imgproc::warp_perspective(
+        img,
+        &mut work,
+        &util::mat3(&util::inv3(&to_image)?)?,
+        Size::new(size.0, size.1),
+        imgproc::INTER_LINEAR,
+        core::BORDER_REPLICATE,
+        Scalar::default(),
+        core::AlgorithmHint::ALGO_HINT_DEFAULT,
+    )?;
+    let gray = util::gray(&work)?;
+    let mut lines = o.read(&to_bgr(&work)?, 0.3)?;
+    let band_from = lines.len();
+    // read again at 2.5x: each reading finds things the other misses
+    lines.extend(read_band(o, &work, 0.0, size.1 as f64, 2.5)?);
+    let ink_from = lines.len();
+    // and on the ink alone: the security print behind handwriting hides
+    // words from the line finder
+    let mut clean = Mat::default();
+    core::bitwise_not(&masking::ink_mask(&gray, TEXT_H, false)?, &mut clean, &core::no_array())?;
+    lines.extend(o.read(&to_bgr(&clean)?, 0.3)?);
+    let tl: Vec<stamps::TextLine> = lines.iter().map(|ln| {
+        let b = ln.bbox();
+        stamps::TextLine { text: ln.text.clone(), bbox: [b.0, b.1, b.2, b.3] }
+    }).collect();
+    let mut st = stamps::find(&work, STAMP_R, &tl, None)?;
+    let from_image = util::inv3(&to_image)?;
+    for k in known {
+        let c = util::project(&from_image, [k.cx, k.cy]);
+        let e = util::project(&from_image, [k.cx + k.r, k.cy]);
+        let r = (e[0] - c[0]).hypot(e[1] - c[1]);
+        if c[0] > -r && c[1] > -r && c[0] < size.0 as f64 + r && c[1] < size.1 as f64 + r {
+            st.push(Stamp::new(c[0], c[1], r, k.coverage, &k.how));
+        }
+    }
+    let frame = Frame { k: 0, skew: 0.0, scale: s, m: from_image, size, text_h };
+    let mut l = Layout {
+        frame,
+        image: work,
+        gray,
+        lines,
+        fields: vec![],
+        protected: vec![],
+        stamps: st,
+        problems: vec![],
+        notes: vec![],
+        officer_names: BTreeSet::new(),
+    };
+    free_text(&mut l, &BTreeSet::new(), 0.0);
+    // signatures are looked for with the reference's print taken out: a
+    // label OCR missed (blurred, half under a stamp) is not writing
+    let gray = l.gray.try_clone()?;
+    if let Some(r) = reference {
+        let mut rw = Mat::default();
+        let mm = util::mat3(&m)?;
+        imgproc::warp_perspective(r, &mut rw, &mm, Size::new(size.0, size.1), imgproc::INTER_AREA, core::BORDER_CONSTANT, Scalar::all(255.0), core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+        // printed letters only: rules and strike lines are taken out of the
+        // ink anyway, and whitening them would cut signatures crossing them
+        let ink = util::adaptive_inv(&util::gaussian(&rw, 3)?, 31, 25.0)?;
+        let (lab, st, _) = util::components(&ink)?;
+        let small: Vec<bool> = st.iter().map(|s| (s[2] as f64) <= 1.5 * TEXT_H && (s[3] as f64) <= 1.5 * TEXT_H).collect();
+        let letters: Vec<u8> = util::labels_vec(&lab)?.iter().map(|&k| if k > 0 && small[k as usize] { 255 } else { 0 }).collect();
+        let print = util::dilate(&util::from_bytes(size.1, size.0, &letters)?, &util::ones_kernel(7, 7)?)?;
+        l.gray.set_to(&Scalar::all(255.0), &print)?;
+    }
+    free_signatures(&mut l, 0.0, &[0, band_from, ink_from], true)?;
+    l.gray = gray;
+    let (print_mask, print_ref) = printed(&l)?;
+    Ok(FreeText { to_image, layout: l, print_mask, print_ref })
+}
+
 /// A page no template matched: read its layout, then mask and check exactly
 /// as for a template.
 pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: bool, why: &str) -> Result<PageResult> {
@@ -1309,14 +1484,7 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
     if !l.problems.is_empty() {
         return Ok(fail(t0, &prefix, l.problems.join("; "), vec![], l.notes.clone(), Some(layout)));
     }
-    let field_settings = |fl: &Field| -> MaskSettings {
-        let row_h = median(&fl.zones.iter().map(|z| z.rect[3]).collect::<Vec<_>>());
-        let g = ms.min_glyph_h.min(0.3 * TEXT_H / row_h);
-        let mut m = ms.clone();
-        m.min_glyph_h = g;
-        m.min_glyph_h_out = g;
-        m
-    };
+    let field_settings = |fl: &Field| field_settings(ms, fl);
     let (print_mask, print_ref) = printed(&l)?;
     let mut notes = l.notes.clone();
     let rows: Vec<&Zone> = l.fields.iter().filter(|fl| fl.source == "table").flat_map(|fl| fl.zones.iter()).collect();
@@ -1350,10 +1518,10 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
             masking::fill(&mut canvas, &f, &[[x, y], [x + w, y], [x + w, y + h], [x, y + h]])?;
             report.push(json!({"zone": fl.zones[0].name, "mode": "signature", "signatures": 1}));
         } else if fl.kind == "signature" {
-            let opts = SigOptions { margin: (0.0, 0.0), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref() };
+            let opts = SigOptions { reach: masking::Reach::default(), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref() };
             report.extend(masking::signature_column(&mut canvas, &gray, &f, &fl.zones, ms, &opts)?);
         } else {
-            report.extend(masking::partial_column(&mut canvas, &gray, &f, &fl.zones, &field_settings(fl), rng, (0.0, 0.0), Some(&print_ref), struck(fl), stamp_ink.as_ref())?);
+            report.extend(masking::partial_column(&mut canvas, &gray, &f, &fl.zones, &field_settings(fl), rng, masking::Reach::default(), Some(&print_ref), struck(fl), stamp_ink.as_ref())?);
         }
     }
     let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &on_page, r_range, None)?;
@@ -1377,10 +1545,10 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
                 continue; // masked whole, box and all
             }
             let r = if fl.kind == "signature" {
-                let opts = SigOptions { margin: (0.0, 0.0), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref() };
+                let opts = SigOptions { reach: masking::Reach::default(), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref() };
                 masking::verify_signatures(&gray, &out, &f, &fl.zones, ms, Some(&keep), &opts)?
             } else {
-                masking::verify_column(&out, &f, &fl.zones, Some(&print_ref), &field_settings(fl), struck(fl), stamp_ink.as_ref())?
+                masking::verify_column(&out, &f, &fl.zones, Some(&print_ref), &field_settings(fl), masking::Reach::default(), struck(fl), stamp_ink.as_ref())?
             };
             if !r.is_empty() {
                 leaks.push(r);

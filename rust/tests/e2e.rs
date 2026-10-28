@@ -92,6 +92,9 @@ fn published_form_verifies() {
     assert_eq!(m["source"]["kiems"]["station"], "007029014000102");
     assert_eq!(m["output"]["pdf_signature"]["subject"], "C=KE, CN=Test Officer");
     assert!(std::fs::read_dir(root.join("overlay")).unwrap().any(|e| e.unwrap().path().extension().map(|x| x == "png").unwrap_or(false)));
+    // the re-run's copy of the form is not left behind
+    assert!(std::fs::read_dir(root.join("overlay")).unwrap().all(|e| e.unwrap().path().is_file()));
+    assert!(!std::env::temp_dir().join(format!("rfpii-rerun-{}", std::process::id())).exists());
     let batch = std::fs::read_dir(root.join("out/batches")).unwrap().next().unwrap().unwrap().path();
     let b: Value = serde_json::from_str(&std::fs::read_to_string(batch).unwrap()).unwrap();
     assert_eq!(b["count"], 1);

@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::align::{best_alignment, AlignSettings, Alignment};
-use crate::masking::{self, MaskSettings, Mapper, SigOptions, Strike};
+use crate::masking::{self, MaskSettings, Mapper, Reach, SigOptions, Strike};
 use crate::proof;
 use crate::pyjson;
 use crate::pyrand::PyRandom;
@@ -254,6 +254,37 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
 
     let columns = group_by_key(&t.zones, "partial");
     let signatures = group_by_key(&t.zones, "signature");
+
+    // A widened search stops at the printed labels just outside its table
+    // (the zones' `fence`), found on the page as anchors are, so it doesn't
+    // run into the table's header or the next section. A label that can't be
+    // found leaves that side wide: the search then errs on hiding more.
+    let mut reaches: Vec<(String, Reach)> = Vec::new();
+    for (key, cells) in columns.iter().chain(&signatures) {
+        let (up, down) = margin(cells);
+        let mut r = Reach::margin(up, down);
+        if (up, down) != (0.0, 0.0) {
+            let f = mapper(cells)?;
+            let top = cells.iter().map(|z| z.rect[1]).fold(f64::INFINITY, f64::min);
+            let bottom = cells.iter().map(|z| z.rect[1] + z.rect[3]).fold(f64::NEG_INFINITY, f64::max);
+            let half_row = 0.5 * util::median(&cells.iter().map(|z| z.rect[3]).collect::<Vec<_>>());
+            for (side, label) in cells[0].fence.iter().enumerate() {
+                let Some(label) = label else { continue };
+                let (d, ncc) = masking::find_anchor(&gray, &f, &t.image, *label)?;
+                let place = if side == 0 { "above" } else { "below" };
+                // up to half a row into the cells as placed; deeper, it can't
+                // be the label outside the table
+                match d.map(|d| if side == 0 { label[1] + label[3] + d[1] } else { label[1] + d[1] }) {
+                    Some(y) if side == 0 && y <= top + half_row => r.top = Some(y),
+                    Some(y) if side == 1 && y >= bottom - half_row => r.bottom = Some(y),
+                    Some(_) => notes.push(format!("{}: printed label {} the table found inside it; search left wide", key, place)),
+                    None => notes.push(format!("{}: printed label {} the table not found (best match {:.2}); search left wide", key, place, ncc)),
+                }
+            }
+        }
+        reaches.push((key.clone(), r));
+    }
+    let reach = |cells: &[Zone]| -> Reach { reaches.iter().find(|(k, _)| k == cells[0].key()).map(|(_, r)| *r).unwrap_or_default() };
     // The masked columns must sit between their printed rules.
     let mut misplaced = Vec::new();
     if o.verify {
@@ -316,19 +347,58 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
     }
     // An underlined field (not a table column, and placed where expected):
     // only writing on its own line is a signature.
-    let on_line = |cells: &[Zone]| cells[0].region.is_empty() && margin(cells) == (0.0, 0.0);
+    let on_line = |cells: &[Zone]| cells[0].region.is_empty() && reach(cells).margin == (0.0, 0.0);
     for (_, cells) in &signatures {
         let st = struck(cells);
-        let opts = SigOptions { margin: margin(cells), reference: Some(&t.image), printed: None, centered: on_line(cells), strikes: Some(st.as_slice()), exclude: stamp_ink.as_ref() };
+        let opts = SigOptions { reach: reach(cells), reference: Some(&t.image), printed: None, centered: on_line(cells), strikes: Some(st.as_slice()), exclude: stamp_ink.as_ref() };
         report.extend(masking::signature_column(&mut canvas, &gray, &mapper(cells)?, cells, ms, &opts)?);
     }
     for (_, cells) in &columns {
         let st = struck(cells);
-        report.extend(masking::partial_column(&mut canvas, &gray, &mapper(cells)?, cells, &zms(cells), rng, margin(cells), Some(&t.image), Some(st.as_slice()), stamp_ink.as_ref())?);
+        report.extend(masking::partial_column(&mut canvas, &gray, &mapper(cells)?, cells, &zms(cells), rng, reach(cells), Some(&t.image), Some(st.as_slice()), stamp_ink.as_ref())?);
+    }
+
+    // Areas of free writing (the comments): read as forms without a template
+    // are, for IDs, phone numbers and signatures written there. A signature
+    // found there is hidden whole, box and all.
+    let mut free: Vec<(String, crate::generic::FreeText)> = Vec::new();
+    if !t.free_text.is_empty() {
+        if let Err(e) = crate::ocr::check() {
+            return Ok(fail(format!("free text can't be read: {}", e), report, notes));
+        }
+        for (name, rect) in &t.free_text {
+            let hl = al.local([rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0])?;
+            let text_h = t.text_h.unwrap_or(crate::generic::TEXT_H);
+            let ft = crate::ocr::with_engine(|o| crate::generic::read_free_text(img, &hl, *rect, text_h, &on_page, Some(&t.image), o))?;
+            let f = ft.mapper();
+            for fl in &ft.layout.fields {
+                if fl.kind == "signature" {
+                    let [x, y, w, h] = fl.zones[0].rect;
+                    masking::fill(&mut canvas, &f, &[[x, y], [x + w, y], [x + w, y + h], [x, y + h]])?;
+                    report.push(json!({"zone": format!("{}:{}", name, fl.zones[0].name), "mode": "signature", "signatures": 1}));
+                } else {
+                    report.extend(masking::partial_column(&mut canvas, &gray, &f, &fl.zones, &crate::generic::field_settings(ms, fl), rng, Reach::default(), Some(&ft.print_ref), None, stamp_ink.as_ref())?);
+                }
+            }
+            notes.extend(ft.layout.notes.iter().map(|n| format!("{}: {}", name, n)));
+            free.push((name.clone(), ft));
+        }
     }
 
     // Stamps: never masked.
-    let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &on_page, r_range, Some(&maps))?;
+    // stamps found while reading the free text are protected as well
+    let mut known = on_page.clone();
+    for (_, ft) in &free {
+        let f = ft.mapper();
+        for st in &ft.layout.stamps {
+            let p = f(&[[st.cx, st.cy], [st.cx + st.r, st.cy]]);
+            let r = (p[1][0] - p[0][0]).hypot(p[1][1] - p[0][1]);
+            if !known.iter().any(|k| (k.cx - p[0][0]).hypot(k.cy - p[0][1]) < k.r.max(r)) {
+                known.push(Stamp::new(p[0][0], p[0][1], r, st.coverage, &st.how));
+            }
+        }
+    }
+    let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &known, r_range, Some(&maps))?;
     notes.extend(stamp_notes);
     let (blocks, out) = apply(img, &canvas, Some(&keep))?;
 
@@ -352,17 +422,25 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
     if o.verify {
         for (_, cells) in &columns {
             let st = struck(cells);
-            let r = masking::verify_column(&out, &mapper(cells)?, cells, Some(&t.image), &zms(cells), Some(st.as_slice()), stamp_ink.as_ref())?;
+            let r = masking::verify_column(&out, &mapper(cells)?, cells, Some(&t.image), &zms(cells), reach(cells), Some(st.as_slice()), stamp_ink.as_ref())?;
             if !r.is_empty() {
                 leaks.push(r);
             }
         }
         for (_, cells) in &signatures {
             let st = struck(cells);
-            let opts = SigOptions { margin: margin(cells), reference: Some(&t.image), printed: None, centered: on_line(cells), strikes: Some(st.as_slice()), exclude: stamp_ink.as_ref() };
+            let opts = SigOptions { reach: reach(cells), reference: Some(&t.image), printed: None, centered: on_line(cells), strikes: Some(st.as_slice()), exclude: stamp_ink.as_ref() };
             let r = masking::verify_signatures(&gray, &out, &mapper(cells)?, cells, ms, Some(&keep), &opts)?;
             if !r.is_empty() {
                 leaks.push(r);
+            }
+        }
+        for (_, ft) in &free {
+            for fl in ft.layout.fields.iter().filter(|fl| fl.kind != "signature") {
+                let r = masking::verify_column(&out, &ft.mapper(), &fl.zones, Some(&ft.print_ref), &crate::generic::field_settings(ms, fl), Reach::default(), None, stamp_ink.as_ref())?;
+                if !r.is_empty() {
+                    leaks.push(r);
+                }
             }
         }
     }
@@ -382,7 +460,7 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
         blocks: Some(blocks),
         protected,
         h: Some(hh),
-        layout: None,
+        layout: if free.is_empty() { None } else { Some(json!({"free_text": free.iter().map(|(n, ft)| ft.record(n)).collect::<Vec<_>>()})) },
     })
 }
 
@@ -408,7 +486,7 @@ pub fn redact_boxes(img: &Mat, boxes: &[(f64, f64, f64, f64, String)], ms: &Mask
             masking::blackout(&mut canvas, &ident, &z, pad)?;
             report.push(json!({"zone": z.name, "mode": "blackout"}));
         } else {
-            report.extend(masking::partial_column(&mut canvas, &gray, &ident, &[z], ms, rng, (0.0, 0.0), None, None, None)?);
+            report.extend(masking::partial_column(&mut canvas, &gray, &ident, &[z], ms, rng, Reach::default(), None, None, None)?);
         }
     }
     let (blocks, out) = apply(img, &canvas, None)?;

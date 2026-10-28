@@ -291,7 +291,8 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
         "vlm_audit": if audits.is_empty() { Value::Null } else { Value::Array(audits) },
     });
     let mut manifest = manifest;
-    if used.contains(&"generic") {
+    // OCR read the page (no template), or a template's free-text areas
+    if used.contains(&"generic") || mpages.iter().any(|p| p["layout"].get("free_text").is_some()) {
         manifest["ocr"] = crate::ocr::info()?;
     }
     if let Some(s) = &cfg.pdf_signer {

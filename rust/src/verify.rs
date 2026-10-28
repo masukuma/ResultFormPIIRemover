@@ -302,14 +302,16 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
 
     if let (Some(tdir), Some(orig)) = (a.rerun_templates, a.original) {
         let st = &m["settings"];
-        let od = a.overlay_dir.map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+        // the re-run's own output is a redacted copy of the form: it goes to
+        // a folder of its own, removed afterwards, never next to the user's files
+        let work = std::env::temp_dir().join(format!("rfpii-rerun-{}", std::process::id()));
         let mut ms = MaskSettings::default();
         ms.hide = st["hide"].as_u64().unwrap_or(3) as usize;
         ms.phone_tail = st["phone_tail"].as_u64().unwrap_or(6) as usize;
         let cfg = Config {
             templates: tdir.to_string_lossy().into_owned(),
-            out: od.join("_rerun").to_string_lossy().into_owned(),
-            review: od.to_string_lossy().into_owned(),
+            out: work.join("out").to_string_lossy().into_owned(),
+            review: work.join("review").to_string_lossy().into_owned(),
             align: AlignSettings::default(),
             mask: ms,
             strict_structure: st["strict_structure"].as_bool().unwrap_or(false),
@@ -329,7 +331,9 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
         let fp_ok = m["templates"].as_object().map(|o| o.iter().all(|(k, v)| templates.iter().any(|t| &t.name == k && Some(t.fingerprint.as_str()) == v.as_str()))).unwrap_or(true);
         r.add(fp_ok, "templates are the versions recorded");
         let seed = u64::from_str_radix(m["seed"].as_str().unwrap_or("0"), 16)?;
-        let o = process_document(&orig.to_string_lossy(), m["source"]["path"].as_str().unwrap_or(""), &templates, &cfg, None, Some(seed), None)?;
+        let o = process_document(&orig.to_string_lossy(), m["source"]["path"].as_str().unwrap_or(""), &templates, &cfg, None, Some(seed), None);
+        let _ = std::fs::remove_dir_all(&work);
+        let o = o?;
         let digests = |pages: &Value| -> Vec<String> { pages.as_array().map(|a| a.iter().map(|p| p["output_image_sha256"].as_str().unwrap_or("").to_string()).collect()).unwrap_or_default() };
         let same = o.ok && o.manifest.as_ref().map(|om| digests(&om["pages"]) == digests(&m["pages"])).unwrap_or(false);
         r.add(same, "re-running the recorded code, templates and seed reproduces the same output");
