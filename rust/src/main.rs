@@ -1,6 +1,7 @@
 //! Command line.
 //!
 //!     rfpii keygen keys/
+//!     rfpii certgen --name "Returning Officer, Kibwezi West"
 //!     rfpii redact Forms/ --templates templates --out public --review review --sign-key keys/signing_key.pem
 //!     rfpii verify public/x.pdf --original x.PDF --pubkey keys/signing_key.pub.pem --ledger public/ledger.jsonl
 //!     rfpii preview templates/form34a_2022 -o preview.png
@@ -25,6 +26,7 @@ use rfpii::process::{process_document, utc_now, with_suffix, Config};
 use rfpii::pyjson;
 use rfpii::templates::{load_templates, Template};
 use rfpii::util;
+use rfpii::pdfsign;
 use rfpii::pipeline::redact_boxes;
 use rfpii::pyrand::PyRandom;
 use rfpii::verify::{verify, VerifyArgs};
@@ -45,6 +47,8 @@ enum Cmd {
     Verify(VerifyCli),
     /// Create an Ed25519 signing key pair
     Keygen { directory: PathBuf },
+    /// Create a self-signed certificate for digitally signing the PDFs
+    Certgen(CertgenArgs),
     /// Render template zones and protected regions for a visual check
     Preview {
         template: PathBuf,
@@ -121,6 +125,18 @@ struct RedactArgs {
     /// Ed25519 private key (rfpii keygen) to sign manifests and batches
     #[arg(long)]
     sign_key: Option<PathBuf>,
+    /// Certificate to digitally sign the PDFs with: PKCS#12 (.p12/.pfx), or
+    /// PEM with the key (password from $RFPII_CERT_PASSWORD, else asked).
+    /// Default: ~/.config/rfpii/signer.p12 if it exists; else you are
+    /// offered to create a self-signed one
+    #[arg(long)]
+    certificate: Option<PathBuf>,
+    /// PEM private key, if not in the --certificate file
+    #[arg(long, requires = "certificate")]
+    certificate_key: Option<PathBuf>,
+    /// Don't sign the PDFs (and don't offer to create a certificate)
+    #[arg(long, conflicts_with = "certificate")]
+    no_pdf_signature: bool,
     /// Append-only ledger (default <out>/ledger.jsonl)
     #[arg(long)]
     ledger: Option<PathBuf>,
@@ -159,6 +175,29 @@ struct RedactArgs {
 }
 
 #[derive(Args)]
+struct CertgenArgs {
+    /// Signer's name, as PDF readers will show it (e.g. "Returning Officer, Kibwezi West")
+    #[arg(long)]
+    name: String,
+    /// Organisation
+    #[arg(long)]
+    org: Option<String>,
+    /// Two-letter country code (e.g. KE)
+    #[arg(long)]
+    country: Option<String>,
+    /// Days the certificate is valid
+    #[arg(long, default_value_t = 1095)]
+    days: u32,
+    /// PKCS#12 file to create (default ~/.config/rfpii/signer.p12); the
+    /// public certificate is written beside it as .crt
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Replace an existing certificate
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args)]
 struct VerifyCli {
     redacted: PathBuf,
     /// Default: <redacted>.manifest.json
@@ -179,6 +218,10 @@ struct VerifyCli {
     /// Also re-run the redaction from the manifest's seed
     #[arg(long, value_name = "TEMPLATES")]
     rerun: Option<PathBuf>,
+    /// Certificate (PEM or DER) the PDF's signer must chain to; for a
+    /// self-signed certificate, the certificate itself
+    #[arg(long)]
+    trust: Vec<PathBuf>,
 }
 
 fn out_path(root: &str, rel: &str, ext: &str) -> Result<PathBuf> {
@@ -276,6 +319,7 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
         generic: !a.no_generic,
         vlm_audit: a.vlm_audit,
         vlm_fallback: a.vlm_fallback,
+        pdf_signer: pdf_signer(&a)?.map(std::sync::Arc::new),
     };
     // fail fast on a bad VLM configuration
     let vlm = if a.vlm_audit || a.vlm_fallback { Some(Ollama::new(a.vlm.settings())?) } else { None };
@@ -356,6 +400,133 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
     Ok(if n_ok == n { 0 } else { 2 })
 }
 
+fn interactive() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+}
+
+fn ask(question: &str) -> Result<String> {
+    eprint!("{}", question);
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_string())
+}
+
+/// The password of a certificate file: $RFPII_CERT_PASSWORD, else asked.
+fn cert_password(path: &Path) -> Result<String> {
+    if let Ok(p) = std::env::var("RFPII_CERT_PASSWORD") {
+        return Ok(p);
+    }
+    if !interactive() {
+        anyhow::bail!("{} needs a password: set RFPII_CERT_PASSWORD", path.display());
+    }
+    Ok(rpassword::prompt_password(format!("Password for {}: ", path.display()))?)
+}
+
+/// A new password: $RFPII_CERT_PASSWORD, else asked twice.
+fn new_password() -> Result<String> {
+    if let Ok(p) = std::env::var("RFPII_CERT_PASSWORD") {
+        return Ok(p);
+    }
+    if !interactive() {
+        anyhow::bail!("set RFPII_CERT_PASSWORD to the password protecting the private key");
+    }
+    loop {
+        let p = rpassword::prompt_password("Password to protect the private key: ")?;
+        if p.is_empty() {
+            eprintln!("The password can't be empty.");
+            continue;
+        }
+        if rpassword::prompt_password("Again: ")? == p {
+            return Ok(p);
+        }
+        eprintln!("They don't match.");
+    }
+}
+
+fn show_certificate(s: &pdfsign::Signer, p12: Option<&Path>) -> Result<()> {
+    let d = pdfsign::describe(s.certificate())?;
+    eprintln!("signing PDFs as {}", d["subject"].as_str().unwrap_or(""));
+    eprintln!("  certificate SHA-256 {}", d["certificate_sha256"].as_str().unwrap_or(""));
+    if d["self_signed"].as_bool() == Some(true) {
+        let crt = p12.map(|p| format!(" ({})", pdfsign::certificate_path(p).display())).unwrap_or_default();
+        eprintln!("  self-signed: publish this fingerprint or the certificate{} so readers can check who signed", crt);
+    }
+    Ok(())
+}
+
+/// The certificate to sign the PDFs with: the one given, the default one,
+/// or (asked) a new self-signed one; None to publish unsigned PDFs.
+fn pdf_signer(a: &RedactArgs) -> Result<Option<pdfsign::Signer>> {
+    if a.no_pdf_signature {
+        return Ok(None);
+    }
+    let default = pdfsign::default_path();
+    let path = match &a.certificate {
+        Some(p) => p.clone(),
+        None if default.exists() => default,
+        None => return offer_certificate(&default),
+    };
+    let s = pdfsign::Signer::load(&path, a.certificate_key.as_deref(), &mut || cert_password(&path))?;
+    show_certificate(&s, path.extension().filter(|e| *e == "p12").map(|_| path.as_path()))?;
+    Ok(Some(s))
+}
+
+/// No certificate given: offer to create a self-signed one.
+fn offer_certificate(path: &Path) -> Result<Option<pdfsign::Signer>> {
+    let unsigned = || eprintln!("warning: no --certificate; the PDFs will not be digitally signed (`rfpii certgen` creates a certificate)");
+    if !interactive() {
+        unsigned();
+        return Ok(None);
+    }
+    eprintln!("No certificate to digitally sign the published PDFs with.");
+    let yes = ask(&format!("Create a self-signed certificate now (saved as {})? [y/N] ", path.display()))?;
+    if !matches!(yes.to_lowercase().as_str(), "y" | "yes") {
+        unsigned();
+        return Ok(None);
+    }
+    let name = loop {
+        let n = ask("Signer's name, as PDF readers will show it (e.g. Returning Officer, Kibwezi West): ")?;
+        if !n.is_empty() {
+            break n;
+        }
+    };
+    let org = ask("Organisation (optional): ")?;
+    let country = loop {
+        let c = ask("Two-letter country code (optional, e.g. KE): ")?.to_uppercase();
+        if c.is_empty() || (c.len() == 2 && c.chars().all(|x| x.is_ascii_alphabetic())) {
+            break c;
+        }
+    };
+    let s = pdfsign::certgen(path, &name, Some(&org), Some(&country), 1095, &new_password()?)?;
+    eprintln!("created {} (private: keep it safe) and {} (public)", path.display(), pdfsign::certificate_path(path).display());
+    show_certificate(&s, Some(path))?;
+    Ok(Some(s))
+}
+
+fn cmd_certgen(a: CertgenArgs) -> Result<i32> {
+    let default = a.out.is_none();
+    let out = a.out.unwrap_or_else(pdfsign::default_path);
+    if out.exists() && !a.force {
+        anyhow::bail!("{} exists (--force replaces it)", out.display());
+    }
+    if let Some(c) = a.country.as_deref().filter(|c| !c.is_empty()) {
+        if c.len() != 2 || !c.chars().all(|x| x.is_ascii_alphabetic()) {
+            anyhow::bail!("--country takes a two-letter code such as KE");
+        }
+    }
+    let country = a.country.map(|c| c.to_uppercase());
+    let s = pdfsign::certgen(&out, &a.name, a.org.as_deref(), country.as_deref(), a.days, &new_password()?)?;
+    let d = pdfsign::describe(s.certificate())?;
+    println!("private  {} (keep it safe; rfpii redact uses it{})", out.display(), if default { " by default" } else { " with --certificate" });
+    println!("public   {} (publish it)", pdfsign::certificate_path(&out).display());
+    println!("subject  {}", d["subject"].as_str().unwrap_or(""));
+    println!("SHA-256  {}", d["certificate_sha256"].as_str().unwrap_or(""));
+    println!("valid to {}", d["not_after"].as_str().unwrap_or(""));
+    Ok(0)
+}
+
 fn cmd_verify(a: VerifyCli) -> Result<i32> {
     let rep = verify(&VerifyArgs {
         redacted: &a.redacted,
@@ -365,6 +536,7 @@ fn cmd_verify(a: VerifyCli) -> Result<i32> {
         ledger: a.ledger.as_deref(),
         overlay_dir: a.overlay.as_deref(),
         rerun_templates: a.rerun.as_deref(),
+        trust: &a.trust,
     })?;
     println!("{}", rep.text());
     Ok(if rep.ok() { 0 } else { 1 })
@@ -455,7 +627,7 @@ fn cmd_demo(dir: &Path, count: u64) -> Result<i32> {
     let q: Vector<i32> = vec![imgcodecs::IMWRITE_JPEG_QUALITY, 85].into_iter().collect();
     for i in 0..count {
         let angle = (i as f64 * 0.6180339887).fract() * 10.0 - 5.0;
-        let scan = synthetic::simulate_scan(&synthetic::filled_form(i)?, i, angle, 1.3)?;
+        let (scan, _) = synthetic::simulate_scan(&synthetic::filled_form(i)?, i, angle, 1.3)?;
         imgcodecs::imwrite(&scans.join(format!("station_{:04}.jpg", i)), &scan, &q)?;
     }
     // something that is not a form at all
@@ -474,6 +646,7 @@ fn main() {
         Cmd::Redact(a) => cmd_redact(a),
         Cmd::Verify(a) => cmd_verify(a),
         Cmd::Keygen { directory } => cmd_keygen(&directory),
+        Cmd::Certgen(a) => cmd_certgen(a),
         Cmd::Preview { template, output } => cmd_preview(&template, &output),
         Cmd::Propose(a) => cmd_propose(a),
         Cmd::Demo { directory, count } => cmd_demo(&directory, count),

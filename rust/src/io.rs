@@ -407,6 +407,42 @@ unsafe extern "C" {
     fn mrender_page(data: *const u8, len: usize, pageno: i32, zoom: f32, out: *mut *mut u8, w: *mut i32, h: *mut i32, err: *mut std::os::raw::c_char, errlen: i32) -> i32;
     fn mrender_free(p: *mut u8);
     fn mrender_version() -> *const std::os::raw::c_char;
+    fn mimage_extract(data: *const u8, len: usize, pageno: i32, xref: i32, out: *mut *mut u8, outlen: *mut usize, ext: *mut std::os::raw::c_char, extlen: i32, err: *mut std::os::raw::c_char, errlen: i32) -> i32;
+    fn mrepair(data: *const u8, len: usize, out: *mut *mut u8, outlen: *mut usize, pages: *mut i32, err: *mut std::os::raw::c_char, errlen: i32) -> i32;
+}
+
+fn c_text(b: &[std::os::raw::c_char]) -> String {
+    unsafe { std::ffi::CStr::from_ptr(b.as_ptr()) }.to_string_lossy().into_owned()
+}
+
+/// Image object `xref` of page `page` (0-based) as PyMuPDF's
+/// `Document.extract_image` gives it after reading the page: (bytes,
+/// extension). JPEGs come as stored; fax, Flate and other raw encodings
+/// decoded and written as PNG.
+fn extract_image(data: &[u8], page: usize, xref: u32) -> Result<(Vec<u8>, String)> {
+    let (mut out, mut n) = (std::ptr::null_mut(), 0usize);
+    let mut ext = vec![0 as std::os::raw::c_char; 32];
+    let mut err = vec![0 as std::os::raw::c_char; 512];
+    let ok = unsafe { mimage_extract(data.as_ptr(), data.len(), page as i32, xref as i32, &mut out, &mut n, ext.as_mut_ptr(), ext.len() as i32, err.as_mut_ptr(), err.len() as i32) };
+    if ok == 0 {
+        bail!("image xref {}: {}", xref, c_text(&err));
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(out, n) }.to_vec();
+    unsafe { mrender_free(out) };
+    Ok((bytes, c_text(&ext)))
+}
+
+/// A PDF lopdf can't read, as MuPDF repairs it: (pages, repaired PDF).
+fn repair(data: &[u8]) -> Result<(usize, Vec<u8>)> {
+    let (mut out, mut n, mut pages) = (std::ptr::null_mut(), 0usize, 0i32);
+    let mut err = vec![0 as std::os::raw::c_char; 512];
+    let ok = unsafe { mrepair(data.as_ptr(), data.len(), &mut out, &mut n, &mut pages, err.as_mut_ptr(), err.len() as i32) };
+    if ok == 0 {
+        bail!("{}", c_text(&err));
+    }
+    let bytes = if out.is_null() { vec![] } else { unsafe { std::slice::from_raw_parts(out, n) }.to_vec() };
+    unsafe { mrender_free(out) };
+    Ok((pages.max(0) as usize, bytes))
 }
 
 /// MuPDF's version (the renderer of pages that aren't a single image).
@@ -433,7 +469,20 @@ fn render_page(data: &[u8], index: i32, zoom: f64) -> Result<Mat> {
 }
 
 fn pdf_source_pages(data: &[u8]) -> Result<Vec<SourcePage>> {
-    let doc = Document::load_mem(data).context("reading PDF")?;
+    let fixed;
+    let (doc, data) = match Document::load_mem(data) {
+        Ok(d) => (d, data),
+        Err(e) => {
+            // as with PyMuPDF: what MuPDF can repair is read (a truncated
+            // download may have no pages left)
+            let (pages, f) = repair(data).map_err(|m| anyhow!("reading PDF: {e}; MuPDF: {m}"))?;
+            if pages == 0 {
+                return Ok(vec![]);
+            }
+            fixed = f;
+            (Document::load_mem(&fixed).context("reading repaired PDF")?, fixed.as_slice())
+        }
+    };
     let mut out = Vec::new();
     for (i, (_, page)) in doc.get_pages().into_iter().enumerate() {
         let (x0, y0, x1, y1) = page_box(&doc, page)?;
@@ -466,31 +515,20 @@ fn pdf_source_pages(data: &[u8]) -> Result<Vec<SourcePage>> {
                 if let (false, Some(r)) = (masked, image_rect(&doc, page, name)) {
                     let rarea = (r.2 - r.0) * (r.3 - r.1);
                     if (rarea - area).abs() < 0.02 * area {
-                        let reference = format!("page {}, image xref {}", i + 1, id.0);
-                        if let Some(jpeg) = stream_jpeg(s)? {
-                            out.push(SourcePage {
-                                pixels: decode_bytes(&jpeg)?,
-                                kind: "jpeg",
-                                data: Some(jpeg),
-                                reference,
-                                page_size: Some(size),
-                                rect: Some((r.0 - x0, r.1 - y0, r.2 - x0, r.3 - y0)),
-                                rotate,
-                            });
-                            continue;
-                        }
-                        if let Some(px) = stream_pixels(&doc, s)? {
-                            out.push(SourcePage {
-                                pixels: px,
-                                kind: "pixels",
-                                data: None,
-                                reference,
-                                page_size: Some(size),
-                                rect: Some((r.0 - x0, r.1 - y0, r.2 - x0, r.3 - y0)),
-                                rotate,
-                            });
-                            continue;
-                        }
+                        // the image as stored: JPEGs stay JPEG, so the redaction
+                        // can be proven coefficient by coefficient
+                        let (bytes, ext) = extract_image(data, i, id.0)?;
+                        let jpeg = ext == "jpeg" || ext == "jpg";
+                        out.push(SourcePage {
+                            pixels: decode_bytes(&bytes)?,
+                            kind: if jpeg { "jpeg" } else { "pixels" },
+                            data: if jpeg { Some(bytes) } else { None },
+                            reference: format!("page {}, image xref {}", i + 1, id.0),
+                            page_size: Some(size),
+                            rect: Some((r.0 - x0, r.1 - y0, r.2 - x0, r.3 - y0)),
+                            rotate,
+                        });
+                        continue;
                     }
                 }
             }

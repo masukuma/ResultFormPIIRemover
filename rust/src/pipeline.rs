@@ -428,3 +428,7 @@ pub fn redact_boxes(img: &Mat, boxes: &[(f64, f64, f64, f64, String)], ms: &Mask
         layout: None,
     })
 }
+
+#[cfg(test)]
+#[path = "tests/pipeline.rs"]
+mod py_tests;

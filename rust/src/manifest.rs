@@ -3,7 +3,7 @@
 //! Every published form gets a manifest saying exactly what was done to it,
 //! signed (Ed25519) by the publisher, appended to a hash-chained ledger, and
 //! covered by the Merkle root of its batch. Formats, hashes and signatures
-//! are the same as the Python version's, so either can verify the other's.
+//! are those of the first (Python) version, so its manifests still verify.
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
@@ -228,3 +228,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/manifest.rs"]
+mod py_tests;

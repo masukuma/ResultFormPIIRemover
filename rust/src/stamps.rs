@@ -8,10 +8,20 @@
 //!
 //! Detection favours recall over precision: a false stamp only means a little
 //! less is masked, and the leak checks then send the page to review if that
-//! leaves PII readable. Cues: rings (Hough circles inked nearly all the way
-//! round), stamp text read by OCR (generic pages), and a permissive ring
-//! search around every mask (`near`). See the Python version for the
-//! measurements behind every threshold.
+//! leaves PII readable. A missed stamp could be masked, so there are several
+//! cues:
+//!
+//! - rings: circles (Hough) whose perimeter is inked nearly all the way round
+//!   and more densely than the paper just outside;
+//! - stamp text: OCR lines reading like "I.E.B.C." / "PRESIDING OFFICER" in
+//!   capitals trigger a more permissive ring search around them, and protect a
+//!   generous disc there even if no ring is found;
+//! - near masks: before a page is released, a permissive ring search runs
+//!   around every mask (`near`). There a ring smaller than any stamp must run
+//!   all the way round, and a broken one must run in long arcs: a handwritten
+//!   "0", or pen strokes crossing a circle, are not stamps.
+//!
+//! The stamps are recorded in the manifest, so `rfpii verify` can show them.
 
 use anyhow::Result;
 use once_cell::sync::Lazy;
@@ -501,3 +511,7 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+#[path = "tests/stamps.rs"]
+mod py_tests;

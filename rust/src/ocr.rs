@@ -6,10 +6,12 @@
 //! hashes go into every manifest made with them, so a re-run can be checked
 //! against the same models.
 //!
-//! The pre- and post-processing are those of `rapidocr_onnxruntime` 1.2.3
-//! (which the Python version uses), step for step, so that both read the same
-//! lines; recognition is decoded here so that each character comes with its
-//! position along the line (see the Python `ocr.py`).
+//! The pre- and post-processing are those of `rapidocr_onnxruntime` 1.2.3,
+//! step for step, so that the same lines are read. Recognition is decoded
+//! here rather than by the library so that each character comes with its
+//! position along the text line: a label is often read together with
+//! handwriting next to it ("Presiding Officer JOHN DOE Signature"), and the
+//! field starts where the word "Signature" ends, not where the line does.
 //!
 //! Configuration: `RFPII_ORT_LIB` (the ONNX Runtime shared library, default
 //! /opt/onnxruntime/lib/libonnxruntime.so.1.29.0) and `RFPII_OCR_MODELS` (the

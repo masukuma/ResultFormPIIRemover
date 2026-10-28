@@ -173,6 +173,18 @@ impl Ollama {
         Ok(())
     }
 
+    pub fn chat_url(&self) -> String {
+        format!("{}/api/chat", self.s.host.trim_end_matches('/'))
+    }
+
+    /// The API key goes to remote hosts only.
+    pub fn authorization(&self) -> Option<String> {
+        match (&self.s.api_key, self.local()) {
+            (Some(k), false) => Some(format!("Bearer {}", k)),
+            _ => None,
+        }
+    }
+
     /// Long side at most `max_side`, each side a multiple of 28 px.
     fn resize(&self, img: &Mat) -> Result<(Mat, (f64, f64))> {
         let (h, w) = (img.rows() as f64, img.cols() as f64);
@@ -198,9 +210,9 @@ impl Ollama {
             "options": {"temperature": 0},
         });
         let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs_f64(self.s.timeout))).build().into();
-        let mut req = agent.post(format!("{}/api/chat", self.s.host.trim_end_matches('/'))).header("Content-Type", "application/json");
-        if let (Some(k), false) = (&self.s.api_key, self.local()) {
-            req = req.header("Authorization", format!("Bearer {}", k));
+        let mut req = agent.post(self.chat_url()).header("Content-Type", "application/json");
+        if let Some(a) = self.authorization() {
+            req = req.header("Authorization", a);
         }
         let mut resp = req.send_json(&body).map_err(|e| anyhow!("Ollama at {}: {e}", self.s.host))?;
         let reply: Value = resp.body_mut().read_json().map_err(|e| anyhow!("Ollama reply: {e}"))?;
@@ -265,3 +277,7 @@ mod tests {
         assert_eq!(r.s.coords, "pixel");
     }
 }
+
+#[cfg(test)]
+#[path = "tests/vlm.rs"]
+mod py_tests;

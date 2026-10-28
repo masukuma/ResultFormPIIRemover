@@ -109,10 +109,13 @@ static int keep_marker(jpeg_saved_marker_ptr m) {
     return m->marker == JPEG_APP0 + 2 || m->marker == JPEG_APP0 + 14;
 }
 
-int jdct_redact(const unsigned char *data, unsigned long len,
-                const unsigned char *luma, int luma_rows, int luma_cols,
-                const unsigned char *chroma, int chroma_rows, int chroma_cols,
-                unsigned char **out, unsigned long *outlen, char *err, int errlen) {
+/* Read a baseline JPEG's coefficients, let `edit` change them, and write
+ * them back losslessly: same quantisation tables, sampling and kept
+ * markers; nothing is decoded or re-quantised. */
+typedef void (*jdct_edit)(j_decompress_ptr src, jvirt_barray_ptr *arrays, void *arg);
+
+static int transcode(const unsigned char *data, unsigned long len, jdct_edit edit, void *arg,
+                     unsigned char **out, unsigned long *outlen, char *err, int errlen) {
     struct jpeg_decompress_struct src;
     struct jpeg_compress_struct dst;
     struct err_mgr jerr; /* one handler for both: an error in either jumps here */
@@ -146,33 +149,7 @@ int jdct_redact(const unsigned char *data, unsigned long len,
         return 0;
     }
     jvirt_barray_ptr *arrays = jpeg_read_coefficients(&src);
-
-    /* luma: listed blocks -> DC that decodes to 0, all AC 0 */
-    jpeg_component_info *y = src.comp_info;
-    int q00 = src.quant_tbl_ptrs[y->quant_tbl_no]->quantval[0];
-    /* floor(-1024 / q00): level shift 128 -> DC = 8 * (0 - 128) */
-    int black = -1024 / q00;
-    if (black * q00 != -1024)
-        black -= 1;
-    for (JDIMENSION r = 0; r < y->height_in_blocks && (int)r < luma_rows; r++) {
-        JBLOCKARRAY row = (src.mem->access_virt_barray)((j_common_ptr)&src, arrays[0], r, 1, TRUE);
-        for (JDIMENSION c = 0; c < y->width_in_blocks && (int)c < luma_cols; c++) {
-            if (!luma[(size_t)r * luma_cols + c])
-                continue;
-            memset(row[0][c], 0, 64 * sizeof(JCOEF));
-            row[0][c][0] = (JCOEF)black;
-        }
-    }
-    /* chroma: listed blocks -> all zero (DC 0 = neutral) */
-    for (int comp = 1; comp < src.num_components && comp < 3 && chroma; comp++) {
-        jpeg_component_info *ci = src.comp_info + comp;
-        for (JDIMENSION r = 0; r < ci->height_in_blocks && (int)r < chroma_rows; r++) {
-            JBLOCKARRAY row = (src.mem->access_virt_barray)((j_common_ptr)&src, arrays[comp], r, 1, TRUE);
-            for (JDIMENSION c = 0; c < ci->width_in_blocks && (int)c < chroma_cols; c++)
-                if (chroma[(size_t)r * chroma_cols + c])
-                    memset(row[0][c], 0, 64 * sizeof(JCOEF));
-        }
-    }
+    edit(&src, arrays, arg);
 
     jpeg_create_compress(&dst);
     dst_created = 1;
@@ -188,6 +165,72 @@ int jdct_redact(const unsigned char *data, unsigned long len,
     jpeg_finish_decompress(&src);
     jpeg_destroy_decompress(&src);
     return 1;
+}
+
+struct blackout {
+    const unsigned char *luma, *chroma;
+    int luma_rows, luma_cols, chroma_rows, chroma_cols;
+};
+
+static void blackout_blocks(j_decompress_ptr src, jvirt_barray_ptr *arrays, void *arg) {
+    const struct blackout *b = arg;
+    /* luma: listed blocks -> DC that decodes to 0, all AC 0 */
+    jpeg_component_info *y = src->comp_info;
+    int q00 = src->quant_tbl_ptrs[y->quant_tbl_no]->quantval[0];
+    /* floor(-1024 / q00): level shift 128 -> DC = 8 * (0 - 128) */
+    int black = -1024 / q00;
+    if (black * q00 != -1024)
+        black -= 1;
+    for (JDIMENSION r = 0; r < y->height_in_blocks && (int)r < b->luma_rows; r++) {
+        JBLOCKARRAY row = (src->mem->access_virt_barray)((j_common_ptr)src, arrays[0], r, 1, TRUE);
+        for (JDIMENSION c = 0; c < y->width_in_blocks && (int)c < b->luma_cols; c++) {
+            if (!b->luma[(size_t)r * b->luma_cols + c])
+                continue;
+            memset(row[0][c], 0, 64 * sizeof(JCOEF));
+            row[0][c][0] = (JCOEF)black;
+        }
+    }
+    /* chroma: listed blocks -> all zero (DC 0 = neutral) */
+    for (int comp = 1; comp < src->num_components && comp < 3 && b->chroma; comp++) {
+        jpeg_component_info *ci = src->comp_info + comp;
+        for (JDIMENSION r = 0; r < ci->height_in_blocks && (int)r < b->chroma_rows; r++) {
+            JBLOCKARRAY row = (src->mem->access_virt_barray)((j_common_ptr)src, arrays[comp], r, 1, TRUE);
+            for (JDIMENSION c = 0; c < ci->width_in_blocks && (int)c < b->chroma_cols; c++)
+                if (b->chroma[(size_t)r * b->chroma_cols + c])
+                    memset(row[0][c], 0, 64 * sizeof(JCOEF));
+        }
+    }
+}
+
+int jdct_redact(const unsigned char *data, unsigned long len,
+                const unsigned char *luma, int luma_rows, int luma_cols,
+                const unsigned char *chroma, int chroma_rows, int chroma_cols,
+                unsigned char **out, unsigned long *outlen, char *err, int errlen) {
+    struct blackout b = {luma, chroma, luma_rows, luma_cols, chroma_rows, chroma_cols};
+    return transcode(data, len, blackout_blocks, &b, out, outlen, err, errlen);
+}
+
+struct nudge {
+    int comp, row, col, k, delta;
+};
+
+static void nudge_one(j_decompress_ptr src, jvirt_barray_ptr *arrays, void *arg) {
+    const struct nudge *n = arg;
+    jpeg_component_info *ci = src->comp_info + n->comp;
+    if (n->comp >= src->num_components || n->row < 0 || (JDIMENSION)n->row >= ci->height_in_blocks ||
+        n->col < 0 || (JDIMENSION)n->col >= ci->width_in_blocks || n->k < 0 || n->k > 63)
+        return;
+    JBLOCKARRAY row = (src->mem->access_virt_barray)((j_common_ptr)src, arrays[n->comp], n->row, 1, TRUE);
+    row[0][n->col][n->k] += (JCOEF)n->delta;
+}
+
+/* Add `delta` to one quantised coefficient (natural order k) of one block,
+ * nothing else changed: how a forger would alter a digit. For testing the
+ * verifier. */
+int jdct_nudge(const unsigned char *data, unsigned long len, int comp, int row, int col, int k, int delta,
+               unsigned char **out, unsigned long *outlen, char *err, int errlen) {
+    struct nudge n = {comp, row, col, k, delta};
+    return transcode(data, len, nudge_one, &n, out, outlen, err, errlen);
 }
 
 void jdct_free_buffer(unsigned char *p) { free(p); }

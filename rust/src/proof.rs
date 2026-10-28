@@ -148,6 +148,19 @@ unsafe extern "C" {
         errlen: c_int,
     ) -> c_int;
     fn jdct_free_buffer(p: *mut c_uchar);
+    fn jdct_nudge(
+        data: *const c_uchar,
+        len: c_ulong,
+        comp: c_int,
+        row: c_int,
+        col: c_int,
+        k: c_int,
+        delta: c_int,
+        out: *mut *mut c_uchar,
+        outlen: *mut c_ulong,
+        err: *mut c_char,
+        errlen: c_int,
+    ) -> c_int;
 }
 
 fn err_text(buf: &[c_char]) -> String {
@@ -293,6 +306,24 @@ pub fn redact_jpeg(data: &[u8], blocks: &Grid) -> Result<Redacted> {
     let bytes = unsafe { std::slice::from_raw_parts(out, outlen as usize) }.to_vec();
     unsafe { jdct_free_buffer(out) };
     Ok(Redacted { data: bytes, kind: "jpeg", luma_blocks: blocks, chroma_blocks: cb })
+}
+
+/// Add `delta` to one quantised coefficient (natural order `k`) of block
+/// (`row`, `col`) of component `comp`, changing nothing else: what a forger
+/// altering a digit would do. For testing the verifier.
+pub fn nudge_jpeg(data: &[u8], comp: usize, row: usize, col: usize, k: usize, delta: i32) -> Result<Vec<u8>> {
+    let mut out: *mut c_uchar = std::ptr::null_mut();
+    let mut outlen: c_ulong = 0;
+    let mut err = [0 as c_char; 256];
+    let ok = unsafe {
+        jdct_nudge(data.as_ptr(), data.len() as c_ulong, comp as c_int, row as c_int, col as c_int, k as c_int, delta, &mut out, &mut outlen, err.as_mut_ptr(), err.len() as c_int)
+    };
+    if ok == 0 {
+        bail!("{}", err_text(&err));
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(out, outlen as usize) }.to_vec();
+    unsafe { jdct_free_buffer(out) };
+    Ok(bytes)
 }
 
 pub fn redact_pixels(img: &Mat, blocks: &Grid) -> Result<Redacted> {
@@ -444,3 +475,7 @@ mod tests {
         assert_eq!(black_dc(3), -342);
     }
 }
+
+#[cfg(test)]
+#[path = "tests/proof.rs"]
+mod py_tests;

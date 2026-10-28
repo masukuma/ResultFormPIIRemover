@@ -1,8 +1,42 @@
 //! Form templates: a reference image plus the zones that hold PII.
 //!
-//! The same `templates/<name>/template.yaml` + `reference.png` as the Python
-//! version (see its docstring for the format). Names are deliberately not
-//! zones: they stay visible. Coordinates are pixels in the reference image.
+//! A template lives in its own directory:
+//!
+//! ```text
+//! templates/<name>/
+//!     template.yaml
+//!     reference.png      # clean scan or photo of the form type
+//! ```
+//!
+//! template.yaml:
+//!
+//! ```yaml
+//! name: form34a_2022
+//! form: 34A              # matched against the form code in the QR / KIEMS file name
+//! reference: reference.png
+//! padding: 8             # px (template space) added around every zone
+//! protect:               # results regions: no mask may touch them
+//!   - name: votes
+//!     rect: [x, y, w, h]
+//! structure:             # printed tables whose rules re-position their zones
+//!   - name: agents
+//!     rect: [x, y, w, h]
+//! zones:
+//!   - name: officer_signatures
+//!     action: signature  # a band through the middle of each signature
+//!     rect: [x, y, w, h]
+//!     search: [12, 24]   # px searched above/below for strokes that stray
+//!   - name: agent_id
+//!     action: partial    # mask random digits, keep the rest visible
+//!     digits: 8          # expected digit count (ID 8, phone 10)
+//!     rect: [x, y, w, h] # one cell...
+//!     rows: 11           # ...repeated down a table
+//!     row_step: 36.4
+//!     region: agents     # placed by the table's rules; page fails if they can't be matched
+//! ```
+//!
+//! Names are deliberately not zones: they stay visible. All coordinates are
+//! pixels in the reference image.
 
 use anyhow::{anyhow, bail, Context, Result};
 use opencv::core::Mat;

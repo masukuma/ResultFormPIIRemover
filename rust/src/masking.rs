@@ -7,8 +7,21 @@
 //!            sees that it is signed, not the signature.
 //! blackout   Solid fill of the padded zone.
 //!
-//! Every function here mirrors the Python version's (resultform_pii/masking.py)
-//! step by step; see there for the reasoning behind each rule.
+//! Partial masking works on a whole table column at once, rectified to
+//! template pixel scale so slant and perspective in the photo don't matter.
+//! Characters are found once for the column and each is assigned to the row
+//! holding its centre, so digits that dip into a neighbouring row are still
+//! masked as part of their own row. Character slots come from connected
+//! components when they look like separate glyphs, otherwise from dividing
+//! the row's ink extent into `digits` equal slots. A cell with ink that can't
+//! be segmented is hidden whole, at the writing's own width.
+//!
+//! What is not writing is taken out first: the printed rules and lines
+//! (where the reference has them, or long and flat), dotted leaders, lines
+//! officials strike through unused rows (found over the whole table, where
+//! they are long), the security print's lettering and the striped or
+//! embossed backgrounds some scans have. The tests in `tests/masking.rs`
+//! hold one case for each.
 
 use anyhow::Result;
 use opencv::core::{self, Mat, Point, Point2f, Scalar, Vector, CV_32F};
@@ -1228,7 +1241,13 @@ pub struct SigOptions<'a> {
     pub exclude: Option<&'a Mat>,
 }
 
-/// Signature blobs in a column (see the Python version for every rule).
+/// Signature blobs in a column. `o.printed` (template space, nonzero =
+/// printed text known to be there, e.g. typed "XXXX" in unused rows, or a
+/// label an officer signed next to): its ink is no part of any signature.
+/// `o.centered`: only blobs centred within the cells, not ones reaching in
+/// from the search margins (a field on a text line, where the margins hold
+/// the neighbouring lines). Strokes mostly on the next line belong to it; an
+/// underline joins only the strokes crossing it.
 fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, more_below: f64, o: &SigOptions) -> Result<(Vec<SigBlob>, [f64; 2], Vec<(f64, f64)>, Vec<Zone>, Img)> {
     let (above, below) = sig_window(cells, s, o.margin, more_below);
     let cs = column_strip(gray, f, cells, above, below, SIG_OVERRUN)?;
@@ -1466,3 +1485,7 @@ pub fn find_anchor(gray: &Mat, f: &Mapper, reference: &Mat, anchor: [f64; 4]) ->
     }
     Ok((where_, best))
 }
+
+#[cfg(test)]
+#[path = "tests/masking.rs"]
+mod py_tests;

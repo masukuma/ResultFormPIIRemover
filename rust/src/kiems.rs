@@ -140,3 +140,7 @@ mod tests {
         assert!(check(Some(&n), &parse_qr("00702901400010334")).contains("station"));
     }
 }
+
+#[cfg(test)]
+#[path = "tests/kiems.rs"]
+mod py_tests;

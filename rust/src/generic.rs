@@ -1,19 +1,36 @@
 //! Forms without a template: find the PII fields from the page itself.
 //!
 //! Older and by-election forms (34A 2017, 35A, 36A, 37A, 38A, ...) share a
-//! family layout but differ in detail. Instead of a template per variant, the
-//! page is read (see the Python `generic.py` for the reasoning behind every
-//! rule; this is the same code, step for step):
+//! family layout but differ in detail: the candidates table grows with the
+//! number of candidates, so everything below it moves; agents tables have 5
+//! to 24 rows, in one or two blocks; pages arrive rotated, photographed on a
+//! table or scanned on A3. Instead of a template per variant, the page is read:
 //!
-//! 1. Frame: text direction, skew and scale from OCR line detection.
-//! 2. Labels: OCR reads the printed labels.
-//! 3. Tables: header cells name ID / phone / signature columns, bounded by the
-//!    printed rules and cut into rows by them.
-//! 4. Declaration lines: the officers' "Signature ... Date" lines.
-//! 5. Free text: ID or phone numbers written in the comments.
-//! 6. Results: everything above "Declaration" is protected, and every stamp.
+//! 1. Frame. Text direction (0/90/180/270 degrees) from OCR line detection
+//!    and the line-orientation classifier, skew from the text lines, and scale
+//!    from the height of printed text, so all later sizes are in units of
+//!    text height. Everything below happens in that upright, deskewed frame;
+//!    masks are mapped back to the original pixels.
+//! 2. Labels. OCR (local, see `ocr.rs`) reads the printed labels.
+//! 3. Tables. A header cell reading "ID/Passport No.", "Tel. Contact" or
+//!    "Signature" names a column; the column is bounded by the printed
+//!    vertical rules around that label and cut into rows by the horizontal
+//!    rules below it, down to where the rules stop.
+//! 4. Declaration lines. A "Signature" label outside a table names the field
+//!    to its right, up to the next printed label on the line ("Date").
+//!    Likewise an "ID Number" or "Tel" label outside a table.
+//! 5. Free text. An ID or phone number written in the comments ("ID:
+//!    2503...") is found from the OCR text and partially masked like any
+//!    other; unlabelled handwriting on a sign-off line that OCR can't read as
+//!    text is taken for a signature.
+//! 6. Results. Everything above "Declaration" (codes, candidates' votes,
+//!    polling-station counts, disputed votes) is a protected region; so is
+//!    every stamp.
 //!
-//! Anything that can't be resolved fails the page (human review).
+//! Anything the reading can't resolve fails the page (human review): a PII
+//! label without a field, a table column without rules, no "Declaration" and
+//! no results table to protect. DESIGN.md has the measurements behind the
+//! thresholds.
 
 use anyhow::Result;
 use fancy_regex::Regex;
@@ -1411,3 +1428,7 @@ mod tests {
         assert!(x_fill("XXXX XXXX"));
     }
 }
+
+#[cfg(test)]
+#[path = "tests/generic.rs"]
+mod py_tests;

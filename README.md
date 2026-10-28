@@ -15,7 +15,9 @@ that **nothing but the personal data was touched**.
 The only edit ever made is replacing 8×8 blocks with solid black. On KIEMS
 JPEGs this is done at coefficient level, so every other block is the same
 data as the original. Each form gets a signed manifest, an entry in a
-hash-chained ledger, and a place in a published batch root. Anyone can then
+hash-chained ledger, and a place in a published batch root. Each published
+PDF can also carry a digital signature that PDF readers check (with your
+certificate, or a self-signed one the tool offers to create). Anyone can then
 run `rfpii verify` against the original from the IEBC portal and see that no
 result was changed. See [VERIFYING.md](VERIFYING.md).
 
@@ -31,16 +33,31 @@ model on Ollama Cloud or a local Ollama audits pages. See
 
 ## Install
 
+The tool is written in Rust (`rust/`). It runs on the same native libraries
+the reference implementation used, so it produces the same output: OpenCV
+5.0, MuPDF 1.28, ONNX Runtime with the PP-OCR models (for older forms read
+without a template, on the CPU, nothing leaves the machine) and numpy's
+OpenBLAS.
+
 ```bash
-pip install -e '.[test]'
-pip install -e '.[generic]'   # older forms without a template (OCR runs locally)
+sudo rust/scripts/setup-deps.sh     # once: the native libraries, under /opt
+cd rust && cargo build --release    # the tool: rust/target/release/rfpii
 ```
+
+`setup-deps.sh` takes them from the packages they ship in (PyPI wheels, the
+OpenCV source distribution) and needs Python with pip, CMake, a C/C++
+compiler and clang.
 
 ## Run
 
 ```bash
-# Once: a signing key. Keep the private key offline; publish the .pub.pem.
+# Once: a signing key for the manifests. Keep the private key offline;
+# publish the .pub.pem.
 rfpii keygen keys/
+
+# Once, unless you have a certificate: a self-signed certificate for the
+# PDFs' digital signatures. Publish signer.crt (or its SHA-256 fingerprint).
+rfpii certgen --name "Returning Officer, Kibwezi West" --org "..." --country KE
 
 # Files, folders, or KIEMS county zips directly
 rfpii redact Forms/34A/*.zip --templates templates --out public --review review \
@@ -54,8 +71,19 @@ rfpii redact Forms/ --templates templates --out public --review review \
 
 # Anyone, later: prove a published form against its original
 rfpii verify public/x.pdf --original x.PDF --pubkey signing_key.pub.pem \
-    --ledger public/ledger.jsonl --overlay changes/
+    --ledger public/ledger.jsonl --overlay changes/ --trust signer.crt
 ```
+
+**Digital signatures on the PDFs.** `redact` signs every published PDF with
+`--certificate` (a PKCS#12 `.p12`/`.pfx`, or PEM with its key; the password
+comes from `$RFPII_CERT_PASSWORD` or is asked for). Without one it uses
+`~/.config/rfpii/signer.p12` if `certgen` made it, and otherwise offers to
+create a self-signed certificate there. Run without a terminal, it warns and
+publishes unsigned PDFs; `--no-pdf-signature` skips signing. PDF readers
+(Acrobat, pdfsig) show the signature as valid and covering the whole file.
+For a self-signed certificate they also say its issuer is unknown: readers
+can trust it by comparing its fingerprint with the one you published.
+A certificate from a CA your readers already trust avoids that step.
 
 - `public/` holds what you publish:
   - the redacted PDFs;
@@ -77,7 +105,7 @@ Useful flags:
   send unredacted forms to a cloud model.
 - `--strict-structure`: withhold pages whose table rules can't be matched,
   instead of masking them with widened zones.
-- `--workers`: number of worker processes.
+- `--workers`: number of documents processed at once.
 - `--no-generic`: send forms with no template to review instead of reading
   them without one.
 
@@ -117,7 +145,7 @@ Useful flags:
 ## Tests
 
 ```bash
-pytest
+cd rust && cargo test --release
 ```
 
 The tests use synthetic forms and a stub Ollama server. No real forms are

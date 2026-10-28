@@ -115,8 +115,9 @@ pub fn filled_form(seed: u64) -> Result<Mat> {
     Ok(img)
 }
 
-/// Rotate, scale, add perspective, lighting and noise: a "scan" (BGR).
-pub fn simulate_scan(img: &Mat, seed: u64, angle: f64, out_scale: f64) -> Result<Mat> {
+/// Rotate, scale, add perspective, lighting and noise: a "scan" (BGR), and
+/// the homography mapping template coordinates to scan coordinates.
+pub fn simulate_scan(img: &Mat, seed: u64, angle: f64, out_scale: f64) -> Result<(Mat, [[f64; 3]; 3])> {
     let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x5ca1ab1e);
     let (h, w) = (img.rows() as f64, img.cols() as f64);
     let (ow, oh) = ((w * out_scale) as i32, (h * out_scale) as i32);
@@ -146,7 +147,7 @@ pub fn simulate_scan(img: &Mat, seed: u64, angle: f64, out_scale: f64) -> Result
     let g = util::from_bytes(oh, ow, &d)?;
     let mut out = Mat::default();
     imgproc::cvt_color_def(&g, &mut out, imgproc::COLOR_GRAY2BGR)?;
-    Ok(out)
+    Ok((out, util::arr3(&hm)?))
 }
 
 pub fn write_template(dir: &Path) -> Result<()> {

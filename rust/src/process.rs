@@ -34,6 +34,8 @@ pub struct Config {
     pub generic: bool, // read pages no template matches
     pub vlm_audit: bool,
     pub vlm_fallback: bool,
+    /// digitally sign the published PDFs with this certificate
+    pub pdf_signer: Option<std::sync::Arc<crate::pdfsign::Signer>>,
 }
 
 /// Version and exact code revision, so a scrutineer can run the same code.
@@ -255,6 +257,11 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
         })
         .collect();
     let pdf = io::build_pdf(&items)?;
+    let created = utc_now();
+    let pdf = match &cfg.pdf_signer {
+        Some(s) => crate::pdfsign::sign_pdf(&pdf, s, &created)?,
+        None => pdf,
+    };
     std::fs::write(&out_path, &pdf)?;
 
     let mut used: Vec<&str> = doc.iter().map(|p| p.template.as_str()).collect();
@@ -273,7 +280,7 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
     let manifest = json!({
         "schema": SCHEMA,
         "tool": tool_info(),
-        "created_at": utc_now(),
+        "created_at": created,
         "source": source,
         "output": {"file": out_rel.to_string_lossy(), "pdf_sha256": proof::sha256(&pdf)},
         "seed": format!("{:x}", seed),
@@ -286,6 +293,9 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
     let mut manifest = manifest;
     if used.contains(&"generic") {
         manifest["ocr"] = crate::ocr::info()?;
+    }
+    if let Some(s) = &cfg.pdf_signer {
+        manifest["output"]["pdf_signature"] = crate::pdfsign::describe(s.certificate())?;
     }
     report["ok"] = json!(true);
     report["output"] = json!(out_path.to_string_lossy());
@@ -306,3 +316,7 @@ mod tests {
         assert!(t.ends_with("+00:00"));
     }
 }
+
+#[cfg(test)]
+#[path = "tests/process.rs"]
+mod py_tests;

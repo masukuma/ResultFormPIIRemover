@@ -137,8 +137,18 @@ pub fn prepare_region(reference: &Mat, name: &str, rect: [f64; 4], open_top: boo
     })
 }
 
-/// Best y' = s*y + t mapping expected positions onto found ones (see the
-/// Python version for the full reasoning). Returns (s, t, matched pairs).
+/// Best y' = s*y + t mapping expected positions onto found ones.
+///
+/// Hypotheses come from pairs of expected/found positions; each is scored by
+/// the (length-)weighted number of expected positions it lands near, so
+/// full-width rules outvote handwriting strokes. `max_shift` bounds how far
+/// the first expected position may move: rows repeat, and without an anchor
+/// a grid shifted by a few rows can score as well as the right one. The
+/// winner is then refined by tracking outward from the anchor, so gradual
+/// distortion (curled pages) doesn't push later rows out of tolerance.
+/// `ends` = (first, tol_first, last, tol_last) pins where the first and last
+/// expected positions must land, when they are known independently.
+/// Returns (s, t, [(expected_index, found_index), ...]).
 pub fn match_1d(
     expected: &[f64],
     found: &[f64],
@@ -458,3 +468,7 @@ pub fn snap(gray: &Mat, h: &[[f64; 3]; 3], region: &Region) -> Result<Snap> {
         p: p_scan,
     })
 }
+
+#[cfg(test)]
+#[path = "tests/structure.rs"]
+mod py_tests;

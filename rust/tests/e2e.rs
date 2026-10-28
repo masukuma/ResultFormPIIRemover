@@ -1,0 +1,235 @@
+//! Redact KIEMS-style PDFs with the `rfpii` binary, then verify them the way
+//! a scrutineer would.
+
+use lopdf::{dictionary, Document, Object, Stream};
+use opencv::prelude::*;
+use rfpii::io::{self, PageImage};
+use rfpii::synthetic::{filled_form, simulate_scan, write_template};
+use rfpii::verify::{verify, Report, VerifyArgs};
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
+
+const NAME: &str = "1_34_A_007029014000102_F230450M00203609_20220810_132155.PDF";
+
+fn tmpdir(name: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("rfpii-e2e-{}-{}", std::process::id(), name));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn rfpii(args: &[&str]) -> i32 {
+    let out = Command::new(env!("CARGO_BIN_EXE_rfpii")).args(args).env("RFPII_CERT_PASSWORD", "test-password").output().unwrap();
+    if !out.status.success() {
+        eprintln!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    }
+    out.status.code().unwrap_or(-1)
+}
+
+fn s(p: &Path) -> &str {
+    p.to_str().unwrap()
+}
+
+/// A one-page PDF holding `img` (an encoded image) as its page.
+fn image_pdf(img: PageImage, w: f64, h: f64) -> Vec<u8> {
+    io::build_pdf(&[(img, Some((w, h)), None, 0)]).unwrap()
+}
+
+/// A KIEMS-named, JPEG-in-PDF form redacted with a signing key and a
+/// certificate (the fixture all of the first tests share).
+fn run() -> &'static Path {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = tmpdir("kiems");
+        write_template(&root.join("templates").join("sample_rs1")).unwrap();
+        let (scan, _) = simulate_scan(&filled_form(4).unwrap(), 4, 2.0, 1.3).unwrap();
+        let jpg = io::encode(&scan, "jpg", 80).unwrap();
+        std::fs::create_dir_all(root.join("in")).unwrap();
+        std::fs::write(root.join("in").join(NAME), image_pdf(PageImage::Jpeg(&jpg), 1612.0, 2280.0)).unwrap();
+        assert_eq!(rfpii(&["keygen", s(&root.join("keys"))]), 0);
+        assert_eq!(rfpii(&["certgen", "--name", "Test Officer", "--country", "KE", "--out", s(&root.join("keys/signer.p12"))]), 0);
+        let rc = rfpii(&[
+            "redact", s(&root.join("in")), "--templates", s(&root.join("templates")), "--out", s(&root.join("out")),
+            "--review", s(&root.join("review")), "--workers", "1", "--sign-key", s(&root.join("keys/signing_key.pem")),
+            "--certificate", s(&root.join("keys/signer.p12")),
+        ]);
+        assert_eq!(rc, 0, "{}", std::fs::read_to_string(root.join("review/report.jsonl")).unwrap_or_default());
+        root
+    })
+}
+
+fn published(root: &Path) -> PathBuf {
+    root.join("out").join(NAME.replace(".PDF", ".pdf"))
+}
+
+fn check(root: &Path, redacted: &Path, manifest: Option<&Path>, original: &Path, trust: &[PathBuf], overlay: Option<&Path>, rerun: Option<&Path>) -> Report {
+    verify(&VerifyArgs {
+        redacted,
+        manifest,
+        original: Some(original),
+        pubkey: Some(&root.join("keys/signing_key.pub.pem")),
+        ledger: Some(&root.join("out/ledger.jsonl")),
+        overlay_dir: overlay,
+        rerun_templates: rerun,
+        trust,
+    })
+    .unwrap()
+}
+
+fn manifest(root: &Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(root.join("out").join(NAME.replace(".PDF", ".manifest.json"))).unwrap()).unwrap()
+}
+
+#[test]
+fn published_form_verifies() {
+    let root = run();
+    let r = check(root, &published(root), None, &root.join("in").join(NAME), &[root.join("keys/signer.crt")], Some(&root.join("overlay")), Some(&root.join("templates")));
+    assert!(r.ok(), "{}", r.text());
+    let m = manifest(root);
+    assert!(m["pages"][0]["proof"] == "jpeg-dct" && m["pages"][0]["blocks_blacked"].as_u64().unwrap() > 0);
+    assert_eq!(m["source"]["kiems"]["station"], "007029014000102");
+    assert_eq!(m["output"]["pdf_signature"]["subject"], "C=KE, CN=Test Officer");
+    assert!(std::fs::read_dir(root.join("overlay")).unwrap().any(|e| e.unwrap().path().extension().map(|x| x == "png").unwrap_or(false)));
+    let batch = std::fs::read_dir(root.join("out/batches")).unwrap().next().unwrap().unwrap().path();
+    let b: Value = serde_json::from_str(&std::fs::read_to_string(batch).unwrap()).unwrap();
+    assert_eq!(b["count"], 1);
+    for (ok, msg) in &r.checks {
+        if msg.contains("digital signature") {
+            assert!(ok);
+        }
+    }
+}
+
+#[test]
+fn altered_result_is_detected() {
+    let root = run();
+    let pdf = std::fs::read(published(root)).unwrap();
+    let jpg = io::pdf_images(&pdf).unwrap().remove(0).0;
+    let bad = rfpii::proof::nudge_jpeg(&jpg, 0, 90, 60, 0, 4).unwrap(); // results table area: brighten one block slightly
+    let sp = io::source_pages(s(&root.join("in").join(NAME)), None).unwrap().remove(0);
+    let d = tmpdir("tampered");
+    let tampered = d.join("tampered.pdf");
+    std::fs::write(&tampered, io::build_pdf(&[(PageImage::Jpeg(&bad), sp.page_size, sp.rect, sp.rotate)]).unwrap()).unwrap();
+    let mpath = root.join("out").join(NAME.replace(".PDF", ".manifest.json"));
+    let r = check(root, &tampered, Some(&mpath), &root.join("in").join(NAME), &[], None, None);
+    let failed: Vec<&String> = r.checks.iter().filter(|(ok, _)| !ok).map(|(_, m)| m).collect();
+    assert!(!r.ok() && failed.iter().any(|m| m.contains("other than black")), "{}", r.text());
+}
+
+#[test]
+fn bytes_added_after_signing_are_detected() {
+    let root = run();
+    let mut pdf = std::fs::read(published(root)).unwrap();
+    pdf.extend_from_slice(b"\n% appended\n");
+    let d = tmpdir("appended");
+    let p = d.join("appended.pdf");
+    std::fs::write(&p, pdf).unwrap();
+    let mpath = root.join("out").join(NAME.replace(".PDF", ".manifest.json"));
+    let r = check(root, &p, Some(&mpath), &root.join("in").join(NAME), &[], None, None);
+    assert!(!r.ok() && r.checks.iter().any(|(ok, m)| !ok && m.contains("digital signature")), "{}", r.text());
+}
+
+#[test]
+fn wrong_original_and_forged_manifest() {
+    let root = run();
+    let d = tmpdir("forged");
+    let other = d.join(NAME);
+    let mut data = std::fs::read(root.join("in").join(NAME)).unwrap();
+    data.push(b'\n');
+    std::fs::write(&other, data).unwrap();
+    assert!(!check(root, &published(root), None, &other, &[], None, None).ok());
+    let mut m = manifest(root);
+    m["pages"][0]["protected"] = serde_json::json!([]); // try to hide where results were
+    let forged = d.join("forged.json");
+    std::fs::write(&forged, serde_json::to_string(&m).unwrap()).unwrap();
+    let r = check(root, &published(root), Some(&forged), &root.join("in").join(NAME), &[], None, None);
+    assert!(!r.ok() && r.checks.iter().any(|(ok, m)| !ok && m.contains("signature")), "{}", r.text());
+}
+
+#[test]
+fn png_source_pages_verify() {
+    // Non-JPEG sources (PNG scans, rendered pages) take the lossless pixel
+    // path; the image hash must survive the PDF's re-encoding.
+    let root = tmpdir("png");
+    write_template(&root.join("templates").join("sample_rs1")).unwrap();
+    let (scan, _) = simulate_scan(&filled_form(6).unwrap(), 6, 1.0, 1.3).unwrap();
+    std::fs::create_dir_all(root.join("in")).unwrap();
+    std::fs::write(root.join("in/png_form.pdf"), image_pdf(PageImage::Pixels(&scan), 1612.0, 2280.0)).unwrap();
+    let rc = rfpii(&["redact", s(&root.join("in")), "--templates", s(&root.join("templates")), "--out", s(&root.join("out")), "--review", s(&root.join("review")), "--workers", "1", "--no-pdf-signature"]);
+    assert_eq!(rc, 0);
+    let m: Value = serde_json::from_str(&std::fs::read_to_string(root.join("out/png_form.manifest.json")).unwrap()).unwrap();
+    assert!(m["pages"][0]["proof"] == "pixels" && m["pages"][0]["blocks_blacked"].as_u64().unwrap() > 0);
+    let r = verify(&VerifyArgs {
+        redacted: &root.join("out/png_form.pdf"),
+        manifest: None,
+        original: Some(&root.join("in/png_form.pdf")),
+        pubkey: None,
+        ledger: None,
+        overlay_dir: None,
+        rerun_templates: None,
+        trust: &[],
+    })
+    .unwrap();
+    assert!(r.ok(), "{}", r.text());
+}
+
+#[test]
+fn pdf_output_has_no_text_or_metadata() {
+    // a source PDF with a hidden text layer holding PII, and metadata
+    let root = tmpdir("textlayer");
+    write_template(&root.join("templates").join("sample_rs1")).unwrap();
+    let (scan, _) = simulate_scan(&filled_form(7).unwrap(), 7, 3.0, 1.3).unwrap();
+    let jpg = io::encode(&scan, "jpg", 90).unwrap();
+    let (w, h) = (scan.cols() as f64 * 72.0 / 200.0, scan.rows() as f64 * 72.0 / 200.0);
+    let mut doc = Document::with_version("1.7");
+    let pages = doc.new_object_id();
+    let font = doc.add_object(dictionary! {"Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica"});
+    let image = doc.add_object(Stream::new(
+        dictionary! {"Type" => "XObject", "Subtype" => "Image", "Width" => scan.cols(), "Height" => scan.rows(),
+                     "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8, "Filter" => "DCTDecode"},
+        jpg,
+    ));
+    let content = format!("q {w} 0 0 {h} 0 0 cm /Im0 Do Q BT /F1 12 Tf 3 Tr 50 50 Td (JANE A. DOE 0712345678) Tj ET");
+    let contents = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
+    let page = doc.add_object(dictionary! {
+        "Type" => "Page", "Parent" => pages, "MediaBox" => vec![0.into(), 0.into(), Object::Real(w as f32), Object::Real(h as f32)],
+        "Resources" => dictionary! {"XObject" => dictionary! {"Im0" => image}, "Font" => dictionary! {"F1" => font}},
+        "Contents" => contents,
+    });
+    doc.objects.insert(pages, Object::Dictionary(dictionary! {"Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1}));
+    let catalog = doc.add_object(dictionary! {"Type" => "Catalog", "Pages" => pages});
+    let info = doc.add_object(dictionary! {"Author" => Object::string_literal("Jane Doe")});
+    doc.trailer.set("Root", catalog);
+    doc.trailer.set("Info", info);
+    std::fs::create_dir_all(root.join("in")).unwrap();
+    doc.save(root.join("in/in.pdf")).unwrap();
+
+    let rc = rfpii(&["redact", s(&root.join("in/in.pdf")), "--templates", s(&root.join("templates")), "--out", s(&root.join("out")), "--review", s(&root.join("review")), "--workers", "1", "--no-pdf-signature"]);
+    assert_eq!(rc, 0);
+    let out = std::fs::read(root.join("out/in.pdf")).unwrap();
+    let res = Document::load_mem(&out).unwrap();
+    assert!(res.trailer.get(b"Info").is_err());
+    for (_, id) in res.get_pages() {
+        let text = String::from_utf8_lossy(&res.get_page_content(id)).into_owned();
+        assert!(!text.contains("Tj") && !text.contains("Tf"), "{}", text);
+    }
+    assert!(!String::from_utf8_lossy(&out).contains("JANE"));
+}
+
+#[test]
+fn batch_withholds_failed_document() {
+    let root = tmpdir("batch");
+    write_template(&root.join("templates").join("sample_rs1")).unwrap();
+    let scans = root.join("scans");
+    std::fs::create_dir_all(&scans).unwrap();
+    let (good, _) = simulate_scan(&filled_form(1).unwrap(), 1, 3.0, 1.3).unwrap();
+    std::fs::write(scans.join("good.jpg"), io::encode(&good, "jpg", 90).unwrap()).unwrap();
+    let white = opencv::core::Mat::new_rows_cols_with_default(800, 600, opencv::core::CV_8UC3, opencv::core::Scalar::all(255.0)).unwrap();
+    std::fs::write(scans.join("bad.jpg"), io::encode(&white, "jpg", 90).unwrap()).unwrap();
+    let rc = rfpii(&["redact", s(&scans), "--templates", s(&root.join("templates")), "--out", s(&root.join("out")), "--review", s(&root.join("review")), "--workers", "2", "--no-pdf-signature"]);
+    assert_eq!(rc, 2);
+    assert!(root.join("out/good.pdf").exists() && !root.join("out/bad.pdf").exists());
+    assert!(root.join("review/bad.json").exists());
+}

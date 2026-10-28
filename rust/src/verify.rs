@@ -29,6 +29,7 @@ use crate::align::{prepare, AlignSettings};
 use crate::io;
 use crate::manifest as mf;
 use crate::masking::MaskSettings;
+use crate::pdfsign;
 use crate::process::{process_document, Config};
 use crate::proof;
 use crate::templates::load_templates;
@@ -110,6 +111,57 @@ pub struct VerifyArgs<'a> {
     pub ledger: Option<&'a Path>,
     pub overlay_dir: Option<&'a Path>,
     pub rerun_templates: Option<&'a Path>,
+    /// certificates the PDF's signer must chain to (a self-signed one: itself)
+    pub trust: &'a [PathBuf],
+}
+
+/// The PDF's digital signature (what PDF readers show), if it has one.
+fn pdf_signature(r: &mut Report, pdf: &[u8], m: &Value, trust: &[PathBuf]) -> Result<()> {
+    let trust = pdfsign::load_certificates(trust)?;
+    let named = m["output"].get("pdf_signature");
+    let c = match pdfsign::check(pdf, &trust) {
+        Err(e) => {
+            r.add(false, format!("digital signature unreadable: {:#}", e));
+            return Ok(());
+        }
+        Ok(None) => {
+            if named.is_some() || !trust.is_empty() {
+                r.add(false, "the PDF carries no digital signature");
+            } else {
+                r.notes.push("the PDF is not digitally signed".into());
+            }
+            return Ok(());
+        }
+        Ok(Some(c)) => c,
+    };
+    let who = match &c.certificate {
+        Some(x) => pdfsign::describe(x)?,
+        None => Value::Null,
+    };
+    let subject = who["subject"].as_str().unwrap_or("?");
+    let fp = who["certificate_sha256"].as_str().unwrap_or("");
+    if c.valid && c.whole_file {
+        r.add(true, format!("digital signature valid and covering the whole file (signed by {} at {})", subject, c.signed_at));
+    } else {
+        r.add(false, format!("digital signature: {}", c.error.as_deref().unwrap_or("does not cover the whole file (bytes were added after signing)")));
+    }
+    if let Some(n) = named {
+        r.add(n["certificate_sha256"].as_str() == Some(fp), "the signing certificate is the one the manifest names");
+    }
+    match c.trusted {
+        Some(true) => {
+            r.add(true, "the signing certificate is trusted (--trust)");
+        }
+        Some(false) => {
+            r.add(false, "the signing certificate does not chain to any --trust certificate");
+        }
+        None => r.notes.push(format!(
+            "signing certificate{} SHA-256 {}: compare it with the one the publisher announced, or pass it with --trust",
+            if who["self_signed"].as_bool() == Some(true) { " (self-signed)" } else { "" },
+            fp
+        )),
+    }
+    Ok(())
 }
 
 pub fn verify(a: &VerifyArgs) -> Result<Report> {
@@ -142,6 +194,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
 
     // 2. the published file is the one described
     r.add(proof::sha256(&pdf) == m["output"]["pdf_sha256"].as_str().unwrap_or(""), "redacted PDF matches the manifest's SHA-256");
+    pdf_signature(&mut r, &pdf, &m, a.trust)?;
     let images = match io::pdf_images(&pdf) {
         Ok(i) => i,
         Err(e) => {
@@ -263,6 +316,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
             generic: st["generic"].as_bool().unwrap_or(false),
             vlm_audit: false,
             vlm_fallback: false,
+            pdf_signer: None,
         };
         if let Some(o) = m.get("ocr") {
             let now = crate::ocr::info().map(|i| i["models"].clone()).unwrap_or(Value::Null);
