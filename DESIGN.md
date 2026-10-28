@@ -137,10 +137,16 @@ date was masked with it:
   field's line (tails and flourishes reach far above or below);
 - strokes lying mostly on the line below or above (the date, the ID) are
   left out even where they run close to the signature;
-- the field's printed underline joins the strokes it crosses, so a loop of
-  the signature through the line stays part of it, but it sets no mask's
-  width: on layout B the underline is shorter than the field, and was taken
-  as part of the signature, stretching its mask to the line's end. Where
+- the field's printed underline joins the strokes crossing it (ink just
+  above and just below it), so a loop of the signature through the line
+  stays part of it; lettering of the security print sitting on the line is
+  not joined, which stretched one mask along the line to a stamp. The line
+  sets no mask's width: on layout B the underline is shorter than the
+  field, and was taken as part of the signature, stretching its mask to
+  the line's end. The line is the one where the reference has it (within
+  20 px: layout variants move it), or without a reference the lowest in
+  the field: a signature's long, flat tail is a line too, and was taken out
+  and left visible as one. Where
   the scan breaks the line into dashes, ink lying wholly within a few
   pixels of it is taken as the line too: joined through it, those pieces
   stretched the mask along the line and past a stamp;
@@ -193,10 +199,13 @@ checks alike, and the page notes say how many there were.
    digits land where the reference has print, and a position test would skip
    them.
    A glyph must be at least 40% of the row height (a template can lower
-   that: in Form 34B's tall rows agents write small, and a whole ID written
-   small was taken for unreadable ink and hidden). Outside the table's rows
-   it must still be 40%, so a printed header's small lettering above the
-   column is not taken for writing.
+   that: in Form 34B's tall rows and on its officers' lines people write
+   small, and a whole ID written small was taken for unreadable ink and
+   hidden). Outside the table's rows it must still be 40%, so a printed
+   header's small lettering above the column is not taken for writing. On
+   an officer's line, writing cut off by the field's top edge that ends in
+   the field's upper half is the foot of the name above, written large and
+   low; taken for a character, it took one of the three hidden slots.
 4. **Group into lines.** Glyphs are grouped into written lines, and each line is
    segmented into **one slot per character**: joined-up writing is split at
    the expected character pitch, and if that doesn't give a plausible count,
@@ -215,7 +224,10 @@ checks alike, and the page notes say how many there were.
    median over its characters) or the character's own extent where that is
    larger. Rule removal can shave a 5's or 7's top bar off the detected
    glyph box, so masking only the box could leave part of a "hidden" digit
-   showing. A line that can't be segmented is hidden whole.
+   showing. A line that can't be segmented is hidden whole, and so is ink
+   in a field that makes no characters at all: as wide as its ink, not the
+   field. On an officer's line, the field's full width ran on behind the
+   stamp beside the number.
 6. **Assign rows.** Lines are assigned to rows only to tell empty rows from
    unreadable ones, and for the report. Masks follow the writing itself.
 
@@ -529,10 +541,12 @@ Two things these layouts needed:
   dots as ink it couldn't read and hid the whole field, even when empty.
   `ink_mask` now removes runs of six or more tiny, evenly spaced blobs on
   one line, which handwriting doesn't produce.
-- **Tight windows for the agents table.** In both layouts the Returning
+- **Tight windows for the agents table.** In every layout the Returning
   Officer's name starts right below the table, and the default search
-  window of an empty last row reached it. Those columns search 4 px above
-  and below.
+  window of an empty last row reached it: the name was read as an ID and
+  three of its letters masked. Those columns search 4 px above and below
+  (layouts B and C), or 20 px below (layout A, whose name line is further
+  down).
 
 - **A table hung under another.** In layout C the agents table sits right
   under the results table, with the same columns, so its column rules run
@@ -707,6 +721,9 @@ by a test where one can be written:
 - **Blobs that can't be split into characters are hidden whole.** When an ID
   or phone number can't be segmented (e.g. faint ink), the whole number is
   hidden. That is the safe failure, but it is more than the 3-character rule.
+- **Faint strokes of a signature can show.** A stroke too faint to read
+  as ink (a thin flourish between a signature's initial and its final
+  tick) is not masked; the parts either side of it are, each on its own.
 - **Signature boxes merge in dense tables.** Where agents sign across
   neighbouring rows, the boxes merge into one patch. Any writing inside a
   signature box (e.g. a phone number continued into the column, or part of
