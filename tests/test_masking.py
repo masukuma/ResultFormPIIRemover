@@ -216,3 +216,39 @@ def test_a_line_drawn_through_empty_rows_is_not_writing():
     canvas2 = np.full(img.shape, 255, np.uint8)
     rep2 = masking.partial_column(canvas2, img, I, cells, MaskSettings(), random.Random(1))
     assert any(r["mode"] != "empty" for r in rep2[1:])  # without it, the line was masked
+
+
+@pytest.mark.parametrize("underline", [720, 420])  # the whole field's width, or shorter than the field
+def test_the_date_below_an_underlined_signature_stays_visible(underline):
+    """An officer's signature on its line, a loop of it running down beside
+    the date written on the line below: joined into one blob, the date was
+    masked with it. Strokes mostly on the next line are not the signature's,
+    the loop (cut off where the underline is taken out) still is, and neither
+    the underline nor the loop stretches the mask over the date."""
+    img = np.full((320, 900), 235, np.uint8)
+    cv2.line(img, (60, 200), (60 + underline, 200), 60, 2)  # "Signature: ____"
+    cv2.line(img, (60, 250), (780, 250), 60, 2)  # "Date: ____"
+    rng = np.random.default_rng(1)
+    pts = np.cumsum(rng.integers(-5, 6, (60, 2)), axis=0) + (150, 178)
+    pts[:, 0] = np.linspace(150, 400, 60)
+    pts = np.clip(pts, (0, 160), (900, 192))
+    cv2.polylines(img, [pts.astype(np.int32)], False, 20, 2)
+    cv2.polylines(img, [np.int32([[300, 185], [310, 228], [330, 230], [338, 186]])], False, 20, 2)  # the loop
+    cv2.putText(img, "11-08-2022", (420, 242), cv2.FONT_HERSHEY_SIMPLEX, 1.0, 20, 2)
+    field = [Zone("ro_signature", (100, 150, 600, 55), "signature", search=(0, 10))]
+    date_ink = np.zeros(img.shape, bool)
+    date_ink[210:244, 415:700] = img[210:244, 415:700] < 120
+    sig_ink = img < 120
+    sig_ink[:, :140] = sig_ink[:, 410:] = sig_ink[196:205] = sig_ink[246:] = False
+    canvas = np.full(img.shape, 255, np.uint8)
+    masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), centered=True)
+    assert (canvas[sig_ink] == 0).mean() > 0.97  # the loop below the line included
+    assert (canvas[date_ink] == 0).mean() == 0
+    assert (canvas[150:205, 415:] == 255).all()  # the underline beyond the signature
+    assert (canvas[212:, :290] == 255).all() and (canvas[212:, 350:] == 255).all()  # below: the loop only
+    out = cv2.cvtColor(np.where(canvas == 0, 0, img).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+    assert masking.verify_signatures(img, out, IDENTITY, field, None, MaskSettings(), centered=True) == ""
+    unmasked = np.where(sig_ink[:, :, None], 235, out).astype(np.uint8)
+    unmasked[sig_ink & (np.arange(img.shape[0]) > 205)[:, None]] = 20  # only the loop left showing
+    assert "not fully masked" in masking.verify_signatures(img, unmasked, IDENTITY, field, None, MaskSettings(),
+                                                           centered=True)

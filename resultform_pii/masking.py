@@ -202,6 +202,17 @@ def _remove_dotted_leaders(ink: np.ndarray, row_h: float, min_dots: int = 6) -> 
             run = [b] if b is not None else []
 
 
+def _binarize(strip: np.ndarray) -> np.ndarray:
+    """Dark marks of a rectified strip (255 = ink), printed or written."""
+    # KIEMS photos range from crisp to blurry and grey-on-grey; stretch the
+    # contrast (with a floor, so an empty cell's faint security pattern isn't
+    # blown up into "ink") before thresholding.
+    c = cv2.GaussianBlur(strip, (3, 3), 0).astype(np.float32)
+    p1, p99 = np.percentile(c, [1, 99])
+    c = np.clip((c - p1) / max(p99 - p1, 60.0) * 255, 0, 255).astype(np.uint8)
+    return cv2.adaptiveThreshold(c, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, 45)
+
+
 def ink_mask(strip: np.ndarray, row_h: float, signature: bool = False) -> np.ndarray:
     """Binary ink of a rectified strip, with rules, strike lines and the
     security-print background removed.
@@ -209,13 +220,7 @@ def ink_mask(strip: np.ndarray, row_h: float, signature: bool = False) -> np.nda
     ``signature``: keep long flat pen strokes (a signature's flourish): only
     horizontal lines spanning nearly the whole strip count as printed rules,
     and the thin-stroke filter meant for digit columns is skipped."""
-    # KIEMS photos range from crisp to blurry and grey-on-grey; stretch the
-    # contrast (with a floor, so an empty cell's faint security pattern isn't
-    # blown up into "ink") before thresholding.
-    c = cv2.GaussianBlur(strip, (3, 3), 0).astype(np.float32)
-    p1, p99 = np.percentile(c, [1, 99])
-    c = np.clip((c - p1) / max(p99 - p1, 60.0) * 255, 0, 255).astype(np.uint8)
-    bw = cv2.adaptiveThreshold(c, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, 45)
+    bw = _binarize(strip)
     h, w = bw.shape
     rh = max(10, int(row_h))
     rule_len = int(0.8 * w) if signature else max(15, w // 3)
@@ -661,13 +666,19 @@ def _inside_stamp(xs: np.ndarray, ys: np.ndarray, stamps, share: float = 0.9) ->
 
 def _signature_blobs(strip: np.ndarray, ink: np.ndarray, extra: float,
                      w: float, min_ink: int, bands: list[tuple[float, float]],
-                     stamps=()) -> list[tuple[int, int, int, int, int]]:
+                     stamps=(), bridge: np.ndarray | None = None, line: tuple[int, int] | None = None) -> list:
     """Separate signatures: strokes joined mostly sideways (signatures run
     horizontally; rows are stacked). A blob spanning several rows (strokes of
     neighbouring rows touching) is cut at the row boundaries, one box per row.
-    Returns (x0, y0, x1, y1, ink_pixels) per part that is mostly inside the
-    column."""
-    joined = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (SIG_JOIN + 6, 5)))
+    ``bridge``: print (a field's underline) that joins the strokes touching
+    it without being part of any signature.
+    Returns (x0, y0, x1, y1, ink_pixels, boxes) per part that is mostly inside
+    the column. ``boxes`` cover its ink: one box, or with ``line`` (the
+    field's line, top and bottom rows), one each for the ink above the line,
+    on it and below it, so that a loop reaching down covers only its own
+    width of the line below, not the whole signature's."""
+    joined = cv2.dilate(ink if bridge is None else ink | bridge,
+                        cv2.getStructuringElement(cv2.MORPH_RECT, (SIG_JOIN + 6, 5)))
     n, lab = cv2.connectedComponents(joined)
     edges = [bands[0][0]] + [(a[1] + b[0]) / 2 for a, b in zip(bands, bands[1:])] + [bands[-1][1]]
     parts = []
@@ -692,8 +703,32 @@ def _signature_blobs(strip: np.ndarray, ink: np.ndarray, extra: float,
         # No "looks printed" test here, unlike for digits: in testing, a faint
         # trace in the reference matched real signatures well enough to skip
         # them. Masking a printed "Signature" label is the safe failure.
-        blobs.append((x0, y0, x1, y1, len(xs)))
+        boxes = [(x0, y0, x1, y1)]
+        if line is not None:
+            sec = np.digitize(ys, line)
+            boxes = [(int(xs[k].min()), int(ys[k].min()), int(xs[k].max()) + 1, int(ys[k].max()) + 1)
+                     for k in (sec == i for i in range(3)) if k.any()]
+        blobs.append((x0, y0, x1, y1, len(xs), boxes))
     return blobs
+
+
+def _own_rule(strip: np.ndarray, lo: int, hi: int) -> np.ndarray:
+    """The printed line a field is written on (255): long and flat, within
+    the field's rows. Taken out of a signature's ink it sets no box's size;
+    the strokes it joins stay one signature."""
+    bw = _binarize(strip)
+    long = cv2.morphologyEx(bw, cv2.MORPH_OPEN,
+                            cv2.getStructuringElement(cv2.MORPH_RECT, (max(150, bw.shape[1] // 4), 1)))
+    rows = np.flatnonzero(long[max(lo - 4, 0):max(hi + 4, 0)].any(axis=1)) + max(lo - 4, 0)
+    # The whole line, ends included (a long run finds it, but a gap or a
+    # stroke crossing it breaks that run): horizontal runs on its rows. Each
+    # line separately, so that writing between two lines is never taken.
+    runs = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1)))
+    rule = np.zeros_like(bw)
+    for line in np.split(rows, np.flatnonzero(np.diff(rows) > 3) + 1) if len(rows) else ():
+        top, bot = max(line[0] - 2, 0), line[-1] + 3
+        rule[top:bot] = runs[top:bot]
+    return cv2.dilate(rule, np.ones((3, 3), np.uint8))  # ink_mask's speckle opening shifts ink by a pixel
 
 
 def _sig_window(cells: list[Zone], s: MaskSettings, margin=(0.0, 0.0), more_below: float = 0.0):
@@ -720,12 +755,30 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=Non
     if printed is not None:
         ink[_ref_crop(255 - printed, origin, strip.shape) < 128] = 0
     stamps = _remove_stamp_rings(ink)
-    blobs = _signature_blobs(strip, ink, SIG_OVERRUN, cells[0].rect[2], SIG_MIN_INK, bands, stamps)
+    lo, hi = int(bands[0][0]), int(np.ceil(bands[-1][1]))
+    bridge = line = None
+    if centered:
+        # Strokes lying mostly on the line below or above (the date, the ID)
+        # are no part of the signature, even where they run close enough to
+        # it to be joined into one blob. Tails and loops of the signature
+        # itself are drawn in one stroke with it, or cross its underline,
+        # and stay.
+        rule = _own_rule(strip, lo, hi)
+        ink[rule > 0] = 0
+        bridge = cv2.dilate(rule, np.ones((5, 1), np.uint8))  # spans the gap cut where the line was taken out
+        n, lab = cv2.connectedComponents(((ink > 0) | (bridge > 0)).astype(np.uint8))
+        on = ink > 0
+        rows = slice(max(lo, 0), max(hi, 0))
+        inside = np.bincount(lab[rows][on[rows]], minlength=n)
+        off = inside < 0.3 * np.maximum(np.bincount(lab[on], minlength=n), 1)
+        off[0] = False
+        ink[off[lab]] = 0
+        line = (lo, hi)
+    blobs = _signature_blobs(strip, ink, SIG_OVERRUN, cells[0].rect[2], SIG_MIN_INK, bands, stamps, bridge, line)
     if centered:
         # A blob belongs to the field when a good share of its ink is on the
         # field's line: tails and loops (a "g", a flourish) reach far above
         # or below, so the box's centre can't tell. When in doubt it's masked.
-        lo, hi = int(bands[0][0]), int(np.ceil(bands[-1][1]))
         def share(b):
             sub = ink[b[1]:b[3], b[0]:b[2]] > 0
             rows = np.arange(b[1], b[3])
@@ -747,9 +800,11 @@ def signature_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Z
     blobs, origin, bands, cells = _find_signatures(gray, f, cells, s, margin, ref, SIG_BELOW, printed, centered,
                                                    strikes, exclude)
     counts = [0] * len(cells)
-    for x0, y0, x1, y1, _ in blobs:
-        quad = np.float64([[x0 - pad, y0 - pad], [x1 + pad, y0 - pad], [x1 + pad, y1 + pad], [x0 - pad, y1 + pad]])
-        _fill(img, f, quad + origin)
+    for x0, y0, x1, y1, _, boxes in blobs:
+        for bx0, by0, bx1, by1 in boxes:
+            quad = np.float64([[bx0 - pad, by0 - pad], [bx1 + pad, by0 - pad], [bx1 + pad, by1 + pad],
+                               [bx0 - pad, by1 + pad]])
+            _fill(img, f, quad + origin)
         cy = (y0 + y1) / 2
         i = int(np.argmin([0 if b0 <= cy < b1 else min(abs(cy - b0), abs(cy - b1)) for b0, b1 in bands]))
         counts[i] += 1
@@ -780,10 +835,13 @@ def verify_signatures(gray: np.ndarray, out: np.ndarray, f: Mapper, cells: list[
     ink = ink_mask(gstrip, float(np.median([z.rect[3] for z in cells])), signature=True)
     _erase_strikes(ink, origin, strikes)
     bad = 0
-    for x0, y0, x1, y1, n in blobs:
+    for x0, y0, x1, y1, n, boxes in blobs:
         if n < 2 * SIG_MIN_INK:
             continue
-        sel = ink[y0:y1, x0:x1] > 0
+        sel = np.zeros((y1 - y0, x1 - x0), bool)
+        for bx0, by0, bx1, by1 in boxes:
+            sel[by0 - y0:by1 - y0, bx0 - x0:bx1 - x0] = True
+        sel &= ink[y0:y1, x0:x1] > 0
         if kstrip is not None:
             kept = kstrip[y0:y1, x0:x1] > 0
             if (sel & kept).sum() > 0.5 * sel.sum():
