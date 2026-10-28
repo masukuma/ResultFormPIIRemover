@@ -1,0 +1,30 @@
+[package]
+name = "rfpii"
+version = "0.3.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+base64 = "0.23.1"
+clap = { version = "4.6.7", features = ["derive"] }
+ed25519-dalek = { version = "3.0.0", features = ["rand_core", "pkcs8", "pem"] }
+flate2 = "1.1.10"
+hex = "0.4.3"
+lopdf = "0.46.0"
+mupdf = { version = "0.8.0", default-features = false, features = ["base14-fonts", "sys-lib-libjpeg", "sys-lib-zlib"] }
+once_cell = "1.21.4"
+opencv = { version = "0.101.1", default-features = false, features = ["imgproc", "imgcodecs", "features2d", "calib3d", "objdetect", "flann", "clang-runtime"] }
+rand = "0.10.3"
+rand_chacha = "0.10.0"
+rayon = "1.12.0"
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+serde_yaml = "0.9.34"
+sha2 = "0.11.1"
+thiserror = "2.0.21"
+ureq = { version = "3.5.0", features = ["json"] }
+zip = "9.1.3"
+
+[build-dependencies]
+cc = "1.10.0"

@@ -12,3 +12,6 @@ realdata/
 *.zip
 *.PDF
 review*/
+
+# Rust build output
+rust/target/
