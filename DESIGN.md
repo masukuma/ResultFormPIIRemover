@@ -118,12 +118,32 @@ not one block per region:
    pages drift downward.
 2. **Remove what isn't a signature:**
    - printed rules;
-   - the rings of official stamps;
+   - the stamps found on the page (see [Stamps](#stamps-are-never-masked-stampspy)),
+     ring and lettering. A stamp's ring once joined the writing around it
+     into one "signature", whose mask then framed the stamp with black
+     corners (writing under a stamp is never masked anyway);
+   - strike lines drawn through unused rows (below);
    - flat strokes 8 px or less in height, which are pieces of rules.
 3. **Group strokes.** Strokes that touch, mostly sideways, form one signature.
    A group spanning several rows (neighbours' strokes touching) is cut at the
    row boundaries.
 4. **Mask.** Each signature gets its own padded box. Empty rows are untouched.
+
+**Underlined fields** (a signature on a line, not in a table) take only
+writing on their own line. The date is written on the next line, often so
+close that the strokes of both were joined into one "signature", and the
+date was masked with it:
+- a group of strokes counts only if at least 30% of its ink is on the
+  field's line (tails and flourishes reach far above or below);
+- strokes lying mostly on the line below or above (the date, the ID) are
+  left out even where they run close to the signature;
+- the field's printed underline joins the strokes it crosses, so a loop of
+  the signature through the line stays part of it, but it sets no mask's
+  width: on layout B the underline is shorter than the field, and was taken
+  as part of the signature, stretching its mask to the line's end;
+- each signature is masked in up to three boxes (above its line, on it,
+  below it), so a loop reaching down covers its own width of the line
+  below, not the whole signature's.
 
 A coverage check then finds signatures again on the original and requires
 each to be at least 90% under black in the output. Blackout zones (plain
@@ -144,7 +164,10 @@ mapped edge by edge so they stay covered on curled pages.
      testing;
    - leftover thin fragments of rules;
    - printed dotted leaders ("ID Number: ........");
-   - strike lines found over the whole table (below).
+   - strike lines found over the whole table (below);
+   - the ink of stamps found on the page. Stamps are found before anything
+     is masked: a ring read as a digit stretched one ID's masks up into the
+     name above it.
 
 **Lines drawn through unused rows.** Within one column a cross-out line is
 only a short stroke, too short to tell from a pen stroke: on Form 34B layout
@@ -163,6 +186,11 @@ checks alike, and the page notes say how many there were.
    compares appearance, not just position: if the table is a row off, written
    digits land where the reference has print, and a position test would skip
    them.
+   A glyph must be at least 40% of the row height (a template can lower
+   that: in Form 34B's tall rows agents write small, and a whole ID written
+   small was taken for unreadable ink and hidden). Outside the table's rows
+   it must still be 40%, so a printed header's small lettering above the
+   column is not taken for writing.
 4. **Group into lines.** Glyphs are grouped into written lines, and each line is
    segmented into **one slot per character**: joined-up writing is split at
    the expected character pitch, and if that doesn't give a plausible count,
@@ -177,10 +205,11 @@ checks alike, and the page notes say how many there were.
    manifest, so the redaction can be reproduced.
 
    A hidden character is covered from the midpoint with its left neighbour to
-   the midpoint with its right, over the line's full height. Rule removal can
-   shave a 5's or 7's top bar off the detected glyph box, so masking only the
-   box could leave part of a "hidden" digit showing. A line that can't be
-   segmented is hidden whole.
+   the midpoint with its right, from the line's top to its bottom (the
+   median over its characters) or the character's own extent where that is
+   larger. Rule removal can shave a 5's or 7's top bar off the detected
+   glyph box, so masking only the box could leave part of a "hidden" digit
+   showing. A line that can't be segmented is hidden whole.
 6. **Assign rows.** Lines are assigned to rows only to tell empty rows from
    unreadable ones, and for the report. Masks follow the writing itself.
 
@@ -508,8 +537,9 @@ Two things these layouts needed:
   the row rules, place the table.
 
 On layout C the lines are 51 px apart and handwriting is often taller than
-that, so the Returning Officer's signature mask can reach into the date
-below it. That over-masks; it never hides less.
+that. A signature that runs down into the date line still covers the part
+of the date it overlaps; the rest of the date stays visible (see
+underlined fields under [Masking](#3-masking-maskingpy)).
 
 **Single underlined fields** (the RO's and Chairperson's ID and signature)
 are handled differently from table cells:
