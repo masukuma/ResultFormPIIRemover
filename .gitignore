@@ -12,6 +12,7 @@ realdata/
 *.zip
 *.PDF
 review*/
+_rerun/
 
 # Rust build output
 rust/target/
