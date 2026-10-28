@@ -25,7 +25,10 @@ use rfpii::process::{process_document, utc_now, with_suffix, Config};
 use rfpii::pyjson;
 use rfpii::templates::{load_templates, Template};
 use rfpii::util;
+use rfpii::pipeline::redact_boxes;
+use rfpii::pyrand::PyRandom;
 use rfpii::verify::{verify, VerifyArgs};
+use rfpii::vlm::{Ollama, VlmSettings};
 
 #[derive(Parser)]
 #[command(name = "rfpii", version, about = "Verifiable PII removal for result forms.")]
@@ -48,6 +51,58 @@ enum Cmd {
         #[arg(short, long, default_value = "preview.png")]
         output: PathBuf,
     },
+    /// Draft a template's zones from a reference image with a VLM
+    Propose(ProposeArgs),
+    /// Generate a sample template and synthetic scans
+    Demo {
+        directory: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        count: u64,
+    },
+}
+
+#[derive(Args, Clone)]
+struct VlmArgs {
+    /// Vision model (default: qwen3-vl:235b on Ollama Cloud, qwen3.8:27b locally)
+    #[arg(long, default_value = "")]
+    vlm_model: String,
+    /// Ollama URL (default $OLLAMA_HOST, else https://ollama.com if $OLLAMA_API_KEY, else local)
+    #[arg(long)]
+    vlm_host: Option<String>,
+    /// Box convention of the model (auto: norm1000 for Qwen3.x/Qwen3-VL, pixel otherwise)
+    #[arg(long, default_value = "auto", value_parser = ["auto", "pixel", "norm1000"])]
+    vlm_coords: String,
+    /// Allow sending UNREDACTED forms to a non-local VLM (fallback/propose); only if that data transfer is approved
+    #[arg(long)]
+    allow_remote_unredacted: bool,
+}
+
+impl VlmArgs {
+    fn settings(&self) -> VlmSettings {
+        let mut s = VlmSettings::default();
+        s.coords = self.vlm_coords.clone();
+        s.allow_remote_unredacted = self.allow_remote_unredacted;
+        if !self.vlm_model.is_empty() {
+            s.model = self.vlm_model.clone();
+        }
+        if let Some(h) = &self.vlm_host {
+            s.host = h.clone();
+        }
+        s
+    }
+}
+
+#[derive(Args)]
+struct ProposeArgs {
+    reference: String,
+    /// Path of the template.yaml to write
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Form code, e.g. 34A
+    #[arg(long, default_value = "")]
+    form: String,
+    #[command(flatten)]
+    vlm: VlmArgs,
 }
 
 #[derive(Args)]
@@ -87,6 +142,14 @@ struct RedactArgs {
     /// Send pages no template matches to review instead of reading their layout
     #[arg(long)]
     no_generic: bool,
+    /// Have a VLM check every redacted page before publishing
+    #[arg(long)]
+    vlm_audit: bool,
+    /// VLM-redact pages no template matches, into review/vlm/ for approval
+    #[arg(long)]
+    vlm_fallback: bool,
+    #[command(flatten)]
+    vlm: VlmArgs,
     #[arg(long)]
     overwrite: bool,
     /// Seed (hex) for every document instead of a fresh random one: for
@@ -155,10 +218,10 @@ struct Done {
     rel: String,
 }
 
-fn run_one(src: &str, rel: &str, templates: &[Template], cfg: &Config, seed: Option<u64>) -> Done {
+fn run_one(src: &str, rel: &str, templates: &[Template], cfg: &Config, vlm: Option<&Ollama>, seed: Option<u64>) -> Done {
     let t0 = Instant::now();
     let ms = |t0: Instant| pyjson::round_n(t0.elapsed().as_secs_f64() * 1000.0, 1);
-    match process_document(src, rel, templates, cfg, seed, None) {
+    match process_document(src, rel, templates, cfg, vlm, seed, None) {
         Err(e) => Done { report: json!({"file": src, "ok": false, "reason": format!("Error: {:#}", e), "ms": ms(t0)}), manifest: None, rel: rel.into() },
         Ok(o) => {
             let mut report = o.report;
@@ -166,11 +229,34 @@ fn run_one(src: &str, rel: &str, templates: &[Template], cfg: &Config, seed: Opt
                 if let Ok(p) = out_path(&cfg.review, rel, ".json") {
                     let _ = std::fs::write(p, pyjson::pretty(&report, 2, false));
                 }
+                if let (Some(v), true, false) = (vlm, cfg.vlm_fallback, o.source_pages.is_empty()) {
+                    // Unrecognised layout: let the VLM find the PII, apply the
+                    // same masking, and park the result for a person to approve.
+                    match vlm_proposal(v, &o.source_pages, cfg, rel) {
+                        Ok(p) => report["vlm_proposal"] = json!(p.to_string_lossy()),
+                        Err(e) => report["vlm_error"] = json!(format!("Error: {:#}", e)),
+                    }
+                }
             }
             report["ms"] = json!(ms(t0));
             Done { report, manifest: o.manifest, rel: rel.into() }
         }
     }
+}
+
+/// A VLM-redacted copy of a document, for review (never published).
+fn vlm_proposal(v: &Ollama, pages: &[io::SourcePage], cfg: &Config, rel: &str) -> Result<PathBuf> {
+    let mut seed = [0u8; 8];
+    mf::getrandom_fill(&mut seed)?;
+    let mut rng = PyRandom::new(u64::from_le_bytes(seed) >> 1);
+    let mut images = Vec::new();
+    for sp in pages {
+        let boxes: Vec<(f64, f64, f64, f64, String)> = v.locate(&sp.pixels)?.into_iter().map(|b| (b.x0, b.y0, b.x1, b.y1, b.label)).collect();
+        images.push(redact_boxes(&sp.pixels, &boxes, &cfg.mask, &mut rng, 10.0)?.image.unwrap());
+    }
+    let out = out_path(&Path::new(&cfg.review).join("vlm").to_string_lossy(), rel, ".pdf")?;
+    io::write_pdf(&images, &out, 200.0, 85)?;
+    Ok(out)
 }
 
 fn cmd_redact(a: RedactArgs) -> Result<i32> {
@@ -180,7 +266,19 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
     let mut mask = MaskSettings::default();
     mask.hide = a.hide;
     mask.phone_tail = a.phone_tail;
-    let cfg = Config { templates: a.templates.clone(), out: a.out.clone(), review: a.review.clone(), align, mask, strict_structure: a.strict_structure, generic: !a.no_generic };
+    let cfg = Config {
+        templates: a.templates.clone(),
+        out: a.out.clone(),
+        review: a.review.clone(),
+        align,
+        mask,
+        strict_structure: a.strict_structure,
+        generic: !a.no_generic,
+        vlm_audit: a.vlm_audit,
+        vlm_fallback: a.vlm_fallback,
+    };
+    // fail fast on a bad VLM configuration
+    let vlm = if a.vlm_audit || a.vlm_fallback { Some(Ollama::new(a.vlm.settings())?) } else { None };
     let key = match &a.sign_key {
         Some(p) => Some(mf::load_private(p)?),
         None => {
@@ -206,12 +304,13 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
     // Parallelism comes from documents; OpenCV itself runs one thread per
     // document, as the results must not depend on how work is split.
     opencv::core::set_num_threads(1)?;
+    rfpii::ocr::set_threads(1);
     let pool = rayon::ThreadPoolBuilder::new().num_threads(a.workers.max(1)).build()?;
     let t0 = Instant::now();
     let (mut n_ok, mut batch) = (0usize, Vec::new());
     let mut log = std::fs::OpenOptions::new().create(true).append(true).open(Path::new(&a.review).join("report.jsonl"))?;
     for chunk in todo.chunks(4 * a.workers.max(1)) {
-        let done: Vec<Done> = pool.install(|| chunk.par_iter().map(|(src, rel)| run_one(src, rel, &templates, &cfg, seed)).collect());
+        let done: Vec<Done> = pool.install(|| chunk.par_iter().map(|(src, rel)| run_one(src, rel, &templates, &cfg, vlm.as_ref(), seed)).collect());
         for d in done {
             let r = &d.report;
             if r["ok"].as_bool() == Some(true) {
@@ -316,6 +415,59 @@ fn cmd_preview(template: &Path, output: &Path) -> Result<i32> {
     Ok(0)
 }
 
+/// Ask the VLM for PII boxes on a reference image and write a draft template.
+fn cmd_propose(a: ProposeArgs) -> Result<i32> {
+    let img = io::source_pages(&a.reference, None)?.remove(0).pixels;
+    let client = Ollama::new(a.vlm.settings())?;
+    let boxes = client.locate(&img)?;
+    if let Some(d) = a.output.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let dir = a.output.parent().unwrap_or(Path::new("."));
+    imgcodecs::imwrite(&dir.join("reference.png"), &util::gray(&img)?, &Vector::new())?;
+    let mut y = format!(
+        "# DRAFT from a VLM: check every zone with `rfpii preview` before use, and add\n# `protect` rects for every results region. Erase handwriting from reference.png\n# (keep printed rules) before committing it.\nname: {}\nform: '{}'\nreference: reference.png\npadding: 8\nprotect: []\nzones:\n",
+        dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        a.form
+    );
+    for (i, b) in boxes.iter().enumerate() {
+        let r = [util::round_even(b.x0), util::round_even(b.y0), util::round_even(b.x1 - b.x0), util::round_even(b.y1 - b.y0)];
+        let sig = b.label == "signature";
+        y += &format!("- name: {}_{}\n  action: {}\n  rect:\n  - {}\n  - {}\n  - {}\n  - {}\n", b.label, i, if sig { "blackout" } else { "partial" }, r[0] as i64, r[1] as i64, r[2] as i64, r[3] as i64);
+        if !sig {
+            let phone = b.label == "phone_number";
+            y += &format!("  rule: {}\n  digits: {}\n", if phone { "phone" } else { "id" }, if phone { 10 } else { 8 });
+        }
+    }
+    if boxes.is_empty() {
+        y = y.replace("zones:\n", "zones: []\n");
+    }
+    std::fs::write(&a.output, y)?;
+    println!("{} zones -> {}", boxes.len(), a.output.display());
+    Ok(0)
+}
+
+fn cmd_demo(dir: &Path, count: u64) -> Result<i32> {
+    use rfpii::synthetic;
+    synthetic::write_template(&dir.join("templates").join("sample_rs1"))?;
+    let scans = dir.join("scans");
+    std::fs::create_dir_all(&scans)?;
+    let q: Vector<i32> = vec![imgcodecs::IMWRITE_JPEG_QUALITY, 85].into_iter().collect();
+    for i in 0..count {
+        let angle = (i as f64 * 0.6180339887).fract() * 10.0 - 5.0;
+        let scan = synthetic::simulate_scan(&synthetic::filled_form(i)?, i, angle, 1.3)?;
+        imgcodecs::imwrite(&scans.join(format!("station_{:04}.jpg", i)), &scan, &q)?;
+    }
+    // something that is not a form at all
+    let mut noise = vec![0u8; 1800 * 1300 * 3];
+    mf::getrandom_fill(&mut noise)?;
+    let mut nm = opencv::core::Mat::new_rows_cols_with_default(1800, 1300, opencv::core::CV_8UC3, Scalar::all(0.0))?;
+    nm.data_bytes_mut()?.copy_from_slice(&noise);
+    imgcodecs::imwrite(&scans.join("not_a_form.jpg"), &nm, &q)?;
+    println!("wrote template and {} scans under {}", count + 1, dir.display());
+    Ok(0)
+}
+
 fn main() {
     let cli = Cli::parse();
     let r = match cli.cmd {
@@ -323,6 +475,8 @@ fn main() {
         Cmd::Verify(a) => cmd_verify(a),
         Cmd::Keygen { directory } => cmd_keygen(&directory),
         Cmd::Preview { template, output } => cmd_preview(&template, &output),
+        Cmd::Propose(a) => cmd_propose(a),
+        Cmd::Demo { directory, count } => cmd_demo(&directory, count),
     };
     match r {
         Ok(code) => std::process::exit(code),

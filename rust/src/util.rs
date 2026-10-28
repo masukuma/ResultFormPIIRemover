@@ -3,7 +3,7 @@
 //! percentiles, medians of even counts...): masks are placed from these
 //! numbers, and the two implementations must agree on them.
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use opencv::core::{self, Mat, Point, Scalar, Size, Vector, CV_32F, CV_8U};
 use opencv::prelude::*;
 
@@ -319,18 +319,9 @@ pub fn mul3(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     o
 }
 
+/// `np.linalg.inv` (numpy's own LAPACK, see npla.rs).
 pub fn inv3(m: &[[f64; 3]; 3]) -> Result<[[f64; 3]; 3]> {
-    let [[a, b, c], [d, e, f], [g, h, i]] = *m;
-    let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-    if det.abs() < 1e-300 {
-        return Err(anyhow!("singular matrix"));
-    }
-    let r = 1.0 / det;
-    Ok([
-        [(e * i - f * h) * r, (c * h - b * i) * r, (b * f - c * e) * r],
-        [(f * g - d * i) * r, (a * i - c * g) * r, (c * d - a * f) * r],
-        [(d * h - e * g) * r, (b * g - a * h) * r, (a * e - b * d) * r],
-    ])
+    crate::npla::inv3(m)
 }
 
 /// `cv2.perspectiveTransform` of one point.
@@ -398,26 +389,52 @@ pub fn np_sum(a: &[f64]) -> f64 {
     np_sum(&a[..n2]) + np_sum(&a[n2..])
 }
 
+/// `np.sum` of a float32 array (the same pairwise scheme, float32 partial sums).
+pub fn np_sum_f32(a: &[f32]) -> f32 {
+    let n = a.len();
+    if n < 8 {
+        let mut s = -0.0f32;
+        for &x in a {
+            s += x;
+        }
+        return if n == 0 { 0.0 } else { s };
+    }
+    if n <= 128 {
+        let mut r = [a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]];
+        let mut i = 8;
+        while i < n - (n % 8) {
+            for k in 0..8 {
+                r[k] += a[i + k];
+            }
+            i += 8;
+        }
+        let mut res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
+        while i < n {
+            res += a[i];
+            i += 1;
+        }
+        return res;
+    }
+    let mut n2 = n / 2;
+    n2 -= n2 % 8;
+    np_sum_f32(&a[..n2]) + np_sum_f32(&a[n2..])
+}
+
+/// `np.linalg.norm` of a float64 2-vector: numpy's BLAS dot fuses the
+/// second multiply-add.
+pub fn norm2(dx: f64, dy: f64) -> f64 {
+    dy.mul_add(dy, dx * dx).sqrt()
+}
+
+/// `np.dot` of two float64 2-vectors (BLAS, fused as above).
+pub fn dot2(a: [f64; 2], b: [f64; 2]) -> f64 {
+    a[1].mul_add(b[1], a[0] * b[0])
+}
+
 pub fn np_mean(a: &[f64]) -> f64 {
     np_sum(a) / a.len() as f64
 }
 
-/// `np.polyfit(x, y, 1)`: (slope, intercept) by least squares.
-pub fn polyfit1(x: &[f64], y: &[f64]) -> (f64, f64) {
-    let n = x.len() as f64;
-    let mx = x.iter().sum::<f64>() / n;
-    let my = y.iter().sum::<f64>() / n;
-    let (mut sxy, mut sxx) = (0.0, 0.0);
-    for (a, b) in x.iter().zip(y) {
-        sxy += (a - mx) * (b - my);
-        sxx += (a - mx) * (a - mx);
-    }
-    if sxx == 0.0 {
-        return (0.0, my);
-    }
-    let slope = sxy / sxx;
-    (slope, my - slope * mx)
-}
 
 /// `np.argmin`: first index of the minimum.
 pub fn argmin(a: &[f64]) -> usize {

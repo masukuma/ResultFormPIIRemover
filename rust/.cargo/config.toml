@@ -1,0 +1,6 @@
+# OpenCV 5.0, built with the same options as the opencv-python wheel the
+# Python version runs on (see scripts/build-opencv.sh): both must compute
+# the same pixels.
+[env]
+PKG_CONFIG_PATH = "/opt/opencv5/lib/pkgconfig"
+OPENCV_PKGCONFIG_NAME = "opencv5"

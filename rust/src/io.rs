@@ -403,28 +403,33 @@ fn stream_pixels(doc: &Document, s: &lopdf::Stream) -> Result<Option<Mat>> {
     Ok(Some(out))
 }
 
+unsafe extern "C" {
+    fn mrender_page(data: *const u8, len: usize, pageno: i32, zoom: f32, out: *mut *mut u8, w: *mut i32, h: *mut i32, err: *mut std::os::raw::c_char, errlen: i32) -> i32;
+    fn mrender_free(p: *mut u8);
+    fn mrender_version() -> *const std::os::raw::c_char;
+}
+
+/// MuPDF's version (the renderer of pages that aren't a single image).
+pub fn mupdf_version() -> String {
+    unsafe { std::ffi::CStr::from_ptr(mrender_version()) }.to_string_lossy().into_owned()
+}
+
+/// Render a page as PyMuPDF's `page.get_pixmap(matrix=Matrix(zoom, zoom))`, BGR.
 fn render_page(data: &[u8], index: i32, zoom: f64) -> Result<Mat> {
-    let doc = mupdf::Document::from_bytes(data, "application/pdf").map_err(|e| anyhow!("{e}"))?;
-    let page = doc.load_page(index).map_err(|e| anyhow!("{e}"))?;
-    let pix = page
-        .to_pixmap(&mupdf::Matrix::new_scale(zoom as f32, zoom as f32), &mupdf::Colorspace::device_rgb(), false, true)
-        .map_err(|e| anyhow!("{e}"))?;
-    let (w, h, n, stride) = (pix.width() as usize, pix.height() as usize, pix.n() as usize, pix.stride() as usize);
-    let s = pix.samples();
-    let mut rgb = Mat::new_rows_cols_with_default(h as i32, w as i32, opencv::core::CV_8UC3, opencv::core::Scalar::all(0.0))?;
-    {
-        let d = rgb.data_bytes_mut()?;
-        for y in 0..h {
-            for x in 0..w {
-                for k in 0..3 {
-                    d[(y * w + x) * 3 + k] = s[y * stride + x * n + k.min(n - 1)];
-                }
-            }
-        }
+    let (mut out, mut w, mut h) = (std::ptr::null_mut(), 0i32, 0i32);
+    let mut err = vec![0 as std::os::raw::c_char; 512];
+    let ok = unsafe { mrender_page(data.as_ptr(), data.len(), index, zoom as f32, &mut out, &mut w, &mut h, err.as_mut_ptr(), err.len() as i32) };
+    if ok == 0 {
+        let msg = unsafe { std::ffi::CStr::from_ptr(err.as_ptr()) }.to_string_lossy().into_owned();
+        bail!("rendering page {}: {}", index + 1, msg);
     }
-    let mut out = Mat::default();
-    opencv::imgproc::cvt_color_def(&rgb, &mut out, opencv::imgproc::COLOR_RGB2BGR)?;
-    Ok(out)
+    let px = unsafe { std::slice::from_raw_parts(out, w as usize * h as usize * 3) }.to_vec();
+    unsafe { mrender_free(out) };
+    let mut rgb = Mat::new_rows_cols_with_default(h, w, opencv::core::CV_8UC3, opencv::core::Scalar::all(0.0))?;
+    rgb.data_bytes_mut()?.copy_from_slice(&px);
+    let mut bgr = Mat::default();
+    opencv::imgproc::cvt_color_def(&rgb, &mut bgr, opencv::imgproc::COLOR_RGB2BGR)?;
+    Ok(bgr)
 }
 
 fn pdf_source_pages(data: &[u8]) -> Result<Vec<SourcePage>> {
@@ -502,7 +507,7 @@ fn pdf_source_pages(data: &[u8]) -> Result<Vec<SourcePage>> {
             pixels: render_page(data, i as i32, zoom)?,
             kind: "pixels",
             data: None,
-            reference: format!("page {}, rendered at zoom {:.4} by MuPDF", i + 1, zoom),
+            reference: format!("page {}, rendered at zoom {:.4} by MuPDF {}", i + 1, zoom, mupdf_version()),
             page_size: Some(shown),
             rect: Some((0.0, 0.0, shown.0, shown.1)),
             rotate: 0, // the rendering is upright already

@@ -261,7 +261,13 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
             mask: ms,
             strict_structure: st["strict_structure"].as_bool().unwrap_or(false),
             generic: st["generic"].as_bool().unwrap_or(false),
+            vlm_audit: false,
+            vlm_fallback: false,
         };
+        if let Some(o) = m.get("ocr") {
+            let now = crate::ocr::info().map(|i| i["models"].clone()).unwrap_or(Value::Null);
+            r.add(now == o["models"], "OCR models are the versions recorded");
+        }
         let mut templates = load_templates(tdir)?;
         for t in templates.iter_mut() {
             prepare(t, &cfg.align)?;
@@ -269,7 +275,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
         let fp_ok = m["templates"].as_object().map(|o| o.iter().all(|(k, v)| templates.iter().any(|t| &t.name == k && Some(t.fingerprint.as_str()) == v.as_str()))).unwrap_or(true);
         r.add(fp_ok, "templates are the versions recorded");
         let seed = u64::from_str_radix(m["seed"].as_str().unwrap_or("0"), 16)?;
-        let o = process_document(&orig.to_string_lossy(), m["source"]["path"].as_str().unwrap_or(""), &templates, &cfg, Some(seed), None)?;
+        let o = process_document(&orig.to_string_lossy(), m["source"]["path"].as_str().unwrap_or(""), &templates, &cfg, None, Some(seed), None)?;
         let digests = |pages: &Value| -> Vec<String> { pages.as_array().map(|a| a.iter().map(|p| p["output_image_sha256"].as_str().unwrap_or("").to_string()).collect()).unwrap_or_default() };
         let same = o.ok && o.manifest.as_ref().map(|om| digests(&om["pages"]) == digests(&m["pages"])).unwrap_or(false);
         r.add(same, "re-running the recorded code, templates and seed reproduces the same output");

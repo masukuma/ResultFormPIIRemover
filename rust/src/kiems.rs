@@ -9,7 +9,7 @@
 
 use once_cell::sync::Lazy;
 use opencv::core::{Mat, Vector};
-use opencv::objdetect::{QRCodeDetector, QRCodeDetectorTraitConst};
+use opencv::objdetect::QRCodeDetector;
 use opencv::prelude::*;
 use regex::Regex;
 use serde_json::{json, Value};

@@ -120,44 +120,6 @@ fn color_ink(color: &Mat) -> Result<Mat> {
     util::morph(&mm, imgproc::MORPH_OPEN, &util::ones_kernel(2, 2)?)
 }
 
-/// Least squares x = argmin |A x - y| for an n x 3 A (Householder QR).
-fn lstsq3(a: &[[f64; 3]], y: &[f64]) -> Option<[f64; 3]> {
-    let n = a.len();
-    let mut m: Vec<[f64; 4]> = a.iter().zip(y).map(|(r, &v)| [r[0], r[1], r[2], v]).collect();
-    for k in 0..3 {
-        let norm = (k..n).map(|i| m[i][k] * m[i][k]).sum::<f64>().sqrt();
-        if norm == 0.0 {
-            return None;
-        }
-        let alpha = if m[k][k] > 0.0 { -norm } else { norm };
-        let mut v: Vec<f64> = (k..n).map(|i| m[i][k]).collect();
-        v[0] -= alpha;
-        let vn = v.iter().map(|x| x * x).sum::<f64>();
-        if vn == 0.0 {
-            continue;
-        }
-        for j in k..4 {
-            let dot: f64 = (k..n).map(|i| v[i - k] * m[i][j]).sum();
-            let f = 2.0 * dot / vn;
-            for i in k..n {
-                m[i][j] -= f * v[i - k];
-            }
-        }
-    }
-    let mut x = [0.0; 3];
-    for k in (0..3).rev() {
-        let mut s = m[k][3];
-        for j in k + 1..3 {
-            s -= m[k][j] * x[j];
-        }
-        if m[k][k] == 0.0 {
-            return None;
-        }
-        x[k] = s / m[k][k];
-    }
-    Some(x)
-}
-
 /// Least-squares circle through the ink near a candidate ring, trimming
 /// outliers each round (Hough centres and radii are rough).
 pub fn refine(ink: &Img, cx: f64, cy: f64, r: f64, iters: usize) -> (f64, f64, f64) {
@@ -183,7 +145,9 @@ pub fn refine(ink: &Img, cx: f64, cy: f64, r: f64, iters: usize) -> (f64, f64, f
         }
         let a: Vec<[f64; 3]> = sel.iter().map(|&(x, y)| [x, y, 1.0]).collect();
         let yv: Vec<f64> = sel.iter().map(|&(x, y)| x * x + y * y).collect();
-        let Some([pa, pb, pc]) = lstsq3(&a, &yv) else { break };
+        let flat: Vec<f64> = a.iter().flat_map(|r| r.iter().cloned()).collect();
+        let Ok(c) = crate::npla::lstsq(&flat, a.len(), 3, &yv, f64::EPSILON * a.len().max(3) as f64) else { break };
+        let (pa, pb, pc) = (c[0], c[1], c[2]);
         let (ncx, ncy) = (pa / 2.0, pb / 2.0);
         let nr = (pc + ncx * ncx + ncy * ncy).max(1.0).sqrt();
         if !(0.7 * r < nr && nr < 1.4 * r) || (ncx - cx).hypot(ncy - cy) > 0.4 * r {
@@ -536,16 +500,4 @@ mod tests {
         assert!(!is_stamp_text("Presiding Officer"));
     }
 
-    #[test]
-    fn lstsq_circle() {
-        let pts: Vec<(f64, f64)> = (0..40).map(|i| {
-            let t = i as f64 / 40.0 * 6.283;
-            (50.0 + 20.0 * t.cos(), 60.0 + 20.0 * t.sin())
-        }).collect();
-        let a: Vec<[f64; 3]> = pts.iter().map(|&(x, y)| [x, y, 1.0]).collect();
-        let y: Vec<f64> = pts.iter().map(|&(x, y)| x * x + y * y).collect();
-        let [p, q, c] = lstsq3(&a, &y).unwrap();
-        assert!((p / 2.0 - 50.0).abs() < 1e-9 && (q / 2.0 - 60.0).abs() < 1e-9);
-        assert!(((c + 2500.0 + 3600.0).sqrt() - 20.0).abs() < 1e-9);
-    }
 }

@@ -5,9 +5,9 @@
 //! full-resolution template pixels to full-resolution scan pixels.
 
 use anyhow::Result;
-use opencv::calib3d;
+use opencv::geometry;
 use opencv::core::{self, DMatch, KeyPoint, Mat, Point2f, Size, Vector};
-use opencv::features2d::{BFMatcher, ORB_ScoreType, ORB};
+use opencv::features::{BFMatcher, ORB_ScoreType, ORB};
 use opencv::imgproc;
 use opencv::prelude::*;
 use std::collections::HashMap;
@@ -83,14 +83,16 @@ impl Alignment {
         }
         let s: Vector<Point2f> = near.iter().map(|&i| Point2f::new(self.src[i][0], self.src[i][1])).collect();
         let d: Vector<Point2f> = near.iter().map(|&i| Point2f::new(self.dst[i][0], self.dst[i][1])).collect();
-        let hl = calib3d::find_homography(&s, &d, &mut Mat::default(), calib3d::RANSAC, 4.0)?;
+        let hl = geometry::find_homography(&s, &d, geometry::RANSAC, 4.0, &mut Mat::default(), 2000, 0.995)?;
         if hl.empty() {
             return Ok(h);
         }
         let hl = util::arr3(&hl)?;
+        // numpy: float32 projections, a float32 norm
         let c = [center[0] as f32 as f64, center[1] as f32 as f64];
         let (a, b) = (util::project(&hl, c), util::project(&h, c));
-        if ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt() > max_shift {
+        let (dx, dy) = (a[0] as f32 - b[0] as f32, a[1] as f32 - b[1] as f32);
+        if ((dx * dx + dy * dy).sqrt() as f64) > max_shift {
             return Ok(h);
         }
         Ok(hl)
@@ -109,7 +111,9 @@ pub fn features(gray: &Mat, s: &AlignSettings, page_long_side: Option<f64>, n_fe
     let mut kps = Vector::<KeyPoint>::new();
     let mut desc = Mat::default();
     orb.detect_and_compute(&small, &core::no_array(), &mut kps, &mut desc, false)?;
-    let pts = kps.iter().map(|k| [(k.pt().x as f64 / scale) as f32, (k.pt().y as f64 / scale) as f32]).collect();
+    // numpy: float32 points divided by the (float32) scale
+    let s32 = scale as f32;
+    let pts = kps.iter().map(|k| [k.pt().x / s32, k.pt().y / s32]).collect();
     Ok((pts, desc))
 }
 
@@ -136,10 +140,10 @@ fn geometry_ok(h: &[[f64; 3]; 3], t: &Template, scan: (i32, i32), s: &AlignSetti
         [p[0] as f32, p[1] as f32]
     }).collect();
     let poly: Vector<Point2f> = q.iter().map(|p| Point2f::new(p[0], p[1])).collect();
-    if !imgproc::is_contour_convex(&poly)? {
+    if !geometry::is_contour_convex(&poly)? {
         return Ok("projected form is not convex".into());
     }
-    let area = imgproc::contour_area(&poly, false)?;
+    let area = geometry::contour_area(&poly, false)?;
     let min_frac = t.min_area_frac.unwrap_or(s.min_area_frac);
     let total = scan.0 as f64 * scan.1 as f64;
     if area < min_frac * total {
@@ -168,26 +172,25 @@ fn score(h: &[[f64; 3]; 3], t: &Template, scan: &Mat) -> Result<f64> {
     let sm = [[f, 0.0, 0.0], [0.0, f, 0.0], [0.0, 0.0, 1.0]];
     let m = util::mul3(&sm, &util::inv3(h)?);
     let mut warped = Mat::default();
-    imgproc::warp_perspective(scan, &mut warped, &util::mat3(&m)?, Size::new(sw, sh), imgproc::INTER_AREA, core::BORDER_CONSTANT, core::Scalar::default())?;
+    imgproc::warp_perspective(scan, &mut warped, &util::mat3(&m)?, Size::new(sw, sh), imgproc::INTER_AREA, core::BORDER_CONSTANT, core::Scalar::default(), core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
     let reference = util::resize(&t.image, sw, sh, imgproc::INTER_AREA)?;
     let keep = util::resize(&t.mask, sw, sh, imgproc::INTER_NEAREST)?;
     let (a, b, k) = (util::bytes(&util::gaussian(&reference, 5)?)?, util::bytes(&util::gaussian(&warped, 5)?)?, util::bytes(&keep)?);
-    let av: Vec<f32> = a.iter().zip(&k).filter(|p| *p.1 == 0).map(|p| *p.0 as f32).collect();
-    let bv: Vec<f32> = b.iter().zip(&k).filter(|p| *p.1 == 0).map(|p| *p.0 as f32).collect();
+    let mut av: Vec<f32> = a.iter().zip(&k).filter(|p| *p.1 == 0).map(|p| *p.0 as f32).collect();
+    let mut bv: Vec<f32> = b.iter().zip(&k).filter(|p| *p.1 == 0).map(|p| *p.0 as f32).collect();
     if av.is_empty() {
         return Ok(0.0);
     }
-    let ma = av.iter().map(|&x| x as f64).sum::<f64>() / av.len() as f64;
-    let mb = bv.iter().map(|&x| x as f64).sum::<f64>() / bv.len() as f64;
-    let (mut sab, mut saa, mut sbb) = (0.0f64, 0.0f64, 0.0f64);
-    for (x, y) in av.iter().zip(&bv) {
-        let (x, y) = (*x as f64 - ma, *y as f64 - mb);
-        sab += x * y;
-        saa += x * x;
-        sbb += y * y;
-    }
-    let denom = (saa * sbb).sqrt();
-    Ok(if denom > 0.0 { sab / denom } else { 0.0 })
+    // as numpy does it: float32 throughout, pairwise sums
+    let ma = util::np_sum_f32(&av) / av.len() as f32;
+    let mb = util::np_sum_f32(&bv) / bv.len() as f32;
+    av.iter_mut().for_each(|x| *x -= ma);
+    bv.iter_mut().for_each(|x| *x -= mb);
+    let saa = util::np_sum_f32(&av.iter().map(|x| x * x).collect::<Vec<_>>());
+    let sbb = util::np_sum_f32(&bv.iter().map(|x| x * x).collect::<Vec<_>>());
+    let sab = util::np_sum_f32(&av.iter().zip(&bv).map(|(x, y)| x * y).collect::<Vec<_>>());
+    let denom = (saa * sbb).sqrt() as f64;
+    Ok(if denom > 0.0 { (sab / denom as f32) as f64 } else { 0.0 })
 }
 
 pub fn align(scan: &Mat, ti: usize, t: &Template, s: &AlignSettings, feats: &Features) -> Result<Alignment> {
@@ -212,7 +215,7 @@ pub fn align(scan: &Mat, ti: usize, t: &Template, s: &AlignSettings, feats: &Fea
     let sv: Vector<Point2f> = src.iter().map(|p| Point2f::new(p[0], p[1])).collect();
     let dv: Vector<Point2f> = dst.iter().map(|p| Point2f::new(p[0], p[1])).collect();
     let mut inl = Mat::default();
-    let hm = calib3d::find_homography_ext(&sv, &dv, calib3d::USAC_MAGSAC, s.ransac_thresh, &mut inl, 5000, 0.999)?;
+    let hm = geometry::find_homography(&sv, &dv, geometry::USAC_MAGSAC, s.ransac_thresh, &mut inl, 5000, 0.999)?;
     if hm.empty() {
         return Ok(Alignment::fail(Some(ti), "homography failed".into(), 0, good.len() as i64));
     }

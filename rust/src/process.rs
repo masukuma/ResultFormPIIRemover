@@ -32,6 +32,8 @@ pub struct Config {
     pub mask: MaskSettings,
     pub strict_structure: bool,
     pub generic: bool, // read pages no template matches
+    pub vlm_audit: bool,
+    pub vlm_fallback: bool,
 }
 
 /// Version and exact code revision, so a scrutineer can run the same code.
@@ -119,7 +121,7 @@ fn page_report(p: &PageResult) -> Value {
     v
 }
 
-pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Config, seed: Option<u64>, data: Option<Vec<u8>>) -> Result<Outcome> {
+pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Config, vlm: Option<&crate::vlm::Ollama>, seed: Option<u64>, data: Option<Vec<u8>>) -> Result<Outcome> {
     let data = match data {
         Some(d) => d,
         None => io::read_bytes(src)?,
@@ -162,6 +164,21 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
         problems.push(mismatch);
     }
     problems.extend(document_rules(&doc, templates));
+
+    let mut audits: Vec<Value> = Vec::new();
+    if let (Some(v), true, true) = (vlm, cfg.vlm_audit, problems.is_empty()) {
+        for (i, p) in doc.iter().enumerate() {
+            let a = v.audit(p.image.as_ref().unwrap())?; // only ever the *redacted* page
+            let mut rec = json!({"page": i + 1});
+            for (k, x) in a.record.as_object().unwrap() {
+                rec[k] = x.clone();
+            }
+            audits.push(rec);
+            if !a.ok {
+                problems.push(format!("page {}: VLM audit flagged: {}", i + 1, a.findings.get("details").and_then(|d| d.as_str()).unwrap_or("")));
+            }
+        }
+    }
 
     report["pages"] = Value::Array(doc.iter().map(page_report).collect());
     if !problems.is_empty() {
@@ -264,8 +281,12 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
                      "strict_structure": cfg.strict_structure, "generic": cfg.generic},
         "templates": tmap,
         "pages": mpages,
-        "vlm_audit": Value::Null,
+        "vlm_audit": if audits.is_empty() { Value::Null } else { Value::Array(audits) },
     });
+    let mut manifest = manifest;
+    if used.contains(&"generic") {
+        manifest["ocr"] = crate::ocr::info()?;
+    }
     report["ok"] = json!(true);
     report["output"] = json!(out_path.to_string_lossy());
     Ok(Outcome { ok: true, report, manifest: Some(manifest), pdf: Some(pdf), redacted_pages: vec![], source_pages: vec![] })

@@ -9,7 +9,7 @@
 //! intersections. A region that can't be matched convincingly fails.
 
 use anyhow::Result;
-use opencv::calib3d;
+use opencv::geometry;
 use opencv::core::{self, Mat, Point2f, Size, Vector};
 use opencv::imgproc;
 use opencv::prelude::*;
@@ -68,10 +68,10 @@ pub fn segments(mask: &Mat, horizontal: bool) -> Result<Vec<Line>> {
             }
         }
         if horizontal {
-            let (a, b) = if w > 1 { util::polyfit1(&xs, &ys) } else { (0.0, util::mean(&ys)) };
+            let (a, b) = if w > 1 { crate::npla::polyfit1(&xs, &ys)? } else { (0.0, util::np_mean(&ys)) };
             out.push(Line { pos: b, slope: a, lo: x as f64, hi: (x + w) as f64 });
         } else {
-            let (a, b) = if h > 1 { util::polyfit1(&ys, &xs) } else { (0.0, util::mean(&xs)) };
+            let (a, b) = if h > 1 { crate::npla::polyfit1(&ys, &xs)? } else { (0.0, util::np_mean(&xs)) };
             out.push(Line { pos: b, slope: a, lo: y as f64, hi: (y + h) as f64 });
         }
     }
@@ -309,6 +309,7 @@ pub fn snap(gray: &Mat, h: &[[f64; 3]; 3], region: &Region) -> Result<Snap> {
         imgproc::INTER_LINEAR,
         core::BORDER_REPLICATE,
         core::Scalar::default(),
+        core::AlgorithmHint::ALGO_HINT_DEFAULT,
     )?;
     let (hs, vs) = detect_lines(&patch, 0.35 * w, 0.35 * hh)?;
     let (cx, cy) = (x + w / 2.0 - sx, y + hh / 2.0 - sy);
@@ -430,7 +431,7 @@ pub fn snap(gray: &Mat, h: &[[f64; 3]; 3], region: &Region) -> Result<Snap> {
     let src: Vector<Point2f> =
         ys_t.iter().flat_map(|&yy| xs_t.iter().map(move |&xx| Point2f::new(xx as f32, yy as f32))).collect();
     let dst: Vector<Point2f> = p.iter().flat_map(|r| r.iter().map(|q| Point2f::new(q[0] as f32, q[1] as f32))).collect();
-    let g = calib3d::find_homography(&src, &dst, &mut Mat::default(), 0, 3.0)?;
+    let g = geometry::find_homography(&src, &dst, 0, 3.0, &mut Mat::default(), 2000, 0.995)?;
     let gh = util::arr3(&g)?;
     // as numpy: float32 projections against the float64 grid
     let d2: Vec<f64> = src

@@ -59,7 +59,7 @@ pub fn fill(img: &mut Mat, f: &Mapper, quad: &[[f64; 2]; 4]) -> Result<()> {
     let mut pts = Vec::new();
     for i in 0..4 {
         let (a, b) = (quad[i], quad[(i + 1) % 4]);
-        let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+        let len = util::norm2(b[0] - a[0], b[1] - a[1]);
         let n = ((len / step) as usize).max(1);
         for k in 0..n {
             let t = k as f64 / n as f64;
@@ -159,7 +159,7 @@ fn strip_maps(f: &Mapper, x0: f64, y0: f64, sw: usize, sh: usize) -> Result<(Mat
 
 fn remap(src: &Mat, maps: &(Mat, Mat), interp: i32, border: i32) -> Result<Mat> {
     let mut out = Mat::default();
-    imgproc::remap(src, &mut out, &maps.0, &maps.1, interp, border, Scalar::all(0.0))?;
+    imgproc::remap(src, &mut out, &maps.0, &maps.1, interp, border, Scalar::all(0.0), core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
     Ok(out)
 }
 
@@ -259,14 +259,14 @@ fn merge_strikes(segs: Vec<Strike>) -> Vec<Strike> {
         for ln in lines.iter_mut() {
             let [ax, ay, bx, by, w] = *ln;
             let d = [bx - ax, by - ay];
-            let dl = (d[0] * d[0] + d[1] * d[1]).sqrt();
+            let dl = util::norm2(d[0], d[1]);
             let u = [d[0] / dl, d[1] / dl];
             let nrm = [-u[1], u[0]];
-            let near = [(x1, y1), (x2, y2)].iter().all(|&(px, py)| ((px - ax) * nrm[0] + (py - ay) * nrm[1]).abs() <= (2.0 * w).max(8.0));
+            let near = [(x1, y1), (x2, y2)].iter().all(|&(px, py)| util::dot2([px - ax, py - ay], nrm).abs() <= (2.0 * w).max(8.0));
             if near {
-                let mut ts = vec![0.0, d[0] * u[0] + d[1] * u[1]];
+                let mut ts = vec![0.0, util::dot2(d, u)];
                 for (px, py) in [(x1, y1), (x2, y2)] {
-                    ts.push((px - ax) * u[0] + (py - ay) * u[1]);
+                    ts.push(util::dot2([px - ax, py - ay], u));
                 }
                 let a = ts.iter().cloned().fold(f64::INFINITY, f64::min);
                 let b = ts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -302,7 +302,7 @@ fn in_rows(y: f64, bands: &[(f64, f64)]) -> bool {
 fn exclude_ink(ink: &mut Img, exclude: Option<&Mat>, maps: &(Mat, Mat)) -> Result<()> {
     if let Some(e) = exclude {
         let mut out = Mat::default();
-        imgproc::remap(e, &mut out, &maps.0, &maps.1, imgproc::INTER_NEAREST, core::BORDER_CONSTANT, Scalar::all(0.0))?;
+        imgproc::remap(e, &mut out, &maps.0, &maps.1, imgproc::INTER_NEAREST, core::BORDER_CONSTANT, Scalar::all(0.0), core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
         let ev = util::bytes(&out)?;
         for (i, v) in ev.iter().enumerate() {
             if *v > 0 {
@@ -466,7 +466,7 @@ pub fn ink_mask(strip: &Mat, row_h: f64, signature: bool) -> Result<Mat> {
             continue;
         }
         let v: Vector<Point2f> = pts[i].iter().cloned().collect();
-        let r = imgproc::min_area_rect(&v)?;
+        let r = opencv::geometry::min_area_rect(&v)?;
         let (rw, rhh, ang) = (r.size.width as f64, r.size.height as f64, r.angle as f64);
         let theta = if rw >= rhh { ang.abs() } else { 90.0 - ang.abs() };
         if rw.min(rhh) <= 7.0 && rw.max(rhh) >= 25.0 && theta.min(180.0 - theta) < max_theta {
