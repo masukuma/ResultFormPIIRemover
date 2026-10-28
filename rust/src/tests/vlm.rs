@@ -42,8 +42,13 @@ fn stub(replies: Vec<Value>) -> Stub {
             let mut body = vec![0u8; len];
             r.read_exact(&mut body).unwrap();
             seen.lock().unwrap().push((path, serde_json::from_slice(&body).unwrap()));
-            let content = replies.next().unwrap_or(json!({}));
-            let data = serde_json::to_vec(&json!({"message": {"role": "assistant", "content": content.to_string()}})).unwrap();
+            // a string reply is sent as is (models often wrap their JSON)
+            let content = match replies.next() {
+                Some(Value::String(t)) => t,
+                Some(v) => v.to_string(),
+                None => "{}".to_string(),
+            };
+            let data = serde_json::to_vec(&json!({"message": {"role": "assistant", "content": content}})).unwrap();
             let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", data.len());
             conn.write_all(head.as_bytes()).unwrap();
             conn.write_all(&data).unwrap();
@@ -123,4 +128,33 @@ fn qwen3_boxes_are_on_a_1000_grid() {
     for (got, want) in [b.x0, b.y0, b.x1, b.y1].iter().zip([827.0, 1170.0, 992.4, 1287.0]) {
         assert!((got - want).abs() < 2.0, "{} vs {}", got, want);
     }
+}
+
+#[test]
+fn replies_wrapped_in_prose_or_fences_are_read() {
+    assert_eq!(loose_json("```json\n[{\"a\": 1}]\n```").unwrap(), json!([{"a": 1}]));
+    assert_eq!(loose_json("Found these:\n{\"items\": []}\nDone.").unwrap(), json!({"items": []}));
+    assert!(loose_json("nothing to see").is_none());
+    // Gemini-style [y1, x1, y2, x2] on a 0-1000 grid; free-form labels
+    let b = reply_boxes(&json!([{"box_2d": [100, 200, 300, 400], "label": "national ID / passport number"}, {"bbox": [1, 2, 3, 4], "label": "date"}]), 1000.0, 500.0, "pixel");
+    assert_eq!(b, vec![crate::pipeline::Found { label: "id_number".into(), rect: [200.0, 50.0, 400.0, 150.0] }]);
+}
+
+#[test]
+fn find_asks_about_each_spot_except_what_is_already_black() {
+    let mut img = page(600, 400);
+    opencv::imgproc::rectangle_points(&mut img, opencv::core::Point::new(300, 100), opencv::core::Point::new(360, 140), opencv::core::Scalar::all(0.0), -1, opencv::imgproc::LINE_8, 0).unwrap();
+    // the review area is x 0..400, y 100..600: 400 x 500
+    let s = stub(vec![
+        json!("```json\n[{\"box_2d\": [100, 100, 180, 300], \"label\": \"handwritten signature\"},\n {\"box_2d\": [0, 750, 80, 900], \"label\": \"signature\"},\n {\"box_2d\": [500, 500, 520, 600], \"label\": \"date\"}]\n```"),
+        json!({"unmasked_signature": true, "complete_number": false, "what": "a scribble"}),
+    ]);
+    let client = Ollama::new(settings(&s.url, "gemma4:31b")).unwrap();
+    let r = client.find(&img, [0, 100, 400, 500], &client).unwrap();
+    assert_eq!(r.found, vec![crate::pipeline::Found { label: "signature".into(), rect: [40.0, 150.0, 120.0, 190.0] }]);
+    let req = s.requests.lock().unwrap();
+    assert_eq!(req.len(), 2); // the spot over the black box isn't asked about; the date isn't a spot
+    assert!(req[1].1["messages"][0]["content"].as_str().unwrap().contains("red box"));
+    let spots = r.record["spots"].as_array().unwrap();
+    assert!(spots.len() == 2 && spots[1]["kept"] == false && spots[1]["what"].as_str().unwrap().contains("already black"));
 }

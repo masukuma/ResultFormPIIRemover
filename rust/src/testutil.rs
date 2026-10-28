@@ -159,6 +159,7 @@ pub fn bare_template(name: &str, form: &str, once: bool, priority: i64) -> crate
         min_glyph_h: None,
         free_text: vec![],
         text_h: None,
+        review_area: None,
         regions: vec![],
         mask: Mat::default(),
         keypoints: vec![],
@@ -182,6 +183,7 @@ pub fn matched_page(template: &str) -> crate::pipeline::PageResult {
         protected: vec![],
         h: None,
         layout: None,
+        unsure: vec![],
     }
 }
 

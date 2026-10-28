@@ -18,6 +18,10 @@ protect:
     rect: [50, 480, 1560, 540]
   - name: counts_and_disputed
     rect: [50, 1020, 1560, 228]
+# What a vision review of the redacted page reads (--vlm-audit): from the
+# declaration down, where officers and agents sign and write. The results
+# above are protected and hold no one's details.
+review_area: [0, 1250, 1654, 1090]
 # Reasons for refusal and the Presiding Officer's comments, where officers
 # also sign (and may write an ID or phone number). Read with OCR, as forms
 # without a template are: numbers are partially masked, signatures hidden,

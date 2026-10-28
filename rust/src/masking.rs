@@ -982,18 +982,17 @@ pub fn verify_column(
     Ok(String::new())
 }
 
-/// Is the column where we think it is? The printed vertical rules at its
-/// edges are compared with any found elsewhere near it.
-pub fn check_column_edges(gray: &Mat, f: &Mapper, cells: &[Zone], require: bool) -> Result<String> {
-    let (tol, margin) = (14.0f64, 40.0f64);
-    let cells = sorted_cells(cells);
+/// How much printed vertical rule there is at each x across a column and
+/// `margin` px either side (template px from the column's left edge minus
+/// `margin`), counted over the column's rows; and the rows' height in px.
+fn rule_profile(gray: &Mat, f: &Mapper, cells: &[Zone], margin: f64) -> Result<(Vec<f64>, usize)> {
     let [x, y, w, _] = cells[0].rect;
     let bottom = cells.last().unwrap().rect[1] + cells.last().unwrap().rect[3];
     let (sw, sh) = ((round_even(w + 2.0 * margin) as usize).max(1), (round_even(bottom - y) as usize).max(1));
     let maps = strip_maps(f, x - margin, y, sw, sh)?;
     let strip = remap(gray, &maps, imgproc::INTER_LINEAR, core::BORDER_REPLICATE)?;
     let bw = util::adaptive_inv(&util::gaussian(&strip, 3)?, 31, 6.0)?;
-    let row_h = median_row_h(&cells);
+    let row_h = median_row_h(cells);
     let rules = Img::from_mat(&util::morph(&bw, imgproc::MORPH_OPEN, &util::rect_kernel(1, row_h as i32)?)?)?;
     let mut prof = Mat::new_rows_cols_with_default(1, sw as i32, CV_32F, Scalar::all(0.0))?;
     {
@@ -1004,7 +1003,52 @@ pub fn check_column_edges(gray: &Mat, f: &Mapper, cells: &[Zone], require: bool)
     }
     let mut smooth = Mat::default();
     imgproc::gaussian_blur_def(&prof, &mut smooth, core::Size::new(5, 1), 0.0)?;
-    let profile: Vec<f64> = smooth.data_typed::<f32>()?.iter().map(|&v| v as f64).collect();
+    Ok((smooth.data_typed::<f32>()?.iter().map(|&v| v as f64).collect(), sh))
+}
+
+/// A column the edge check found off its printed rules, placed again: moved
+/// across to where its printed `header` is (searched for a column's width
+/// either side), then each edge onto the printed rule nearest it, when one
+/// shows within a few px (a table photographed narrower or wider than the
+/// page around it). Returns the new mapper, the column's x as `f` sees it
+/// for each template x (`a * x + b`), and how well the header matched; None
+/// if the header isn't found.
+pub fn place_by_header(gray: &Mat, f: &Mapper, reference: &Mat, header: [f64; 4], cells: &[Zone]) -> Result<Option<(Mapper, [f64; 2], f64)>> {
+    let cells = sorted_cells(cells);
+    let [x0, _, w, _] = cells[0].rect;
+    let (d, ncc) = find_label(gray, f, reference, header, w.max(120.0), 120.0)?;
+    let Some(d) = d else { return Ok(None) };
+    let (tol, margin) = (25i64, 40.0);
+    let (profile, sh) = rule_profile(gray, &shifted(f.clone(), [d[0], 0.0]), &cells, margin)?;
+    let near = |e: f64| -> f64 {
+        let mut best = (0.1 * sh as f64, 0i64); // a rule must show over a tenth of the rows
+        for k in -tol..=tol {
+            let v = profile.get((e + k as f64).round() as usize).copied().unwrap_or(0.0);
+            if v > best.0 || (v == best.0 && k.abs() < best.1.abs()) {
+                best = (v, k);
+            }
+        }
+        best.1 as f64
+    };
+    let (l, r) = (x0 + d[0] + near(margin), x0 + w + d[0] + near(margin + w));
+    let a = (r - l) / w;
+    if !(0.85..=1.15).contains(&a) {
+        return Ok(None);
+    }
+    let b = l - a * x0;
+    let f = f.clone();
+    let g: Mapper = Arc::new(move |pts: &[[f64; 2]]| f(&pts.iter().map(|p| [a * p[0] + b, p[1]]).collect::<Vec<_>>()));
+    Ok(Some((g, [a, b], ncc)))
+}
+
+/// Is the column where we think it is? The printed vertical rules at its
+/// edges are compared with any found elsewhere near it.
+pub fn check_column_edges(gray: &Mat, f: &Mapper, cells: &[Zone], require: bool) -> Result<String> {
+    let (tol, margin) = (14.0f64, 40.0f64);
+    let cells = sorted_cells(cells);
+    let w = cells[0].rect[2];
+    let (profile, sh) = rule_profile(gray, f, &cells, margin)?;
+    let sw = profile.len();
     let edges = [margin, margin + w];
     let mut near = vec![false; sw];
     for e in edges {
@@ -1497,7 +1541,14 @@ pub fn verify_signatures(gray: &Mat, out: &Mat, f: &Mapper, cells: &[Zone], s: &
 /// Locate a printed label near where the template expects it. Returns the
 /// offset (dx, dy) in template px, or None if not found; and the NCC.
 pub fn find_anchor(gray: &Mat, f: &Mapper, reference: &Mat, anchor: [f64; 4]) -> Result<(Option<[f64; 2]>, f64)> {
-    let (rx, ry, min_ncc) = (60.0, 120.0, 0.5);
+    find_label(gray, f, reference, anchor, 60.0, 120.0)
+}
+
+/// Where a printed label of the reference lies on the page, as an offset in
+/// template px from where `f` puts it, searching `rx` px either side and `ry`
+/// px above and below; and how well it matched.
+pub fn find_label(gray: &Mat, f: &Mapper, reference: &Mat, anchor: [f64; 4], rx: f64, ry: f64) -> Result<(Option<[f64; 2]>, f64)> {
+    let min_ncc = 0.5;
     let [x, y, w, h] = anchor;
     let (sw, sh) = ((w + 2.0 * rx) as usize, (h + 2.0 * ry) as usize);
     let maps = strip_maps(f, x - rx, y - ry, sw, sh)?;

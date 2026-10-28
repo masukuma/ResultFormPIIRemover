@@ -121,6 +121,37 @@ that side of the search wide, so a bad match can only mask more, never less.
 On the 215 Forms 34A this changed the 15 published pages that fall back, each
 with 10-37% fewer blocks blacked, and nothing else.
 
+A table's searches stop at its fences even when it snapped: a signature is
+looked for a little above its row, and a header's print taken for its ink
+blacked the header out on many pages. A snapped table's cells are never cut
+by a fence, only what lies outside them.
+
+**Finding a table again by its headers.** The bottom of a curled page can
+put the agents table 100–250 px from where the page alignment expects it,
+at a slightly different scale; then the rules are searched for in the wrong
+place and the snap gives up. When it does, the table's column headers ("ID/
+Passport No.", "Tel. Contact", "Signature", the zones' upper fences) are
+searched for over a wide area, and the offset and x-scale they agree on (at
+least two, within 20 px vertically and 10 px of a straight-line fit) move
+the table before it is snapped again. If it still doesn't snap, the moved
+position is where the widened fallback starts from.
+
+**Placing a column again by its header.** When the edge check below finds a
+column off its printed rules (a snap matched the rules one off, or a
+fallback placement drifted), the column is moved to where its own header is,
+then each of its edges onto the printed rule nearest it within 25 px, which
+corrects a table photographed narrower or wider than the page. It must then
+pass the same check; on a table that didn't snap, a header matched clearly
+(0.55 or better) counts as evidence where faint rules can't be seen. The
+signature column of a table whose columns moved is moved by its own header
+too, if that passes the check. The page notes record each move.
+
+On the 215 Forms 34A these took the forms held by the edge check from 22 to
+5; together with the fences (which cleared a leak-check failure that was
+the header read as writing) 205 publish instead of 188. Every page they
+changed was compared with the previous output by eye: nothing PII that was
+masked is uncovered, and headers that were blacked out are readable.
+
 ### 3. Masking (`masking.rs`)
 
 **Signature zones** (`action: signature`) get one black band **per signature**,
@@ -457,52 +488,107 @@ each of these cases (also in the test suite):
 | "The original itself is fake." | Out of scope for redaction. The manifest ties each form to its source hash, KIEMS kit serial, capture time and QR, for comparison with IEBC records. |
 | "The signing key was stolen." | Keep it offline. Publish its fingerprint once. Rotate by announcing a new key in a signed statement from the old one. |
 
-## VLM assistance (`vlm.rs`, Ollama Cloud or local)
+## Vision review (`vlm.rs`, Ollama Cloud or local)
 
-A vision model is used where judgement helps and speed doesn't matter. There
-are three ways to run it:
+The local rules miss things a person would see: a signature in the comments
+made of short strokes, a table placed off its columns. Run at scale there is
+no one to look, so with `--vlm-audit` vision models look at every redacted
+page before it is published.
 
-- **Ollama Cloud directly:** set `OLLAMA_API_KEY`. Requests go to
-  `https://ollama.com/api/chat` with a bearer token. The default cloud model is
-  `qwen3-vl:235b`, the newest Qwen vision model with a confirmed Ollama Cloud
-  tag.
-- **A local Ollama signed in to the cloud:** use a `*-cloud` model name with
-  the local host.
-- **Fully local:** the default is `qwen3.8:27b`, Qwen's newest family on
-  Ollama, which has image input built in.
+**Only redacted pages are sent.** The review sees exactly what would be
+published, so it is safe to run on Ollama Cloud. (`--vlm-fallback` and
+`rfpii propose`, which need the unredacted form, are refused for any
+non-local host unless `--allow-remote-unredacted` is given.)
 
-Check ollama.com/library for current names. Both defaults report boxes on a
-0–1000 grid; boxes are scaled back per axis.
+**What it does.** For each page, from the declaration down (the template's
+`review_area`; the whole page without a template):
+1. **Find.** The review model is asked for every spot that breaks the rules:
+   an ID or phone number with all its digits readable, a signature with no
+   band across it. It answers with boxes.
+2. **Already masked?** A spot that is 8% or more pure black is something
+   masked already (a banded signature, a number with digits hidden), and
+   isn't asked about again.
+3. **Check.** Each other spot is cropped 80 px wider all round, zoomed 2x,
+   boxed in red, and the checking model is asked one narrow question: is
+   there an unmasked signature or a complete number in the box? The answer
+   must match what the finder named: a name the finder took for an ID, or a
+   printed "Tel." header it took for a phone, is not kept because the
+   checker sees a signature beside it. A reply that can't be read counts as
+   yes.
+4. **On a stamp?** A spot at least half inside a protected stamp is left
+   visible: the stamp rule would lift a mask there anyway. It is recorded
+   (`on_stamps`) but not masked.
+5. **Mask and repeat.** What is confirmed is masked through the same block
+   masking and proof as everything else: signatures hidden whole, numbers
+   with 3 digits hidden. The page is redacted again from its seed and
+   reviewed again, up to `--vlm-rounds` (2) more times. A page is published
+   only when a review finds nothing new; otherwise, or if a model can't be
+   reached, it goes to review.
 
-Box coordinates are read as 0–1000 for Qwen3.x and Qwen3-VL, and as pixels
-for Qwen2.5-VL, chosen automatically from the model name.
+**Rescue (`--vlm-rescue`).** A page held only because a column's place or
+masking couldn't be confirmed (the edge check or the leak check) is
+redacted again with those columns, and the signatures of their table,
+hidden whole: a quarter of a column wider either side and half a row above
+and below. It is published if the review then finds nothing. This hides
+more than the rules ask (whole numbers, parts of neighbouring columns), and
+only the review makes it safe, so it requires `--vlm-audit`.
 
-**Privacy.** The audit sends only the *redacted* page, so it is safe for the
-cloud. The fallback and template proposals need the *unredacted* form. These
-are refused for any non-local host unless `--allow-remote-unredacted` is
-given, which should only be used if that data transfer has been approved.
+**Reproducible.** The manifest records, per page, what the review found
+(`vlm_found`) and any columns hidden whole (`whole_columns`), and the whole
+review (`vlm_review`: models, host, prompt hashes, the hash of each image
+sent, every spot and its verdict). `rfpii verify --rerun` applies the
+recorded findings instead of asking a model, so a re-run is bit-identical.
 
-**Scrutiny.** A VLM never edits pixels itself: its boxes go through the same
-block masking and the same proof as everything else. Every audit verdict is
-recorded in the manifest with the model, host, prompt hash and the hash of
-the exact image sent.
+**Models.** Twelve vision models on Ollama Cloud were tried on redacted
+Forms 34A (October 2026). The default for both steps is `gemma4:31b`: about
+3 s a request. As a finder it found 19 of 22 signatures the rules had
+missed on 17 pages, and 12 of 18 made-up IDs, phones and scribbles written
+into empty rows; alone it also flagged something on every page (banded
+signatures, dates, names by a stamp), which steps 2 and 3 remove: of 88
+spots, the black filter dropped 40 false ones and no real one, and the
+check kept 26 of 31 real misses and dropped 53 of 56 false alarms.
+`minimax-m3.1-flash` found as much but took 80–200 s a page and did worse
+as the checker; `kimi-k3` boxed accurately but took 4–8 minutes; others
+answered in prose, timed out or boxed in an inconsistent scale. Most models
+ignore the requested JSON format, so replies are read leniently (fenced or
+wrapped JSON, `bbox`/`box`/`box_2d`, free-form labels), and Gemini-style
+`box_2d` boxes ([y1, x1, y2, x2] on a 0–1000 grid) are recognised.
 
-What the model does:
+**At scale.** Ollama Cloud refused (HTTP 429) more than 12 requests at once
+from the account this was tested with, so requests are capped across all
+workers (`--vlm-concurrency`, 10) and retried with backoff on 429, 5xx and
+dropped connections. The review adds 2.4 model calls a form on
+average (one look per round, one check per spot not already black), each
+about 3 s with `gemma4:31b`; a form spends most of its time waiting, so
+run about three workers per core, as memory allows (each worker peaks at
+about 1.3 GB). On 4 cores with 8 workers the 215 Forms 34A took 392 s
+(0.55 forms/s; without the review 0.8 forms/s). For 50,000 forms that is
+about 120,000 calls: at 12 at once on one account, about 8–9 hours of model
+time, which more cores don't shorten. More accounts, a plan with a higher
+limit, or a local GPU running the same model lift that limit; the local work
+then runs at about 5 core-seconds a form (about 4 hours on 16 cores).
 
-- **`--vlm-audit`:** before publishing, ask whether a complete ID number, phone
-  number or signature is readable anywhere. A "yes" sends the form to review.
-  This covers things templates can't, such as officers signing again in the
-  comments area or writing their own ID number at the bottom. It is a gate, not
-  a guarantee: a model can miss things.
-- **`--vlm-fallback`:** for documents no template handles, the model locates
-  signatures, IDs and phones, and the same masking is applied. Results go to
-  `review/vlm/` for a person to approve. They are never auto-published.
-- **`rfpii propose`:** drafts a new template's zones from a reference image, for
-  a person to check with `rfpii preview`.
+**Results on the 215 Forms 34A** (`--vlm-audit --vlm-rescue`): 209
+published, against 205 without the review and 188 before any of this.
+- The five pages whose columns couldn't be placed were rescued: their
+  ID/phone columns hidden whole, and the review found nothing after.
+- The review masked 50 more spots on 43 published pages. Checked by eye
+  against the originals, 37 were real misses (signatures, mostly in the
+  comments, and a phone number), 4 were unclear, and 9 were not: writing on
+  four stamps, a date, a name, a printed "Tel. Contact" header, a stray mark
+  and the word "signature" written out. Steps 3 and 4 as described
+  above (the check must match the finder's label; spots on a stamp are
+  left) were added after this run to remove those. 166 pages needed
+  nothing.
+- All 209 verify, and `--rerun` reproduces each of the 48 pages the review
+  changed bit for bit, from the manifest alone.
+- Six go to review: four the page alignment can't match, one whose table
+  is placed so far off that hiding its columns would touch the results,
+  and one the review still flagged after two rounds of masking.
 
-The model is asked for strict JSON (Ollama `format` with a schema, temperature
-0), and images are sent at sizes that are multiples of 28 so that box
-coordinates map back exactly.
+What it doesn't do: it is a second pair of eyes, not a guarantee. Some
+signatures it doesn't find or the check reads as words; writing on a stamp
+stays visible by the stamp rule even when the review points at it.
 
 ## Results on real data (Form 34A, 215 KIEMS PDFs, two county zips)
 
@@ -906,9 +992,21 @@ results don't depend on how the work is split.
 - **Strength of the masking.** Hiding 3 digits of an 8-digit ID, or 3 of a
   phone number, leaves 1000 possible values. That is enough against casual
   reading, not against someone able to test candidates.
-- **PII outside template zones** is only caught by the VLM audit on templated
-  forms, apart from the areas a template reads as free text (the Form 34A
-  comments). This includes officers re-signing beside the stamp above the
+- **The vision review is a second pair of eyes, not a guarantee.** On
+  forms whose comment signatures the rules had missed, it masked about two
+  in three; a signature that looks like a word, or one it boxes beside
+  rather than on, stays visible. Its answers also vary from run to run (a
+  form held once published the next time); each published form is
+  reproducible from its manifest regardless.
+- **A rescued page hides more than the rules ask.** Its ID and phone
+  columns are hidden whole, with a quarter of a column either side, which
+  can take part of a name or party next to them.
+- **Pages that can't be aligned still go to review** (4 of 215 Forms 34A:
+  photos the page alignment can't match), and so does a page whose table
+  is placed so far off that hiding a column whole would touch the results.
+- **PII outside template zones** is only caught by the vision review on
+  templated forms, apart from the areas a template reads as free text (the
+  Form 34A comments). This includes officers re-signing beside the stamp above the
   comments, and an agent's ID written into the name column. Forms read
   without a template, and the Form 34A comments, are searched for these
   (steps 6 and 7 above), but by rule, not by understanding: in the comments

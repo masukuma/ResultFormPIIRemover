@@ -664,3 +664,31 @@ fn a_widened_search_stops_at_the_label_below_the_table() {
     let rep = sigs(&mut canvas, &sig, &sig_cells(), &SigOptions { reach: fenced, ..none() });
     assert!(!comment(&canvas) && rep[5]["mode"] == "signature");
 }
+
+/// A ruled column under its printed header, `dx` px across and `k` times as
+/// wide as at x = 300..500.
+fn headed_column(dx: i32, k: f64) -> Mat {
+    let mut g = gray(700, 900, 255);
+    let (l, r) = (300 + dx, 300 + dx + (200.0 * k) as i32);
+    for x in [l, r] {
+        line(&mut g, (x, 180), (x, 620), colour(0.0), 2);
+    }
+    for k in 0..=12 {
+        line(&mut g, (l - 150, 220 + 36 * k), (r + 150, 220 + 36 * k), colour(0.0), 1);
+    }
+    text(&mut g, "ID/Passport No.", (l + 20, 205), 0.7, colour(0.0), 2, true);
+    g
+}
+
+#[test]
+fn a_column_off_its_rules_is_placed_again_by_its_header() {
+    let reference = headed_column(0, 1.0);
+    let page = headed_column(20, 1.04); // the table 20 px across and 4% wider
+    let cells: Vec<Zone> = (0..12).map(|k| zone(&format!("id_{}", k), [300, 220 + 36 * k, 200, 36], "partial")).collect();
+    let f = identity();
+    assert!(!check_column_edges(&page, &f, &cells, false).unwrap().is_empty()); // placed as in the reference: off
+    let (g, [a, b], ncc) = place_by_header(&page, &f, &reference, [310.0, 182.0, 200.0, 30.0], &cells).unwrap().unwrap();
+    assert!(ncc > 0.8);
+    assert!((a * 300.0 + b - 320.0).abs() <= 2.0 && (a * 500.0 + b - 528.0).abs() <= 2.0, "{} {}", a, b);
+    assert!(check_column_edges(&page, &g, &cells, true).unwrap().is_empty());
+}

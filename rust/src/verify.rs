@@ -318,6 +318,9 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
             generic: st["generic"].as_bool().unwrap_or(false),
             vlm_audit: false,
             vlm_fallback: false,
+            reviewer: None,
+            vlm_rescue: false,
+            vlm_rounds: 0,
             pdf_signer: None,
         };
         if let Some(o) = m.get("ocr") {
@@ -331,7 +334,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
         let fp_ok = m["templates"].as_object().map(|o| o.iter().all(|(k, v)| templates.iter().any(|t| &t.name == k && Some(t.fingerprint.as_str()) == v.as_str()))).unwrap_or(true);
         r.add(fp_ok, "templates are the versions recorded");
         let seed = u64::from_str_radix(m["seed"].as_str().unwrap_or("0"), 16)?;
-        let o = process_document(&orig.to_string_lossy(), m["source"]["path"].as_str().unwrap_or(""), &templates, &cfg, None, Some(seed), None);
+        let o = process_document(&orig.to_string_lossy(), m["source"]["path"].as_str().unwrap_or(""), &templates, &cfg, Some(seed), None, Some(&m));
         let _ = std::fs::remove_dir_all(&work);
         let o = o?;
         let digests = |pages: &Value| -> Vec<String> { pages.as_array().map(|a| a.iter().map(|p| p["output_image_sha256"].as_str().unwrap_or("").to_string()).collect()).unwrap_or_default() };

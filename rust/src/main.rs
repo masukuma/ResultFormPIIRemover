@@ -67,7 +67,7 @@ enum Cmd {
 
 #[derive(Args, Clone)]
 struct VlmArgs {
-    /// Vision model (default: qwen3-vl:235b on Ollama Cloud, qwen3.8:27b locally)
+    /// Vision model (default: gemma4:31b on Ollama Cloud, qwen3.8:27b locally)
     #[arg(long, default_value = "")]
     vlm_model: String,
     /// Ollama URL (default $OLLAMA_HOST, else https://ollama.com if $OLLAMA_API_KEY, else local)
@@ -158,9 +158,27 @@ struct RedactArgs {
     /// Send pages no template matches to review instead of reading their layout
     #[arg(long)]
     no_generic: bool,
-    /// Have a VLM check every redacted page before publishing
+    /// Review every redacted page with vision models before publishing: what
+    /// they find still showing is masked and the page reviewed again. Only
+    /// redacted pages are sent.
     #[arg(long)]
     vlm_audit: bool,
+    /// With --vlm-audit: a page whose ID/phone columns can't be placed has
+    /// those columns (and its table's signatures) hidden whole, and is
+    /// published if the review then finds nothing
+    #[arg(long)]
+    vlm_rescue: bool,
+    /// Review rounds before a page that still shows PII goes to review
+    #[arg(long, default_value_t = 2)]
+    vlm_rounds: usize,
+    /// Model that confirms each spot the review model finds (default:
+    /// gemma4:31b on Ollama Cloud, the review model locally)
+    #[arg(long, default_value = "")]
+    vlm_checker: String,
+    /// Requests to the model host at once, across all workers (Ollama Cloud
+    /// answered 429 beyond 12 at once on the account this was tested with)
+    #[arg(long, default_value_t = 10)]
+    vlm_concurrency: usize,
     /// VLM-redact pages no template matches, into review/vlm/ for approval
     #[arg(long)]
     vlm_fallback: bool,
@@ -264,7 +282,7 @@ struct Done {
 fn run_one(src: &str, rel: &str, templates: &[Template], cfg: &Config, vlm: Option<&Ollama>, seed: Option<u64>) -> Done {
     let t0 = Instant::now();
     let ms = |t0: Instant| pyjson::round_n(t0.elapsed().as_secs_f64() * 1000.0, 1);
-    match process_document(src, rel, templates, cfg, vlm, seed, None) {
+    match process_document(src, rel, templates, cfg, seed, None, None) {
         Err(e) => Done { report: json!({"file": src, "ok": false, "reason": format!("Error: {:#}", e), "ms": ms(t0)}), manifest: None, rel: rel.into() },
         Ok(o) => {
             let mut report = o.report;
@@ -302,6 +320,20 @@ fn vlm_proposal(v: &Ollama, pages: &[io::SourcePage], cfg: &Config, rel: &str) -
     Ok(out)
 }
 
+/// The review model and the model that confirms what it finds.
+fn reviewer(a: &RedactArgs) -> Result<rfpii::vlm::Reviewer> {
+    let finder = Ollama::new(a.vlm.settings())?;
+    let mut cs = a.vlm.settings();
+    cs.model = if !a.vlm_checker.is_empty() {
+        a.vlm_checker.clone()
+    } else if finder.local() {
+        finder.s.model.clone()
+    } else {
+        rfpii::vlm::DEFAULT_CLOUD_CHECKER.to_string()
+    };
+    Ok(rfpii::vlm::Reviewer { finder, checker: Ollama::new(cs)? })
+}
+
 fn cmd_redact(a: RedactArgs) -> Result<i32> {
     let mut align = AlignSettings::default();
     align.min_score = a.min_score;
@@ -319,8 +351,15 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
         generic: !a.no_generic,
         vlm_audit: a.vlm_audit,
         vlm_fallback: a.vlm_fallback,
+        reviewer: if a.vlm_audit { Some(std::sync::Arc::new(reviewer(&a)?)) } else { None },
+        vlm_rescue: a.vlm_rescue,
+        vlm_rounds: a.vlm_rounds,
         pdf_signer: pdf_signer(&a)?.map(std::sync::Arc::new),
     };
+    if a.vlm_rescue && !a.vlm_audit {
+        anyhow::bail!("--vlm-rescue needs --vlm-audit: hiding a column whole is only safe when the review checks the result");
+    }
+    rfpii::vlm::set_concurrency(a.vlm_concurrency);
     // fail fast on a bad VLM configuration
     let vlm = if a.vlm_audit || a.vlm_fallback { Some(Ollama::new(a.vlm.settings())?) } else { None };
     let key = match &a.sign_key {

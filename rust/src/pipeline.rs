@@ -44,6 +44,26 @@ pub struct PageResult {
     pub protected: Vec<Value>,   // results regions and stamps, as image polygons
     pub h: Option<[[f64; 3]; 3]>, // template -> image (page alignment)
     pub layout: Option<Value>,   // template-free pages: what the fields were found from
+    /// Columns whose place or masking couldn't be confirmed (why the page failed)
+    pub unsure: Vec<String>,
+}
+
+/// Something a vision model still saw on a redacted page: a label
+/// ("id_number", "phone_number", "signature") and a box, image px.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Found {
+    pub label: String,
+    pub rect: [f64; 4], // x0, y0, x1, y1
+}
+
+impl Found {
+    pub fn to_value(&self) -> Value {
+        json!({"label": self.label, "box": self.rect.iter().map(|&v| pyjson::round_n(v, 1)).collect::<Vec<_>>()})
+    }
+    pub fn from_value(v: &Value) -> Option<Found> {
+        let b: Vec<f64> = v["box"].as_array()?.iter().filter_map(|x| x.as_f64()).collect();
+        (b.len() == 4).then(|| Found { label: v["label"].as_str().unwrap_or("").to_string(), rect: [b[0], b[1], b[2], b[3]] })
+    }
 }
 
 pub struct PageOptions {
@@ -52,11 +72,15 @@ pub struct PageOptions {
     pub fallback_margin: (f64, f64),
     pub verify: bool,
     pub generic: bool,
+    /// per page: what a vision model found still showing, masked too
+    pub found: Vec<Vec<Found>>,
+    /// per page: columns to hide whole (their place couldn't be confirmed)
+    pub whole: Vec<Vec<String>>,
 }
 
 impl Default for PageOptions {
     fn default() -> Self {
-        PageOptions { form: None, strict: false, fallback_margin: (50.0, 200.0), verify: true, generic: false }
+        PageOptions { form: None, strict: false, fallback_margin: (50.0, 200.0), verify: true, generic: false, found: vec![], whole: vec![] }
     }
 }
 
@@ -155,7 +179,47 @@ fn mean_center(zones: &[Zone]) -> f64 {
     util::np_mean(&zones.iter().map(|z| z.rect[1] + z.rect[3] / 2.0).collect::<Vec<_>>())
 }
 
+/// A table found again by its printed column `headers` (two or more),
+/// searched for far around where the page alignment `h` puts them: the
+/// template -> image homography for the table, and the fit [x scale, x
+/// shift, y shift] in template px. None if fewer than two are found or they
+/// disagree on how far the table moved.
+fn refit_by_headers(gray: &Mat, h: &[[f64; 3]; 3], reference: &Mat, headers: &[[f64; 4]]) -> Result<Option<([[f64; 3]; 3], [f64; 3])>> {
+    if headers.len() < 2 {
+        return Ok(None);
+    }
+    let f = masking::homography(*h);
+    let mut found: Vec<([f64; 4], [f64; 2])> = Vec::new();
+    for &hd in headers {
+        if let (Some(d), ncc) = masking::find_label(gray, &f, reference, hd, 250.0, 250.0)? {
+            if ncc >= 0.55 {
+                found.push((hd, d));
+            }
+        }
+    }
+    if found.len() < 2 {
+        return Ok(None);
+    }
+    let dys: Vec<f64> = found.iter().map(|(_, d)| d[1]).collect();
+    let dy = util::median(&dys);
+    let xs: Vec<f64> = found.iter().map(|(hd, _)| hd[0] + hd[2] / 2.0).collect();
+    let xf: Vec<f64> = found.iter().zip(&xs).map(|((_, d), x)| x + d[0]).collect();
+    let (a, b) = crate::npla::polyfit1(&xs, &xf)?;
+    let off = xs.iter().zip(&xf).map(|(x, y)| (a * x + b - y).abs()).fold(0.0, f64::max);
+    if dys.iter().any(|v| (v - dy).abs() > 20.0) || !(0.85..=1.15).contains(&a) || off > 10.0 {
+        return Ok(None);
+    }
+    Ok(Some((util::mul3(h, &[[a, 0.0, b], [0.0, 1.0, dy], [0.0, 0.0, 1.0]]), [a, b, dy])))
+}
+
 pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &MaskSettings, rng: &mut PyRandom, o: &PageOptions) -> Result<PageResult> {
+    redact_page_at(img, 0, templates, s, ms, rng, o)
+}
+
+/// Page `index` of a document: `o.found` and `o.whole` are per page.
+pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &AlignSettings, ms: &MaskSettings, rng: &mut PyRandom, o: &PageOptions) -> Result<PageResult> {
+    let extra: &[Found] = o.found.get(index).map(|v| v.as_slice()).unwrap_or(&[]);
+    let whole: &[String] = o.whole.get(index).map(|v| v.as_slice()).unwrap_or(&[]);
     let t0 = Instant::now();
     let gray = util::gray(img)?;
     let a: Option<Alignment> = if templates.is_empty() { None } else { Some(best_alignment(&gray, templates, s, o.form.as_deref())?) };
@@ -174,6 +238,7 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
         protected: vec![],
         h: None,
         layout: None,
+        unsure: vec![],
     };
     let al = match &a {
         Some(x) if x.ok => x,
@@ -182,7 +247,7 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
             let templated = o.form.as_ref().map(|f| templates.iter().any(|t| &t.form == f)).unwrap_or(false);
             let why = a.as_ref().map(|x| x.reason.clone()).unwrap_or_else(|| "no templates".into());
             if o.generic && !templated {
-                return crate::generic::redact_generic(img, ms, rng, o.verify, &why);
+                return crate::generic::redact_generic(img, ms, rng, o.verify, &why, extra);
             }
             return Ok(fail(why, vec![], vec![]));
         }
@@ -193,9 +258,32 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
     // Zones tied to a printed table are positioned by its rules; if they can't
     // be matched, the zones are widened by `fallback_margin` (or with
     // `strict` the page fails).
+    // A table the page alignment puts far off (the bottom of a curled page)
+    // is first found again by its printed column headers.
     let mut snaps: Vec<(String, Arc<Snap>)> = Vec::new();
+    let mut refits: Vec<(String, [[f64; 3]; 3])> = Vec::new();
+    let mut found_notes: Vec<String> = Vec::new();
     for (n, r) in &t.regions {
-        snaps.push((n.clone(), Arc::new(structure::snap(&gray, &hh, r)?)));
+        let mut sn = structure::snap(&gray, &hh, r)?;
+        if !sn.ok {
+            let mut headers: Vec<[f64; 4]> = Vec::new();
+            for z in t.zones.iter().filter(|z| z.region == *n) {
+                if let Some(hd) = z.fence[0] {
+                    if !headers.contains(&hd) {
+                        headers.push(hd);
+                    }
+                }
+            }
+            if let Some((h2, [a, _, dy])) = refit_by_headers(&gray, &hh, &t.image, &headers)? {
+                refits.push((n.clone(), h2));
+                let s2 = structure::snap(&gray, &h2, r)?;
+                if s2.ok {
+                    found_notes.push(format!("{}: table found by its printed headers ({:+.0}px down, {:.2}x across), then snapped ({})", n, dy, a, sn.reason));
+                    sn = s2;
+                }
+            }
+        }
+        snaps.push((n.clone(), Arc::new(sn)));
     }
     let failed: Vec<(String, String)> = snaps.iter().filter(|(_, sn)| !sn.ok).map(|(n, sn)| (n.clone(), sn.reason.clone())).collect();
     let is_failed = |region: &str| failed.iter().any(|(n, _)| n == region);
@@ -203,16 +291,17 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
         return Ok(fail(failed.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>().join("; "), vec![], vec![]));
     }
     let fm = o.fallback_margin;
-    let mut notes: Vec<String> = failed
-        .iter()
-        .map(|(_, why)| format!("{}; zones widened by {:.0}px up, {:.0}px down", why, fm.0, fm.1))
-        .collect();
+    let mut notes: Vec<String> = found_notes;
+    notes.extend(failed.iter().map(|(_, why)| format!("{}; zones widened by {:.0}px up, {:.0}px down", why, fm.0, fm.1)));
     let margin = |zones: &[Zone]| if is_failed(&zones[0].region) { fm } else { (0.0, 0.0) };
 
     let base_mapper = |zones: &[Zone]| -> Result<Mapper> {
         if !zones[0].region.is_empty() && !is_failed(&zones[0].region) {
             let sn = snaps.iter().find(|(n, _)| *n == zones[0].region).unwrap().1.clone();
             return Ok(Arc::new(move |pts: &[[f64; 2]]| sn.map(pts)));
+        }
+        if let Some((_, h2)) = refits.iter().find(|(n, _)| *n == zones[0].region) {
+            return Ok(masking::homography(*h2));
         }
         let x0 = zones.iter().map(|z| z.rect[0]).fold(f64::INFINITY, f64::min);
         let x1 = zones.iter().map(|z| z.rect[0] + z.rect[2]).fold(f64::NEG_INFINITY, f64::max);
@@ -245,7 +334,7 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
     if !lost.is_empty() {
         return Ok(fail(lost.join("; "), vec![], vec![]));
     }
-    let mapper = |zones: &[Zone]| -> Result<Mapper> {
+    let placed = |zones: &[Zone]| -> Result<Mapper> {
         match zones[0].anchor {
             Some(a) => Ok(offsets.iter().find(|(k, _)| *k == a).unwrap().1.clone()),
             None => base_mapper(zones),
@@ -255,15 +344,82 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
     let columns = group_by_key(&t.zones, "partial");
     let signatures = group_by_key(&t.zones, "signature");
 
+    // The masked columns must sit between their printed rules. A column that
+    // doesn't (the table matched a rule off, or the snap gave up on faint
+    // rules) is placed again by its printed header, the fence above it, and
+    // must then pass the same check; or the page fails. The signature
+    // columns of its table are moved by their own headers when that passes
+    // the check too.
+    let mut moved: Vec<(String, Mapper, [f64; 2])> = Vec::new();
+    let mut misplaced = Vec::new();
+    let mut unsure: Vec<String> = Vec::new();
+    if o.verify {
+        // A header found clearly is itself evidence of where the column is,
+        // when faint rules can't be seen.
+        let again = |f: &Mapper, cells: &[Zone], require: bool| -> Result<Option<(Mapper, [f64; 2])>> {
+            let Some(header) = cells[0].fence[0] else { return Ok(None) };
+            let Some((g, ab, ncc)) = masking::place_by_header(&gray, f, &t.image, header, cells)? else { return Ok(None) };
+            Ok(if masking::check_column_edges(&gray, &g, cells, require && ncc < 0.55)?.is_empty() { Some((g, ab)) } else { None })
+        };
+        let across = |cells: &[Zone], ab: [f64; 2]| {
+            let mid = cells[0].rect[0] + cells[0].rect[2] / 2.0;
+            ab[0] * mid + ab[1] - mid
+        };
+        let mut tables: Vec<String> = Vec::new();
+        for (key, cells) in &columns {
+            if cells[0].region.is_empty() || whole.contains(key) {
+                continue;
+            }
+            let f = placed(cells)?;
+            let require = is_failed(&cells[0].region);
+            let r = masking::check_column_edges(&gray, &f, cells, require)?;
+            if r.is_empty() {
+                continue;
+            }
+            match again(&f, cells, require)? {
+                Some((g, ab)) => {
+                    notes.push(format!("{}: placed by its printed header, {:+.0}px across ({})", key, across(cells, ab), r.split(": ").nth(1).unwrap_or(&r)));
+                    moved.push((key.clone(), g, ab));
+                    tables.push(cells[0].region.clone());
+                }
+                None => {
+                    misplaced.push(r);
+                    unsure.push(key.clone());
+                }
+            }
+        }
+        for (key, cells) in &signatures {
+            if !misplaced.is_empty() || !tables.contains(&cells[0].region) {
+                continue;
+            }
+            if let Some((g, ab)) = again(&placed(cells)?, cells, false)? {
+                notes.push(format!("{}: placed by its printed header, {:+.0}px across", key, across(cells, ab)));
+                moved.push((key.clone(), g, ab));
+            }
+        }
+    }
+    if !misplaced.is_empty() {
+        return Ok(PageResult { unsure, ..fail(misplaced.join("; "), vec![], notes) });
+    }
+    let mapper = |zones: &[Zone]| -> Result<Mapper> {
+        match moved.iter().find(|(k, _, _)| k == zones[0].key()) {
+            Some((_, g, _)) => Ok(g.clone()),
+            None => placed(zones),
+        }
+    };
+
     // A widened search stops at the printed labels just outside its table
     // (the zones' `fence`), found on the page as anchors are, so it doesn't
     // run into the table's header or the next section. A label that can't be
     // found leaves that side wide: the search then errs on hiding more.
+    // A placed table's searches stop at them too: the overrun a signature is
+    // looked for in mustn't take the header's print for its ink.
     let mut reaches: Vec<(String, Reach)> = Vec::new();
     for (key, cells) in columns.iter().chain(&signatures) {
         let (up, down) = margin(cells);
         let mut r = Reach::margin(up, down);
-        if (up, down) != (0.0, 0.0) {
+        let wide = (up, down) != (0.0, 0.0);
+        if wide || cells[0].fence.iter().any(|f| f.is_some()) {
             let f = mapper(cells)?;
             let top = cells.iter().map(|z| z.rect[1]).fold(f64::INFINITY, f64::min);
             let bottom = cells.iter().map(|z| z.rect[1] + z.rect[3]).fold(f64::NEG_INFINITY, f64::max);
@@ -275,32 +431,19 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
                 // up to half a row into the cells as placed; deeper, it can't
                 // be the label outside the table
                 match d.map(|d| if side == 0 { label[1] + label[3] + d[1] } else { label[1] + d[1] }) {
-                    Some(y) if side == 0 && y <= top + half_row => r.top = Some(y),
-                    Some(y) if side == 1 && y >= bottom - half_row => r.bottom = Some(y),
-                    Some(_) => notes.push(format!("{}: printed label {} the table found inside it; search left wide", key, place)),
-                    None => notes.push(format!("{}: printed label {} the table not found (best match {:.2}); search left wide", key, place, ncc)),
+                    // a snapped table's cells are where they are: a label
+                    // only bounds what lies outside them
+                    Some(y) if side == 0 && y <= top + half_row => r.top = Some(if wide { y } else { y.min(top) }),
+                    Some(y) if side == 1 && y >= bottom - half_row => r.bottom = Some(if wide { y } else { y.max(bottom) }),
+                    Some(_) if wide => notes.push(format!("{}: printed label {} the table found inside it; search left wide", key, place)),
+                    None if wide => notes.push(format!("{}: printed label {} the table not found (best match {:.2}); search left wide", key, place, ncc)),
+                    _ => {}
                 }
             }
         }
         reaches.push((key.clone(), r));
     }
     let reach = |cells: &[Zone]| -> Reach { reaches.iter().find(|(k, _)| k == cells[0].key()).map(|(_, r)| *r).unwrap_or_default() };
-    // The masked columns must sit between their printed rules.
-    let mut misplaced = Vec::new();
-    if o.verify {
-        for (_, cells) in &columns {
-            if cells[0].region.is_empty() {
-                continue;
-            }
-            let r = masking::check_column_edges(&gray, &mapper(cells)?, cells, is_failed(&cells[0].region))?;
-            if !r.is_empty() {
-                misplaced.push(r);
-            }
-        }
-    }
-    if !misplaced.is_empty() {
-        return Ok(fail(misplaced.join("; "), vec![], notes));
-    }
 
     // Lines drawn through unused rows, found per printed table.
     let mut strikes: Vec<(String, Vec<Strike>)> = Vec::new();
@@ -308,7 +451,7 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
         let cells: Vec<Zone> = t.zones.iter().filter(|z| z.region == *n).cloned().collect();
         if !cells.is_empty() {
             let row_h = util::median(&cells.iter().map(|z| z.rect[3]).collect::<Vec<_>>());
-            strikes.push((n.clone(), masking::find_strikes(&gray, &mapper(&cells)?, *rect, row_h)?));
+            strikes.push((n.clone(), masking::find_strikes(&gray, &placed(&cells)?, *rect, row_h)?));
         }
     }
     for (n, v) in &strikes {
@@ -316,7 +459,12 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
             notes.push(format!("{}: {} line(s) drawn through the table left unmasked", n, v.len()));
         }
     }
-    let struck = |cells: &[Zone]| -> Vec<Strike> { strikes.iter().find(|(n, _)| *n == cells[0].region).map(|(_, v)| v.clone()).unwrap_or_default() };
+    // strikes in the frame of a column placed again
+    let struck = |cells: &[Zone]| -> Vec<Strike> {
+        let [a, b] = moved.iter().find(|(k, _, _)| k == cells[0].key()).map(|m| m.2).unwrap_or([1.0, 0.0]);
+        let v = strikes.iter().find(|(n, _)| *n == cells[0].region).map(|(_, v)| v.clone()).unwrap_or_default();
+        v.into_iter().map(|(x1, y1, x2, y2, w)| ((x1 - b) / a, y1, (x2 - b) / a, y2, w)).collect()
+    };
 
     // Stamps: found before masking; never masked (below).
     let (tw, th) = t.size();
@@ -345,15 +493,42 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
         masking::blackout(&mut canvas, &mapper(std::slice::from_ref(z))?, &zz, t.padding as f64)?;
         report.push(json!({"zone": z.name, "mode": "blackout"}));
     }
+    // Columns whose place couldn't be confirmed (`whole`), with the
+    // signatures of their table: hidden whole, a quarter of a column wider
+    // either side and half a row (or the widened search) above and below.
+    let whole_tables: Vec<&str> = columns.iter().filter(|(k, _)| whole.contains(k)).map(|(_, c)| c[0].region.as_str()).collect();
+    let hidden = |key: &str, cells: &[Zone]| whole.iter().any(|k| k == key) || (cells[0].action == "signature" && whole_tables.contains(&cells[0].region.as_str()));
+    for (key, cells) in columns.iter().chain(&signatures) {
+        if !hidden(key, cells) {
+            continue;
+        }
+        let x0 = cells.iter().map(|z| z.rect[0]).fold(f64::INFINITY, f64::min);
+        let x1 = cells.iter().map(|z| z.rect[0] + z.rect[2]).fold(f64::NEG_INFINITY, f64::max);
+        let y0 = cells.iter().map(|z| z.rect[1]).fold(f64::INFINITY, f64::min);
+        let y1 = cells.iter().map(|z| z.rect[1] + z.rect[3]).fold(f64::NEG_INFINITY, f64::max);
+        let half_row = 0.5 * util::median(&cells.iter().map(|z| z.rect[3]).collect::<Vec<_>>());
+        let (up, down) = margin(cells);
+        let wx = 0.25 * (x1 - x0);
+        let z = Zone::new(&format!("{}:whole", key), [x0 - wx, y0 - up.max(half_row), x1 - x0 + 2.0 * wx, y1 - y0 + up.max(half_row) + down.max(half_row)], "blackout");
+        masking::blackout(&mut canvas, &mapper(cells)?, &z, t.padding as f64)?;
+        report.push(json!({"zone": key, "mode": "whole"}));
+        notes.push(format!("{}: its place couldn't be confirmed; the whole column hidden", key));
+    }
     // An underlined field (not a table column, and placed where expected):
     // only writing on its own line is a signature.
     let on_line = |cells: &[Zone]| cells[0].region.is_empty() && reach(cells).margin == (0.0, 0.0);
-    for (_, cells) in &signatures {
+    for (key, cells) in &signatures {
+        if hidden(key, cells) {
+            continue;
+        }
         let st = struck(cells);
         let opts = SigOptions { reach: reach(cells), reference: Some(&t.image), printed: None, centered: on_line(cells), strikes: Some(st.as_slice()), exclude: stamp_ink.as_ref() };
         report.extend(masking::signature_column(&mut canvas, &gray, &mapper(cells)?, cells, ms, &opts)?);
     }
-    for (_, cells) in &columns {
+    for (key, cells) in &columns {
+        if hidden(key, cells) {
+            continue;
+        }
         let st = struck(cells);
         report.extend(masking::partial_column(&mut canvas, &gray, &mapper(cells)?, cells, &zms(cells), rng, reach(cells), Some(&t.image), Some(st.as_slice()), stamp_ink.as_ref())?);
     }
@@ -384,6 +559,8 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
             free.push((name.clone(), ft));
         }
     }
+
+    let found_zones = mask_found(&mut canvas, &gray, extra, &zms(&[]), rng, stamp_ink.as_ref(), &mut report)?;
 
     // Stamps: never masked.
     // stamps found while reading the free text are protected as well
@@ -420,19 +597,27 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
     // Final gate: re-read every masked column from the output.
     let mut leaks = Vec::new();
     if o.verify {
-        for (_, cells) in &columns {
+        for (key, cells) in &columns {
+            if hidden(key, cells) {
+                continue;
+            }
             let st = struck(cells);
             let r = masking::verify_column(&out, &mapper(cells)?, cells, Some(&t.image), &zms(cells), reach(cells), Some(st.as_slice()), stamp_ink.as_ref())?;
             if !r.is_empty() {
                 leaks.push(r);
+                unsure.push(key.clone());
             }
         }
-        for (_, cells) in &signatures {
+        for (key, cells) in &signatures {
+            if hidden(key, cells) {
+                continue;
+            }
             let st = struck(cells);
             let opts = SigOptions { reach: reach(cells), reference: Some(&t.image), printed: None, centered: on_line(cells), strikes: Some(st.as_slice()), exclude: stamp_ink.as_ref() };
             let r = masking::verify_signatures(&gray, &out, &mapper(cells)?, cells, ms, Some(&keep), &opts)?;
             if !r.is_empty() {
                 leaks.push(r);
+                unsure.push(key.clone());
             }
         }
         for (_, ft) in &free {
@@ -443,9 +628,10 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
                 }
             }
         }
+        leaks.extend(verify_found(&out, &found_zones, &zms(&[]), stamp_ink.as_ref())?);
     }
     if !leaks.is_empty() {
-        return Ok(fail(format!("leak check: {}", leaks.join("; ")), report, notes));
+        return Ok(PageResult { unsure, ..fail(format!("leak check: {}", leaks.join("; ")), report, notes) });
     }
     Ok(PageResult {
         ok: true,
@@ -461,11 +647,50 @@ pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &Ma
         protected,
         h: Some(hh),
         layout: if free.is_empty() { None } else { Some(json!({"free_text": free.iter().map(|(n, ft)| ft.record(n)).collect::<Vec<_>>()})) },
+        unsure: vec![],
     })
 }
 
+/// What a vision review still saw on a redacted page, masked (the manifest
+/// records it, so a re-run masks the same): signatures hidden whole, numbers
+/// as any number is. The number zones, for the leak check.
+pub fn mask_found(canvas: &mut Mat, gray: &Mat, extra: &[Found], ms: &MaskSettings, rng: &mut PyRandom, stamp_ink: Option<&Mat>, report: &mut Vec<Value>) -> Result<Vec<Zone>> {
+    let ident = masking::homography(util::IDENTITY);
+    let mut zones = Vec::new();
+    for b in extra {
+        let [x0, y0, x1, y1] = b.rect;
+        let name = format!("vlm:{}@{:.0},{:.0}", b.label, x0, y0);
+        if b.label == "signature" {
+            masking::fill(canvas, &ident, &[[x0 - 4.0, y0 - 4.0], [x1 + 4.0, y0 - 4.0], [x1 + 4.0, y1 + 4.0], [x0 - 4.0, y1 + 4.0]])?;
+            report.push(json!({"zone": name, "mode": "signature", "signatures": 1}));
+        } else {
+            let phone = b.label == "phone_number";
+            let mut z = Zone::new(&name, [x0, y0, x1 - x0, y1 - y0], "partial");
+            z.digits = if phone { 10 } else { 8 };
+            z.rule = if phone { "phone".into() } else { "id".into() };
+            z.search = Some([8.0, 8.0]);
+            report.extend(masking::partial_column(canvas, gray, &ident, std::slice::from_ref(&z), ms, rng, Reach::default(), None, None, stamp_ink)?);
+            zones.push(z);
+        }
+    }
+    Ok(zones)
+}
+
+/// The leak check, over the numbers `mask_found` masked.
+pub fn verify_found(out: &Mat, zones: &[Zone], ms: &MaskSettings, stamp_ink: Option<&Mat>) -> Result<Vec<String>> {
+    let ident = masking::homography(util::IDENTITY);
+    let mut leaks = Vec::new();
+    for z in zones {
+        let r = masking::verify_column(out, &ident, std::slice::from_ref(z), None, ms, Reach::default(), None, stamp_ink)?;
+        if !r.is_empty() {
+            leaks.push(r);
+        }
+    }
+    Ok(leaks)
+}
+
 pub fn redact_pages(pages: &[Mat], templates: &[Template], s: &AlignSettings, ms: &MaskSettings, rng: &mut PyRandom, o: &PageOptions) -> Result<Vec<PageResult>> {
-    pages.iter().map(|p| redact_page(p, templates, s, ms, rng, o)).collect()
+    pages.iter().enumerate().map(|(i, p)| redact_page_at(p, i, templates, s, ms, rng, o)).collect()
 }
 
 /// Apply the same masking to boxes located by a VLM (no template): signatures
@@ -504,6 +729,7 @@ pub fn redact_boxes(img: &Mat, boxes: &[(f64, f64, f64, f64, String)], ms: &Mask
         protected: vec![],
         h: None,
         layout: None,
+        unsure: vec![],
     })
 }
 
