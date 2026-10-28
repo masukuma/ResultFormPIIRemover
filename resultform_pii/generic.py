@@ -55,8 +55,9 @@ DATE_RE = re.compile(r"(?<!di)date", re.I)  # not "Candidate"
 REFUSAL_RE = re.compile(r"refus", re.I)
 LABEL_RE = re.compile(r"(?<!di)date|signature|name|officer|polling|station|constituency|county|ward|"
                       r"passport|(?<![a-z])tel(?![a-z])|contact|(?<![a-z])I\.?D(?![a-z])", re.I)
-DECL_RE = re.compile(r"^\s*declaration", re.I)
-RESULTS_RE = re.compile(r"valid\s*votes|votes\s*cast|votes\s*obtained|registered\s*voters|rejected", re.I)
+DECL_RE = re.compile(r"^\s*declaration|^\W*we,?\s*the\s*undersigned", re.I)
+# printed count labels (not a comment that mentions "rejected" ballots)
+COUNT_LABEL_RE = re.compile(r"total\s*(?:number|valid)|registered\s*voters|valid\s*votes\s*(?:cast|obtained)", re.I)
 # handwriting in free text: "ID 25039403", "1D: 2503940 3", "07xx xxx xxx", "+254 7.."
 FREE_ID_RE = re.compile(r"(?<![\d/-])((?:\d\s?){6,8}\d)(?![\d/-])")  # 7-9 digits
 # "ID: 2503..." -- whatever follows the label, however OCR garbled the digits
@@ -859,18 +860,19 @@ def analyze(img: np.ndarray, o: ocr_mod.Ocr | None = None) -> Layout | str:
     L.stamps = stamps_mod.find(work, STAMP_R, lines)
     hs, vs = _rules(gray, L.stamps)
 
-    # Results end where the declaration starts; failing that, below the last
-    # line that names a count.
+    # Results end where the declaration starts: its label, or its first
+    # sentence when OCR misses the label. Nothing else will do: the last line
+    # naming a count can be the title of a results page ("Results at the
+    # tallying centre"), and everything below the boundary is open to masking.
     W, H = f.size
     decl = [ln for ln in lines if DECL_RE.search(ln.text)]
-    counts = [ln for ln in lines if RESULTS_RE.search(ln.text)]
-    if decl:
-        boundary = min(ln.box[1] for ln in decl) - 0.3 * decl[0].height
-    elif counts:
-        boundary = max(ln.box[3] for ln in counts) + 0.5 * counts[0].height
-        L.notes.append("no 'Declaration' label: results protected down to the last count line")
-    else:
-        L.problems.append("can't tell where the results end (no 'Declaration', no count labels)")
+    counts = [ln for ln in lines if COUNT_LABEL_RE.search(ln.text)]
+    if not decl:
+        L.problems.append("can't tell where the results end (no 'Declaration' label or declaration text)")
+        return L
+    boundary = min(ln.box[1] for ln in decl) - 0.3 * decl[0].height
+    if counts and max(ln.box[3] for ln in counts) > boundary:
+        L.problems.append("count labels below the declaration: can't tell where the results end")
         return L
     L.protected.append(("results", np.float64([[0, 0], [W, 0], [W, boundary], [0, boundary]])))
 

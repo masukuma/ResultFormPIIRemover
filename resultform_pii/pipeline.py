@@ -125,7 +125,11 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
                           a.score if a else 0.0, reason, (time.perf_counter() - t0) * 1000, list(report), list(notes))
 
     if a is None or not a.ok:
-        if generic:
+        # A form type that has templates is never read without one: its pages
+        # (e.g. Form 34B results pages, which carry no declaration) are only
+        # ever redacted by a template, or withheld.
+        templated = form and any(t.form == form for t in templates)
+        if generic and not templated:
             return redact_generic(img, ms, rng, verify, why=a.reason if a else "no templates")
         return fail(a.reason if a else "no templates")
     # Zones tied to a printed table are positioned by its rules. If they can't

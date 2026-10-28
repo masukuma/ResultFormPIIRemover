@@ -127,3 +127,27 @@ def test_a_struck_line_is_not_a_signature():
     cv2.ellipse(lab, (60, 30), (40, 18), 0, 0, 300, 2, 3)  # a looped flourish
     cv2.line(lab, (20, 40), (180, 25), 2, 3)
     assert not generic._straight(lab, [2], generic.TEXT_H)
+
+
+@pytest.mark.parametrize("text,found", [
+    ("Declaration", True),
+    ("We, the undersigned, being present when the results of the count were announced", True),
+    ("COLLATION OF PRESIDENTIAL ELECTION RESULTS AT THE CONSTITUENCY TALLYING CENTRE", False),
+    ("Total valid votes cast", False),
+])
+def test_results_end_only_at_the_declaration(text, found):
+    assert bool(generic.DECL_RE.search(text)) == found
+
+
+def test_a_templated_form_is_never_read_without_a_template(monkeypatch):
+    from resultform_pii import pipeline
+    from resultform_pii.align import AlignSettings
+    from resultform_pii.templates import Template
+    called = []
+    monkeypatch.setattr(pipeline, "redact_generic", lambda *a, **k: called.append(1))
+    t = Template("form34b_block", np.zeros((50, 50), np.uint8), [], form="34B")
+    img = np.full((400, 300), 255, np.uint8)
+    r = pipeline.redact_page(img, [t], AlignSettings(), form="34B", generic=True)
+    assert not r.ok and not called
+    pipeline.redact_page(img, [t], AlignSettings(), form="35A", generic=True)
+    assert called

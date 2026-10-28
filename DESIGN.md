@@ -499,9 +499,14 @@ It is on by default (`--no-generic` turns it off) and needs the
    boxes and the 180° classifier, then the page is deskewed and scaled so
    that printed text is 34 px high. A homography maps every field back to the
    original image.
-3. **Results are protected.** Everything above the "Declaration" label (or,
-   failing that, down to the last line that names a count) is a protected
-   region.
+3. **Results are protected.** Everything above the declaration (its
+   "Declaration" label, or its "We, the undersigned…" sentence when OCR
+   misses the label) is a protected region. A page with neither goes to
+   review. So does a page whose form type has templates (Forms 34A and 34B):
+   it is only ever redacted by a template. An earlier fallback, protecting
+   down to the last line naming a count, was removed after a Form 34B
+   results page, which has no declaration, took its title for that line;
+   the rest of the page was left open to masking.
 4. **Agents table.** The column headers ("ID/Passport No.", "Tel. Contact",
    "Signature") are found by OCR. Each column runs between the printed rules
    either side of its header, and the rows come from the horizontal rules.
