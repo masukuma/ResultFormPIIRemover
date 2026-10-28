@@ -440,3 +440,31 @@ def test_an_embossed_background_in_empty_fields_is_not_writing():
     sigs = [Zone("s", (100, 210, 600, 55), "signature", search=(0, 10))]
     assert masking.signature_column(canvas, empty, IDENTITY, sigs, MaskSettings(), centered=True)[0]["mode"] == "empty"
     assert (canvas == 255).all()
+
+
+def test_strokes_reaching_down_cover_only_their_own_width_of_the_date():
+    """An officer signs with long flat strokes along the field (lines of
+    their own beside the printed one) and two downstrokes into the date line.
+    The printed line is still found, where the reference has it, and only
+    the downstrokes' own width of the date line is masked, not the date
+    written between them."""
+    def line(img):
+        cv2.line(img, (60, 200), (780, 200), 60, 2)
+    img, sig, field = _underlined_signature(line)
+    for y in (160, 188):  # long flat strokes along the field
+        cv2.line(img, (150, y), (620, y), 20, 2)
+    for x in (152, 398):  # downstrokes crossing the line, reaching into the date's
+        cv2.line(img, (x, 188), (x - 6, 240), 20, 2)
+    cv2.putText(img, "11-08-22", (200, 242), cv2.FONT_HERSHEY_SIMPLEX, 1.0, 20, 2)
+    date_ink = np.zeros(img.shape, bool)
+    date_ink[214:244, 200:360] = img[214:244, 200:360] < 120
+    ref = np.full(img.shape, 235, np.uint8)
+    cv2.line(ref, (60, 200), (780, 200), 60, 2)
+    canvas = np.full(img.shape, 255, np.uint8)
+    masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), ref=ref, centered=True)
+    assert (canvas[sig] == 0).mean() > 0.97
+    tails = np.zeros(img.shape, bool)
+    tails[206:238] = img[206:238] < 120
+    tails[:, 160:390] = False
+    assert (canvas[tails] == 0).mean() > 0.97  # the signature's own strokes below its line
+    assert (canvas[date_ink] == 0).mean() < 0.05

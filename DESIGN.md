@@ -158,9 +158,11 @@ date was masked with it:
 - a field's line is at most two thin lines. A scan striped all over with
   long horizontal lines has no line taken out at all: every stripe would
   have been taken for it, and the signature written across them with it;
-- each signature is masked in up to three boxes (above its line, on it,
-  below it), so a loop reaching down covers its own width of the line
-  below, not the whole signature's.
+- each signature is masked in one box on its line and one per stroke
+  above or below it, so a loop reaching down covers its own width of the
+  line below, and two strokes reaching down don't cover the date written
+  between them. With a reference, the printed line is found where the
+  reference has it however many long strokes an officer drew beside it.
 
 A coverage check then finds signatures again on the original and requires
 each to be at least 90% under black in the output. Blackout zones (plain
@@ -296,7 +298,10 @@ part of a signature or a number visible under it.
 - **A second look where masks are about to go.** A faint stamp under a
   signature is the most likely miss and the costliest. So, before masks are
   applied, the area around them is searched again with lower thresholds, and
-  any ring found there that reaches into a mask is added.
+  any ring found there that reaches into a mask is added. A ring there
+  smaller than the stamp range must run all the way round: a handwritten
+  "0" in a date, with a signature's strokes around it, fitted a small
+  broken ring, and the signature inside it was left visible.
 - **Protection.** Each stamp's disc, plus a margin (6 px + 4% of the radius),
   is rounded out to whole 8×8 blocks and removed from the mask canvas. Writing
   under a stamp stays visible; the page notes say how much was lifted.

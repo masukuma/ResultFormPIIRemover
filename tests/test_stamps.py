@@ -75,3 +75,26 @@ def test_stamp_over_a_signature_is_never_masked(templates):
     q = np.float64([[340, 1220], [600, 1220], [600, 1310], [340, 1310]]).reshape(-1, 1, 2)
     cv2.fillPoly(box, [np.round(cv2.perspectiveTransform(q, H)).astype(np.int32)], 255)
     assert r.image[box > 0].max() == 0
+
+
+def _half_ring(page, cx, cy, r, color):
+    """A broken coloured ring: arcs covering about half the way round."""
+    for a0 in range(0, 360, 60):
+        cv2.ellipse(page, (cx, cy), (r, r), 0, a0, a0 + 32, color, 3, cv2.LINE_AA)
+
+
+def test_a_small_broken_ring_near_a_mask_is_not_a_stamp():
+    """A handwritten "0" and the strokes around it, under a signature's mask,
+    fit a small, broken ring. Taken for a stamp, the signature inside it was
+    left visible. Near a mask, a ring smaller than any stamp must run all the
+    way round; one in the stamp size range is still taken when broken."""
+    pen = (160, 60, 20)
+    small = np.full((800, 800, 3), 245, np.uint8)
+    _half_ring(small, 400, 400, 47, pen)  # under the smallest stamp, as seen (92%)
+    hide = np.zeros(small.shape[:2], bool)
+    hide[380:420, 300:500] = True
+    assert stamps.near(small, hide, (50, 150), []) == []
+    big = np.full((800, 800, 3), 245, np.uint8)
+    _half_ring(big, 400, 400, 90, pen)
+    found = stamps.near(big, hide, (50, 150), [])
+    assert len(found) == 1 and abs(found[0].r - 90) < 10

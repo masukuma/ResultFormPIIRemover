@@ -292,6 +292,11 @@ def near(img: np.ndarray, hide: np.ndarray, r_range: tuple[float, float], known:
         for t in _rings(sub, rr, 22, (LOOSE, FAINT), "near-mask", (X0, Y0)):
             if not hs[(xx - t.cx) ** 2 + (yy - t.cy) ** 2 <= (t.r * 1.05) ** 2].any():
                 continue  # only rings that reach the mask matter here
+            if t.r < rr[0] and t.coverage < FAINT["color"][0]:
+                # Smaller than any stamp, and broken: a handwritten "0" with
+                # the strokes around it (a date under a signature) fits such
+                # a ring, and writing inside a "stamp" is never masked.
+                continue
             if any(np.hypot(t.cx - k.cx * s, t.cy - k.cy * s) < 0.6 * k.r * s for k in known):
                 continue
             found.append(t)

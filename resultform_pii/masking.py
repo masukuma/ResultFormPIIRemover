@@ -728,9 +728,8 @@ def _signature_blobs(strip: np.ndarray, ink: np.ndarray, extra: float,
     it without being part of any signature.
     Returns (x0, y0, x1, y1, ink_pixels, boxes) per part that is mostly inside
     the column. ``boxes`` cover its ink: one box, or with ``line`` (the
-    field's line, top and bottom rows), one each for the ink above the line,
-    on it and below it, so that a loop reaching down covers only its own
-    width of the line below, not the whole signature's."""
+    field's line, top and bottom rows), one for the ink on the line and one
+    for each stroke above or below it."""
     joined = cv2.dilate(ink if bridge is None else ink | bridge,
                         cv2.getStructuringElement(cv2.MORPH_RECT, (SIG_JOIN + 6, 5)))
     n, lab = cv2.connectedComponents(joined)
@@ -767,9 +766,13 @@ def _signature_blobs(strip: np.ndarray, ink: np.ndarray, extra: float,
         # them. Masking a printed "Signature" label is the safe failure.
         boxes = [(x0, y0, x1, y1)]
         if line is not None:
-            sec = np.digitize(ys, line)
+            # On the line one box; above and below it one per stroke, so a
+            # loop reaching down covers its own width of the next line, and
+            # two strokes reaching down don't cover the date between them.
+            sec, strokes = np.digitize(ys, line), own[ys, xs]
+            sel = [sec == 1] + [(sec == i) & (strokes == k) for i in (0, 2) for k in np.unique(strokes[sec == i])]
             boxes = [(int(xs[k].min()), int(ys[k].min()), int(xs[k].max()) + 1, int(ys[k].max()) + 1)
-                     for k in (sec == i for i in range(3)) if k.any()]
+                     for k in sel if k.any()]
         blobs.append((x0, y0, x1, y1, len(xs), boxes))
     return blobs
 
@@ -789,10 +792,13 @@ def _own_rule(strip: np.ndarray, lo: int, hi: int, ref: np.ndarray | None = None
     rows = np.flatnonzero(cv2.morphologyEx(bw, cv2.MORPH_OPEN, k)[r0:r1].any(axis=1)) + r0
     rule = np.zeros_like(bw)
     lines = np.split(rows, np.flatnonzero(np.diff(rows) > 3) + 1) if len(rows) else []
-    if len(lines) > 2 or any(line[-1] - line[0] > 12 for line in lines):
+    if ref is None and (len(lines) > 2 or any(line[-1] - line[0] > 12 for line in lines)):
         # Not a printed line (a scan striped all over, say): taking it out
-        # would take out whatever is written across it.
+        # would take out whatever is written across it. With a reference the
+        # line is the one where it has it, however many long strokes an
+        # officer drew along it.
         return rule
+    lines = [line for line in lines if line[-1] - line[0] <= 12]
     if ref is not None:
         printed = cv2.morphologyEx(np.where(ref < 128, 255, 0).astype(np.uint8), cv2.MORPH_OPEN, k)
         prows = np.flatnonzero(printed[r0:r1].any(axis=1)) + r0
