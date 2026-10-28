@@ -17,8 +17,8 @@ hash-chained ledger, and a place in a published batch root. Anyone can then
 run `rfpii verify` against the original from the IEBC portal and see that no
 result was changed. See [VERIFYING.md](VERIFYING.md).
 
-Templates: Form 34A (2022) and Form 34B (2022, the system-printed layout,
-multi-page). Forms are aligned to a template, tables are snapped to their printed rules,
+Templates: Form 34A (2022) and Form 34B (2022, multi-page: the
+system-printed layout A and two other printings, B and C). Forms are aligned to a template, tables are snapped to their printed rules,
 and each page passes geometric, protected-region and leak checks before it is
 published. Forms with no template (2017 Forms 34A, 2021 by-election Forms
 35A/36A/38A and other printings) are read without one: OCR finds the labels,

@@ -402,8 +402,10 @@ template can clear them.
 | Template | Status |
 |---|---|
 | `form34a_2022` (2022 Form 34A, KIEMS) | Built from a real form; 188 of 215 published, all verified |
-| `form34b_2022_block`, `form34b_2022_results`, `form34b_2022_results_b` | Form 34B layout "A" (the system-printed form, the most common); see below |
-| Form 34B layouts B and C, and heavily distorted copies | Not yet; routed to review |
+| `form34b_2022_block`, `form34b_2022_results`, `form34b_2022_results_b` | Form 34B layout A (the system-printed form, the most common); see below |
+| `form34b_2022_block_b`, `form34b_2022_results_layout_b` | Form 34B layout B (aggregate results, turnout, agents table; no handing over) |
+| `form34b_2022_block_c`, `form34b_2022_results_layout_c` | Form 34B layout C (Garissa county's printing, dotted lines) |
+| Other Form 34B printings, and heavily distorted copies | Not yet; routed to review |
 | 2017 Forms 34A, 2021 by-election Forms 35A / 36A / 38A, other printings | Read without a template; see below |
 
 ### Form 34B (constituency tally)
@@ -417,7 +419,9 @@ and it often shares a page with the last results rows. The block holds:
 - the Constituency Returning Officer: name, ID number, signature, date;
 - the handover to the Commission Chairperson: names, ID numbers, signatures, times.
 
-Results pages carry no personal data. So 34B uses three templates:
+Results pages carry no personal data. So each 34B layout uses a block
+template and one or two results-header templates (layout A's are described
+here; B and C follow the same pattern, below):
 
 - **`form34b_2022_block`:** the reference is just the block, so it is found
   wherever it is on a page. It has priority, so a page that also shows
@@ -432,8 +436,8 @@ Results pages carry no personal data. So 34B uses three templates:
   variants because constituencies used two generators. These templates have
   no zones, so results pages are published with every block identical to
   the original.
-- **Document rule:** a 34B document is published only if the block was found
-  on **exactly one** page. If it was found on none (a bad scan, or a layout
+- **Document rule:** a 34B document is published only if a block, of any
+  layout, was found on **exactly one** page. If it was found on none (a bad scan, or a layout
   without a template), the page holding the personal data could otherwise
   pass as a plain results page. If it was found on two, the block is split or
   documents were merged. Either way the document goes to review.
@@ -443,7 +447,47 @@ IEBC PDF with empty fields, so there is no handwriting to erase. The variant
 results header is a typed row cut from a scan.
 
 Features for a reference cut from a page are extracted at the page's scale
-(`page_long_side`), so that text sizes match the scans.
+(`page_long_side`), so that text sizes match the scans. Form 34B templates
+take features at 2400 px with a 20000-feature budget (`feature_dim`,
+`n_features`), where Form 34A uses 1200 px and 5000: 34B scans are up to
+4960 px with a dense security print, and at the default settings the
+background's corners crowded out the printed text's. Raising them recovered
+eight layout A pages that weren't recognised.
+
+**Layouts B and C.** Some constituencies printed a different form:
+
+- **Layout B** (Budalangi): after the results, an "Aggregate Results" table
+  (votes per candidate in figures and words), a "Voter Turn Out" table, a
+  5-row agents table, and the Returning Officer's name, ID, signature and
+  date on underlines. There is no handing over section. The aggregate and
+  turnout tables are protected regions.
+- **Layout C** (Garissa county's printing; Daadab): "Form 34 B /
+  Constituency / County" above the results, a 3-row agents table with a
+  green header, the Returning Officer on dotted lines, and a handing over /
+  taking over box, also on dotted lines.
+
+There is no blank of either, so their references are cut from scans and
+cleaned: every piece of handwriting, the stamps, the typed results and the
+turnout figures are erased, the security-print background is removed, and
+the printed rules and dotted leaders that ran under the writing are
+redrawn at their measured positions. Each reference was checked at full
+resolution for anything left behind.
+
+Two things these layouts needed:
+
+- **Dotted leaders are print.** A partial-mask zone on a dotted line saw the
+  dots as ink it couldn't read and hid the whole field, even when empty.
+  `ink_mask` now removes runs of six or more tiny, evenly spaced blobs on
+  one line, which handwriting doesn't produce.
+- **Tight windows for the agents table.** In both layouts the Returning
+  Officer's name starts right below the table, and the default search
+  window of an empty last row reached it. Those columns search 4 px above
+  and below.
+
+On layout C the lines are 51 px apart and handwriting is taller than that,
+so the Returning Officer's ID zone can catch the foot of the name above it.
+That part of the name is then masked with the ID: more is hidden, never
+less.
 
 **Single underlined fields** (the RO's and Chairperson's ID and signature)
 are handled differently from table cells:
@@ -458,16 +502,18 @@ are handled differently from table cells:
 - **Stamps:** round official stamps are detected, and printed ink wholly
   inside a stamp is not treated as a signature, so the stamp stays readable.
 
-**Sample results (12 constituencies, Dropbox `Forms/34B`):**
-- **Published:** 6 (Bomet East, Butula, Funyula, Garissa Township, Matayos,
-  Nambale). All 6 verify against their originals.
-- **Review, other layouts:** 3 documents use layouts without a template:
-  Budalangi (layout B: aggregate results and voter-turnout tables, and a
-  5-row agents table), Daadab (layout C, spreadsheet-style) and Fafi (a
-  heavily curved phone photo).
-- **Review, layout A that wasn't recognised:** Konoin (upside-down, grey
-  background), Runyenjes (speckled "COPY" watermark) and Manyatta (a results
-  page with a weak header match).
+**Sample results (all 42 constituencies in Dropbox `Work/Kenya/2022/Forms/34B`):**
+
+| Outcome | Documents |
+|---|---|
+| Published, layout A | 24 |
+| Published, layout B | 1 (Budalangi) |
+| Published, layout C | 1 (Daadab) |
+| Review: other printings (Kabuchai's aggregate-results form; Bumula's "Chief Agents Affirmation"; Balambala, with handing over at the county; Sirisiya, with the block split over two pages) | 4 |
+| Review: layout A or C pages not recognised (landscape scans of the rotated form, "COPY" watermarks, small or curved scans: Baringo North and South, Bomet Central, Chepalungu, Ijara, Kanduyi, Konoin, Manyatta, Mt Elgon, Runyenjes, Teso North) | 11 |
+| Review: heavily curved phone photo (Fafi) | 1 |
+
+Every published block page was checked by eye against its original.
 
 **A safety bug found and fixed while building this.** The test that tells
 printed text from handwriting compared raw pixels around each glyph. A digit
@@ -590,9 +636,16 @@ by a test where one can be written:
 - a faint stamp the circle search fitted off its ring.
 
 ## Known limits
-- **Form 34B layouts.** Only layout A has templates. Each other layout (B, C,
-  …) needs its own block template, built from a blank or cleaned copy. The
-  document rule keeps every unknown layout out of publication.
+- **Form 34B layouts.** Layouts A, B and C have templates. Four other
+  printings in the sample don't, and 12 documents of known layouts weren't
+  recognised (rotated landscape scans, watermarks, small or curved scans).
+  Each new printing needs its own block template, built from a blank or
+  cleaned copy. The document rule keeps every unknown layout out of
+  publication.
+- **Layouts B and C each come from one document.** Their references are cut
+  from the only sample of each; other constituencies using the same
+  printing may lay it out slightly differently (a 6-row agents table, typed
+  names). Those go to review until a template covers them.
 - **Blobs that can't be split into characters are hidden whole.** When an ID
   or phone number can't be segmented (e.g. faint ink), the whole number is
   hidden. That is the safe failure, but it is more than the 3-character rule.
