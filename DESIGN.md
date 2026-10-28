@@ -581,7 +581,11 @@ are handled differently from table cells:
 - **Anchors:** each zone is anchored to its section's printed "ID Number:"
   label. The tool finds that label within ±120 px and moves the zone with it,
   because layout variants put the section a line higher or lower. If the
-  label isn't found, the page fails.
+  label isn't found, the page fails. Every zone tied to a label is placed
+  through the mapping the label was found in: the zones lie within a line
+  or two of it. Placed through their own local mappings, which on a curled
+  page can disagree with the label's by a line, a signature's window landed
+  on the ID's line, and one mask hid the whole ID and both labels.
 - **Stamps:** round official stamps are detected, and printed ink wholly
   inside a stamp is not treated as a signature, so the stamp stays readable.
 

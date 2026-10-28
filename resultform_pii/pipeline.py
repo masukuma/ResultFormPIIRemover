@@ -156,26 +156,28 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
         return masking.homography(a.local(((x0 + x1) / 2, cy)))
 
     # Zones tied to a printed label move with it (layout variants); a label
-    # that can't be found fails the page.
-    # Each distinct label is searched once (through the zone's own mapping)
-    # and the offset is shared by every zone tied to it.
-    offsets: dict[tuple, np.ndarray] = {}
+    # that can't be found fails the page. Each distinct label is searched
+    # once, and every zone tied to it is placed through the mapping the label
+    # was found in: the zones lie within a line or two of it. Placed through
+    # their own (local) mappings, which on a curled page can disagree with
+    # the label's by a line, the signature's window landed on the ID's line.
+    offsets: dict[tuple, masking.Mapper] = {}
     lost = []
     for z in a.template.zones:
         if z.anchor and z.anchor not in offsets:
-            d, ncc = masking.find_anchor(gray, base_mapper([z]), a.template.image, z.anchor)
+            f = base_mapper([z])
+            d, ncc = masking.find_anchor(gray, f, a.template.image, z.anchor)
             if d is None:
                 lost.append(f"{z.group or z.name}: printed label not found (best match {ncc:.2f})")
             else:
-                offsets[z.anchor] = d
+                offsets[z.anchor] = masking.shifted(f, d)
+                if np.hypot(*d) > 25:
+                    notes.append(f"label at {list(z.anchor[:2])} found {np.hypot(*d):.0f}px from its template position")
     if lost:
         return fail("; ".join(lost))
-    notes += [f"label at {list(k[:2])} found {np.hypot(*d):.0f}px from its template position"
-              for k, d in offsets.items() if np.hypot(*d) > 25]
 
     def mapper(zones) -> masking.Mapper:
-        f = base_mapper(zones)
-        return masking.shifted(f, offsets[zones[0].anchor]) if zones[0].anchor else f
+        return offsets[zones[0].anchor] if zones[0].anchor else base_mapper(zones)
 
     columns: dict[str, list] = {}  # ID / phone columns
     signatures: dict[str, list] = {}  # signature boxes and columns
