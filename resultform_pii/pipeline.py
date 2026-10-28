@@ -193,6 +193,19 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
     if misplaced:
         return fail("; ".join(misplaced), notes=notes)
 
+    # Lines drawn through unused rows, found per printed table (where they are
+    # long enough to tell from a pen stroke) and left out of every column of it.
+    strikes: dict[str, list] = {}
+    for n, (rx, ry, rw, rh) in a.template.structure.items():
+        cells = [z for z in a.template.zones if z.region == n]
+        if cells:
+            row_h = float(np.median([z.rect[3] for z in cells]))
+            strikes[n] = masking.find_strikes(gray, mapper(cells), (rx, ry, rw, rh), row_h)
+    notes += [f"{n}: {len(v)} line(s) drawn through the table left unmasked" for n, v in strikes.items() if v]
+
+    def struck(cells) -> list:
+        return strikes.get(cells[0].region, [])
+
     canvas = np.full(gray.shape, 255, np.uint8)  # 0 = hide
     report = []
     for z in a.template.zones:
@@ -202,9 +215,11 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
             masking.blackout(canvas, mapper([z]), zz, a.template.padding)
             report.append({"zone": z.name, "mode": "blackout"})
     for cells in signatures.values():
-        report += masking.signature_column(canvas, gray, mapper(cells), cells, ms, margin(cells), a.template.image)
+        report += masking.signature_column(canvas, gray, mapper(cells), cells, ms, margin(cells), a.template.image,
+                                           strikes=struck(cells))
     for cells in columns.values():
-        report += masking.partial_column(canvas, gray, mapper(cells), cells, ms, rng, margin(cells), a.template.image)
+        report += masking.partial_column(canvas, gray, mapper(cells), cells, ms, rng, margin(cells), a.template.image,
+                                         strikes=struck(cells))
 
     # Stamps: never masked.
     t = a.template
@@ -230,10 +245,11 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
 
     # Final gate: re-read every masked column from the output.
     leaks = [r for cells in columns.values()
-             if verify and (r := masking.verify_column(out, mapper(cells), cells, a.template.image, ms))]
+             if verify and (r := masking.verify_column(out, mapper(cells), cells, a.template.image, ms,
+                                                       strikes=struck(cells)))]
     leaks += [r for cells in signatures.values()
               if verify and (r := masking.verify_signatures(gray, out, mapper(cells), cells, a.template.image, ms,
-                                                            margin(cells), keep=keep))]
+                                                            margin(cells), keep=keep, strikes=struck(cells)))]
     if leaks:
         return fail("leak check: " + "; ".join(leaks), report, notes)
     return PageResult(True, out, a.template.name, a.inliers, a.score, "",
@@ -279,6 +295,20 @@ def redact_generic(img: np.ndarray, ms: MaskSettings | None = None, rng: random.
         return dataclasses.replace(ms, min_glyph_h=min(ms.min_glyph_h, 0.3 * generic.TEXT_H / row_h))
 
     print_mask, print_ref = generic.printed(L)
+    # Lines drawn through unused rows of the agents table (see redact_page).
+    rows = [z for fl in L.fields if fl.source == "table" for z in fl.zones]
+    strikes = []
+    if rows:
+        x0, y0 = min(z.rect[0] for z in rows), min(z.rect[1] for z in rows)
+        x1 = max(z.rect[0] + z.rect[2] for z in rows)
+        y1 = max(z.rect[1] + z.rect[3] for z in rows)
+        strikes = masking.find_strikes(gray, f, (x0 - 10, y0 - 10, x1 - x0 + 20, y1 - y0 + 20),
+                                       float(np.median([z.rect[3] for z in rows])))
+    if strikes:
+        L.notes.append(f"agents table: {len(strikes)} line(s) drawn through it left unmasked")
+
+    def struck(fl):
+        return strikes if fl.source == "table" else None
     canvas = np.full(gray.shape, 255, np.uint8)  # 0 = hide
     report = []
     for fl in L.fields:
@@ -291,9 +321,10 @@ def redact_generic(img: np.ndarray, ms: MaskSettings | None = None, rng: random.
             # a field on a text line takes only writing centred on it, not the
             # lines above and below that its search window reaches
             report += masking.signature_column(canvas, gray, f, fl.zones, ms, printed=print_mask,
-                                               centered=fl.source != "table")
+                                               centered=fl.source != "table", strikes=struck(fl))
         else:
-            report += masking.partial_column(canvas, gray, f, fl.zones, field_settings(fl), rng, ref=print_ref)
+            report += masking.partial_column(canvas, gray, f, fl.zones, field_settings(fl), rng, ref=print_ref,
+                                             strikes=struck(fl))
 
     r_range = tuple(v / L.frame.scale for v in generic.STAMP_R)
     on_page = [stamps.Stamp(*f(np.float64([[st.cx, st.cy]]))[0], st.r / L.frame.scale, st.coverage, st.how)
@@ -317,9 +348,9 @@ def redact_generic(img: np.ndarray, ms: MaskSettings | None = None, rng: random.
                 continue  # masked whole, box and all
             if fl.kind == "signature":
                 r = masking.verify_signatures(gray, out, f, fl.zones, None, ms, keep=keep, printed=print_mask,
-                                              centered=fl.source != "table")
+                                              centered=fl.source != "table", strikes=struck(fl))
             else:
-                r = masking.verify_column(out, f, fl.zones, print_ref, field_settings(fl))
+                r = masking.verify_column(out, f, fl.zones, print_ref, field_settings(fl), strikes=struck(fl))
             if r:
                 leaks.append(r)
     if leaks:

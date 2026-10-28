@@ -187,3 +187,32 @@ def test_dotted_leaders_are_print_not_writing():
     ink = ink_mask(strip, 56)
     assert ink[:, 120:330].sum() > 0  # the digits stay
     assert ink[44:48, 400:680].sum() == 0  # the leader beyond them goes
+
+
+def test_a_line_drawn_through_empty_rows_is_not_writing():
+    """Officials strike out unused rows with a long diagonal line. Within one
+    column it is only a short stroke, and was masked as digits or as a
+    signature. Found over the whole table, it is left alone; digits it
+    passes near are still masked."""
+    import random
+    from resultform_pii.templates import Zone
+    row_h, rows = 60, 4
+    img = np.full((60 + rows * row_h + 40, 1400), 235, np.uint8)
+    for i in range(rows + 1):
+        cv2.line(img, (20, 60 + i * row_h), (1380, 60 + i * row_h), 60, 2)
+    for x in (20, 400, 700, 1000, 1380):
+        cv2.line(img, (x, 60), (x, 60 + rows * row_h), 60, 2)
+    cv2.putText(img, "23456781", (420, 60 + row_h - 14), cv2.FONT_HERSHEY_SIMPLEX, 1.2, 20, 3)  # row 1 filled
+    cv2.line(img, (30, 60 + rows * row_h - 4), (1370, 60 + row_h + 4), 25, 9)  # struck through rows 2-4 (a scan's pen width)
+    I = masking.homography(np.eye(3))
+    strikes = masking.find_strikes(img, I, (10, 50, 1380, rows * row_h + 20), row_h)
+    assert len(strikes) == 1
+    cells = [Zone(f"id[{i}]", (403, 60 + i * row_h + 3, 294, row_h - 6), "partial", 8, rule="id")
+             for i in range(rows)]
+    canvas = np.full(img.shape, 255, np.uint8)
+    rep = masking.partial_column(canvas, img, I, cells, MaskSettings(), random.Random(1), strikes=strikes)
+    assert rep[0]["mode"] == "partial" and len(rep[0]["lines"]) == 1  # the written ID
+    assert all(r["mode"] == "empty" for r in rep[1:]), rep  # struck rows: nothing masked
+    canvas2 = np.full(img.shape, 255, np.uint8)
+    rep2 = masking.partial_column(canvas2, img, I, cells, MaskSettings(), random.Random(1))
+    assert any(r["mode"] != "empty" for r in rep2[1:])  # without it, the line was masked

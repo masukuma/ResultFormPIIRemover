@@ -142,7 +142,22 @@ mapped edge by edge so they stay covered on curled pages.
      Only segments at least four rows long count, because shorter "lines" can be
      chance alignments of digits in stacked rows, and erasing them hid digits in
      testing;
-   - leftover thin fragments of rules.
+   - leftover thin fragments of rules;
+   - printed dotted leaders ("ID Number: ........");
+   - strike lines found over the whole table (below).
+
+**Lines drawn through unused rows.** Within one column a cross-out line is
+only a short stroke, too short to tell from a pen stroke: on Form 34B layout
+C it crossed a 218 px column at 9° and was masked as ID digits, and as a
+signature in the signature column. So strike lines are looked for over the
+whole printed table, in the template's frame, before any column is read
+(`masking.find_strikes`). A strike is a straight stroke at least three rows
+long, at 3–80° (a printed rule can't have that angle), unbroken along at
+least 90% of its length and thin. A row of handwriting that a straight line
+happens to pass through is broken up, so it never qualifies: erasing written
+digits from the ink would leave them unmasked. The strikes found are erased
+from the ink in every column of that table, in masking and in the leak
+checks alike, and the page notes say how many there were.
 3. **Ignore print.** A glyph whose surroundings look like the reference at about
    the same spot is printed text (column headers) and is skipped. This test
    compares appearance, not just position: if the table is a row off, written

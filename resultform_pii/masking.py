@@ -68,6 +68,93 @@ def blackout(img: np.ndarray, f: Mapper, zone: Zone, pad: float) -> None:
     _fill(img, f, zone.padded(pad))
 
 
+Strike = tuple[float, float, float, float, float]  # x1, y1, x2, y2 (template px), stroke width
+
+
+def find_strikes(gray: np.ndarray, f: Mapper, rect, row_h: float) -> list[Strike]:
+    """Lines officials draw through unused rows of a table, found over the
+    whole table (``rect``, template coordinates), where they are long: within
+    one column they are too short to tell from a pen stroke.
+
+    A strike is one straight, unbroken stroke at least 3 rows long, at an
+    angle a printed rule can't have (3-80 degrees in the template's frame).
+    Writing a straight line happens to pass through is broken up, so it never
+    qualifies: what counts as a strike is erased from the ink the masking
+    reads, and erasing digits that way could leave them unmasked."""
+    x, y, w, h = map(float, rect)
+    sw, sh = max(1, int(round(w))), max(1, int(round(h)))
+    gx, gy = np.meshgrid(np.arange(sw, dtype=np.float64) + x, np.arange(sh, dtype=np.float64) + y)
+    m = f(np.stack([gx.ravel(), gy.ravel()], 1)).astype(np.float32).reshape(sh, sw, 2)
+    patch = cv2.remap(gray, m[..., 0], m[..., 1], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    c = cv2.GaussianBlur(patch, (3, 3), 0).astype(np.float32)
+    p1, p99 = np.percentile(c, [1, 99])
+    c = np.clip((c - p1) / max(p99 - p1, 60.0) * 255, 0, 255).astype(np.uint8)
+    bw = cv2.adaptiveThreshold(c, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, 45)
+    min_len = max(120.0, 3 * row_h)
+    segs = cv2.HoughLinesP(bw, 1, np.pi / 720, 60, minLineLength=int(min_len), maxLineGap=6)
+    out: list[Strike] = []
+    for x1, y1, x2, y2 in (segs.reshape(-1, 4) if segs is not None else ()):
+        dx, dy = float(x2 - x1), float(y2 - y1)
+        length = float(np.hypot(dx, dy))
+        ang = abs(np.degrees(np.arctan2(dy, dx))) % 180
+        ang = min(ang, 180 - ang)
+        if not 3 <= ang <= 80:
+            continue  # a printed rule (or a column rule), not a strike
+        # unbroken along its whole length, and thin: a stroke, not text
+        n = int(length)
+        t = np.linspace(0, 1, n)[:, None]
+        pts = np.float64([x1, y1]) + t * np.float64([dx, dy])
+        nx, ny = -dy / length, dx / length
+        widths, hits = [], 0
+        for px, py in pts[:: max(1, n // 60)]:
+            prof = [bw[int(round(py + k * ny)), int(round(px + k * nx))] > 0
+                    if 0 <= int(round(py + k * ny)) < sh and 0 <= int(round(px + k * nx)) < sw else False
+                    for k in range(-8, 9)]
+            if prof[8]:
+                hits += 1
+                lo = hi = 8
+                while lo > 0 and prof[lo - 1]:
+                    lo -= 1
+                while hi < 16 and prof[hi + 1]:
+                    hi += 1
+                widths.append(hi - lo + 1)
+        samples = len(pts[:: max(1, n // 60)])
+        if hits < 0.9 * samples or not widths or np.median(widths) > 0.25 * row_h:
+            continue
+        out.append((x1 + x, y1 + y, x2 + x, y2 + y, float(np.median(widths))))
+    return _merge_strikes(out)
+
+
+def _merge_strikes(segs: list[Strike]) -> list[Strike]:
+    """Hough returns one drawn line as many overlapping pieces: merge pieces
+    lying on the same line into one, spanning them all."""
+    lines: list[list] = []
+    for x1, y1, x2, y2, sw in sorted(segs, key=lambda s: -np.hypot(s[2] - s[0], s[3] - s[1])):
+        for ln in lines:
+            ax, ay, bx, by, w = ln
+            d = np.float64([bx - ax, by - ay])
+            u = d / np.linalg.norm(d)
+            n = np.float64([-u[1], u[0]])
+            if all(abs(np.dot(np.float64([px - ax, py - ay]), n)) <= max(8.0, 2 * w)
+                   for px, py in ((x1, y1), (x2, y2))):
+                ts = [0.0, float(np.dot(d, u))] + [float(np.dot(np.float64([px - ax, py - ay]), u))
+                                                   for px, py in ((x1, y1), (x2, y2))]
+                a, b = min(ts), max(ts)
+                ln[:] = [ax + a * u[0], ay + a * u[1], ax + b * u[0], ay + b * u[1], max(w, sw)]
+                break
+        else:
+            lines.append([x1, y1, x2, y2, sw])
+    return [tuple(map(float, ln)) for ln in lines]
+
+
+def _erase_strikes(ink: np.ndarray, origin, strikes: list[Strike] | None) -> None:
+    """Erase strike lines (template coordinates) from a strip's ink, in place."""
+    for x1, y1, x2, y2, sw in strikes or ():
+        p = (int(round(x1 - origin[0])), int(round(y1 - origin[1])))
+        q = (int(round(x2 - origin[0])), int(round(y2 - origin[1])))
+        cv2.line(ink, p, q, 0, int(round(sw)) + 4)
+
+
 def _remove_dotted_leaders(ink: np.ndarray, row_h: float, min_dots: int = 6) -> None:
     """Erase printed dotted leaders ("ID Number: ..........") in place: runs
     of at least ``min_dots`` tiny blobs on one line at an even pitch. Writing
@@ -279,7 +366,7 @@ def choose_hidden(n: int, rule: str, rng: random.Random, s: "MaskSettings") -> l
 
 def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zone],
                    s: MaskSettings, rng: random.Random, margin: tuple[float, float] = (0.0, 0.0),
-                   ref: np.ndarray | None = None) -> list[dict]:
+                   ref: np.ndarray | None = None, strikes: list[Strike] | None = None) -> list[dict]:
     """Hide a random subset of characters in every cell of one table column.
 
     ``margin`` (px above, px below) widens the search when the column's
@@ -310,6 +397,7 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
     to_template = np.float64([x, oy])
     row_h = float(np.median([z.rect[3] for z in cells]))
     ink = ink_mask(strip, row_h)
+    _erase_strikes(ink, to_template, strikes)
 
     # cell bands in strip coordinates
     bands = [(z.rect[1] - y + vpad, z.rect[1] - y + vpad + z.rect[3]) for z in cells]
@@ -388,7 +476,8 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
 
 
 def verify_column(out: np.ndarray, f: Mapper, cells: list[Zone], ref: np.ndarray | None,
-                  s: MaskSettings, window: tuple[float, float] | None = None, max_run: int | None = None) -> str:
+                  s: MaskSettings, window: tuple[float, float] | None = None, max_run: int | None = None,
+                  strikes: list[Strike] | None = None) -> str:
     """Independent leak check on the redacted image: re-read the column over
     a window (px above, below) at least as wide as the one used for masking --
     drift on bent pages is downward, and the declaration with the officers'
@@ -416,6 +505,7 @@ def verify_column(out: np.ndarray, f: Mapper, cells: list[Zone], ref: np.ndarray
     masked = cv2.dilate((strip == 0).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
     row_h = float(np.median([z.rect[3] for z in cells]))
     ink = ink_mask(np.where(masked, 255, strip).astype(np.uint8), row_h)
+    _erase_strikes(ink, (x, oy), strikes)
     R = None
     if ref is not None:
         R = np.full((sh, sw), 255, np.uint8)
@@ -584,7 +674,7 @@ def _sig_window(cells: list[Zone], s: MaskSettings, margin=(0.0, 0.0), more_belo
     return above, below
 
 
-def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=None, centered=False):
+def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=None, centered=False, strikes=None):
     """Signature blobs in a column. ``printed`` (template space, nonzero =
     printed text known to be there, e.g. typed "XXXX" in unused rows, or a
     label an officer signed next to): its ink is no part of any signature.
@@ -595,6 +685,7 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=Non
     strip, origin, bands, cells = _column_strip(gray, f, cells, above, below, SIG_OVERRUN)
     row_h = float(np.median([z.rect[3] for z in cells]))
     ink = ink_mask(strip, row_h, signature=True)
+    _erase_strikes(ink, origin, strikes)
     if printed is not None:
         ink[_ref_crop(255 - printed, origin, strip.shape) < 128] = 0
     stamps = _remove_stamp_rings(ink)
@@ -615,13 +706,15 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=Non
 
 def signature_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zone], s: MaskSettings,
                      margin: tuple[float, float] = (0.0, 0.0), ref: np.ndarray | None = None,
-                     pad: float = 6.0, printed: np.ndarray | None = None, centered: bool = False) -> list[dict]:
+                     pad: float = 6.0, printed: np.ndarray | None = None, centered: bool = False,
+                     strikes: list[Strike] | None = None) -> list[dict]:
     """Black out each signature on its own box, instead of the whole column.
 
     Ink in the column (plus SIG_OVERRUN px each side, plus the zone's search
     margin above/below) is split into signatures; each gets its own padded
     box. Empty rows stay untouched."""
-    blobs, origin, bands, cells = _find_signatures(gray, f, cells, s, margin, ref, SIG_BELOW, printed, centered)
+    blobs, origin, bands, cells = _find_signatures(gray, f, cells, s, margin, ref, SIG_BELOW, printed, centered,
+                                                   strikes)
     counts = [0] * len(cells)
     for x0, y0, x1, y1, _ in blobs:
         quad = np.float64([[x0 - pad, y0 - pad], [x1 + pad, y0 - pad], [x1 + pad, y1 + pad], [x0 - pad, y1 + pad]])
@@ -636,7 +729,7 @@ def signature_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Z
 def verify_signatures(gray: np.ndarray, out: np.ndarray, f: Mapper, cells: list[Zone], ref: np.ndarray | None,
                       s: MaskSettings, margin=(0.0, 0.0), more_below: float = SIG_BELOW,
                       keep: np.ndarray | None = None, printed: np.ndarray | None = None,
-                      centered: bool = False) -> str:
+                      centered: bool = False, strikes: list[Strike] | None = None) -> str:
     """Coverage check: find signatures again on the *original* image, over a
     window reaching further down (drift on bent pages is downward), and
     require each to be at least 90% under black in the redacted image.
@@ -645,13 +738,15 @@ def verify_signatures(gray: np.ndarray, out: np.ndarray, f: Mapper, cells: list[
     of the count: a signature written across a stamp is masked only outside
     it, and ink lying mostly inside a stamp (the stamp's own lettering, or
     writing on top of it) is not required to be masked at all."""
-    blobs, origin, _, cells = _find_signatures(gray, f, cells, s, margin, ref, more_below, printed, centered)
+    blobs, origin, _, cells = _find_signatures(gray, f, cells, s, margin, ref, more_below, printed, centered,
+                                               strikes)
     above, below = _sig_window(cells, s, margin, more_below)
     o = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY) if out.ndim == 3 else out
     ostrip = _column_strip(o, f, cells, above, below, SIG_OVERRUN)[0]
     gstrip = _column_strip(gray, f, cells, above, below, SIG_OVERRUN)[0]
     kstrip = _column_strip(keep, f, cells, above, below, SIG_OVERRUN)[0] if keep is not None else None
     ink = ink_mask(gstrip, float(np.median([z.rect[3] for z in cells])), signature=True)
+    _erase_strikes(ink, origin, strikes)
     bad = 0
     for x0, y0, x1, y1, n in blobs:
         if n < 2 * SIG_MIN_INK:
