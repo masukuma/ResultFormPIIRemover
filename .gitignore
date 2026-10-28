@@ -1,8 +1,8 @@
+# local leftovers of the Python version
 __pycache__/
 *.egg-info/
 .pytest_cache/
-build/
-dist/
+
 # never commit real scans or outputs
 scans/
 public/
@@ -12,3 +12,6 @@ realdata/
 *.zip
 *.PDF
 review*/
+
+# Rust build output
+rust/target/

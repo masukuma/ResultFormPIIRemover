@@ -35,20 +35,23 @@ results.
 | The publisher's public key, `signing_key.pub.pem` | the publisher's website, announced once |
 | The ledger, `ledger.jsonl` | published alongside the forms |
 | The original transmission, e.g. `1_34_A_..._132155.PDF` | the IEBC portal, or the KIEMS/IEBC records |
+| The publisher's certificate, `signer.crt` (or its SHA-256 fingerprint) | the publisher's website, announced once; optional |
 
 The tool is open source. Use the exact version named in the manifest
-(`tool.commit`), or review the ~200 lines of `proof.py` and `verify.py` that
-do the checking.
+(`tool.commit`), or review the code that does the checking: `proof.rs` and
+`verify.rs` in `rust/src`, and `rust/csrc/jdct.c`, which reads the JPEG
+coefficients with libjpeg.
 
 ## Run the check
 
 ```bash
-pip install -e .
+sudo rust/scripts/setup-deps.sh && (cd rust && cargo build --release)   # see README.md
 rfpii verify 1_34_A_..._132155.pdf \
     --original 1_34_A_..._132155.PDF \
     --pubkey signing_key.pub.pem \
     --ledger ledger.jsonl \
-    --overlay changes/
+    --overlay changes/ \
+    --trust signer.crt
 ```
 
 Example output (a real Form 34A from the test set):
@@ -58,6 +61,9 @@ PASS  manifest signature valid
 PASS  ledger hash chain intact
 PASS  manifest recorded in ledger (entry 3)
 PASS  redacted PDF matches the manifest's SHA-256
+PASS  digital signature valid and covering the whole file (signed by C=KE, CN=Returning Officer, ... at D:20220812...)
+PASS  the signing certificate is the one the manifest names
+PASS  the signing certificate is trusted (--trust)
 PASS  1 page image(s), as recorded
 PASS  original matches the manifest's source SHA-256 85d2fa2da8b6b42d...
 PASS  original has the same number of pages
@@ -94,6 +100,13 @@ no red block should touch one.
   are also decoded from both files and compared directly.
 - **Signature.** The manifest is signed with the publisher's Ed25519 key. If
   anyone edits it afterwards, the signature fails.
+- **The PDF's own signature.** The published PDF can also carry a digital
+  signature (PKCS#7, as PDF readers check it) over the whole file, made with
+  the publisher's certificate, which the manifest names by its SHA-256. Any
+  PDF reader shows whether it is intact; `rfpii verify` checks it too, and
+  with `--trust` that the certificate is the one you expect. A self-signed
+  certificate is only as good as your knowledge of its fingerprint: compare
+  it with the one the publisher announced.
 - **Ledger.** Each entry in the ledger includes the hash of the previous entry.
   Changing, removing or back-dating one entry breaks every entry after it.
 - **Batch root.** Each batch ends with one hash (the Merkle root) over all its
@@ -104,12 +117,13 @@ no red block should touch one.
   It must give a bit-identical result, which shows the published file is
   exactly what the documented process produces. For forms read without a
   template, the manifest also records the OCR models' hashes; the re-run
-  checks that the same models are installed (`pip install -e '.[generic]'`).
+  checks that the same models are installed (`setup-deps.sh` puts them in
+  `/opt/rfpii/models`).
 
 Try a tampered file. Change one number in the votes table of the published
 image (even one coefficient of one block), re-save it, and run `rfpii verify`.
 It fails four separate checks. The test suite does this automatically
-(`tests/test_verify_e2e.py`).
+(`rust/tests/e2e.rs`).
 
 ## What the check does not prove
 

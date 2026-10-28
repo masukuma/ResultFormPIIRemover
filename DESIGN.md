@@ -10,7 +10,7 @@ personal data gets a different treatment:
 
 | Field | Treatment |
 |---|---|
-| Signatures (officers, agents) | **Blacked out** completely |
+| Signatures (officers, agents) | **Masked through the middle**: a black band along each signature; the tops and bottoms of its strokes show that it was signed |
 | National ID / passport numbers | **3 random characters hidden** |
 | Phone numbers | **First digits kept, 3 of the last 6 hidden**: `0734471897` keeps `0734` and hides 3 of `471897` |
 | Names | Left visible |
@@ -42,7 +42,7 @@ Their file names encode the transmission:
 
 The printed form carries a QR code. On Form 34A it encodes the station code
 followed by `34`, and on Form 34B election, county, constituency, form and
-page (`GE2022040228FORM34B03`). `kiems.py` parses both:
+page (`GE2022040228FORM34B03`). `kiems.rs` parses both:
 
 - **Template choice:** the form type picks the template, so a 34B page is never
   redacted with a 34A layout. A form with no template goes to review.
@@ -69,11 +69,11 @@ photo ─► page alignment (ORB + MAGSAC) ─► table snapping (printed rules)
 ```
 
 A form type with no template (older printings, by-election forms) is read
-without one instead: see [Forms without a template](#forms-without-a-template-genericpy).
+without one instead: see [Forms without a template](#forms-without-a-template-genericrs).
 Either way, stamps are found before masking and no mask is ever applied over
 one: see [Stamps are never masked](#stamps-are-never-masked-stampspy).
 
-### 1. Page alignment (`align.py`)
+### 1. Page alignment (`align.rs`)
 ORB features are matched to the template's reference image, and a homography is
 fitted with USAC/MAGSAC. This handles rotation (including upside-down and
 sideways photos), scale and perspective. The fit is checked by inlier count,
@@ -81,7 +81,7 @@ inlier ratio, plausible geometry, and normalised cross-correlation (NCC)
 between the reference and the scan warped back. A page failing any check is
 withheld.
 
-### 2. Table snapping (`structure.py`)
+### 2. Table snapping (`structure.rs`)
 KIEMS photos are of booklet pages that **curl**. All the distinctive features
 are in the header (logo, QR code, title), while the PII is in the agents table
 at the bottom. A single homography extrapolated that far can be several rows
@@ -108,10 +108,12 @@ If the table can't be matched, its zones fall back to the page alignment but
 are widened 50 px up and 200 px down: more than the worst drift seen, which is
 always downward. With `--strict-structure`, such pages go to review instead.
 
-### 3. Masking (`masking.py`)
+### 3. Masking (`masking.rs`)
 
-**Signature zones** (`action: signature`) get one black box **per signature**,
-not one block per region:
+**Signature zones** (`action: signature`) get one black band **per signature**,
+through its middle, not one block per region. Readers see that a form was
+signed (the tops and bottoms of the strokes show above and below the band),
+not the signature itself:
 
 1. **Find the ink.** The column is straightened and searched 24 px beyond each
    side, and 30 px further down, because signatures overrun their box and bent
@@ -132,7 +134,16 @@ not one block per region:
    writing cut off by the window's bottom edge that starts well below the
    last row is the next line's (an officer's name written large under the
    agents table), not a signature running over its row.
-4. **Mask.** Each signature gets its own padded box. Empty rows are untouched.
+4. **Mask.** Each signature gets its own band, along it through its middle.
+   The band follows the writing in 24 px pieces, so a signature rising or
+   falling along its line is covered all along. It is half the signature's
+   height thick (the height of its taller pieces, so a long flat tail
+   doesn't thin it; at least 10 px). Each piece is centred on the middle
+   row of its own ink and on that of the writing around it (the median of
+   the middles of the two pieces either side); where they differ (a loop,
+   a tall letter) it covers both. The mask reaches 2 px beyond the band,
+   whose edge rows, warped back from the page, blend with the paper.
+   Empty rows are untouched.
 
 **Underlined fields** (a signature on a line, not in a table) take only
 writing on their own line. The date is written on the next line, often so
@@ -158,14 +169,15 @@ date was masked with it:
 - a field's line is at most two thin lines. A scan striped all over with
   long horizontal lines has no line taken out at all: every stripe would
   have been taken for it, and the signature written across them with it;
-- each signature is masked in one box on its line and one per stroke
-  above or below it, so a loop reaching down covers its own width of the
-  line below, and two strokes reaching down don't cover the date written
-  between them. With a reference, the printed line is found where the
-  reference has it however many long strokes an officer drew beside it.
+- with a reference, the printed line is found where the reference has it,
+  however many long strokes an officer drew beside it.
 
-A coverage check then finds signatures again on the original and requires
-each to be at least 90% under black in the output. Blackout zones (plain
+The band hides the signature's middle, not the strokes running down into
+the date line, so a date written under a signature stays readable.
+
+A coverage check then finds signatures again on the original, works out each
+one's band the same way, and requires the ink inside it to be at least 90%
+under black in the output. Blackout zones (plain
 rectangles) remain available for areas that must be hidden entirely, and are
 mapped edge by edge so they stay covered on curled pages.
 
@@ -263,7 +275,7 @@ The edge check and the leak check were both added after reviewing real outputs
 showed misses that geometry alone allowed through.
 
 ### 5. Output
-The output is a new PDF (`io.py`). Each page holds exactly one image: the
+The output is a new PDF (`io.rs`). Each page holds exactly one image: the
 redacted JPEG, passed through byte for byte, or a lossless PNG for non-JPEG
 sources. The page has the same size and layout as the source page. There is
 no text layer, no annotations and no metadata. JPEG markers other than
@@ -274,7 +286,28 @@ Next to each PDF goes its signed manifest (`.manifest.json`), plus the ledger
 and batch roots described below. Documents that fail go to `review/`, each
 with a JSON report of why. `review/report.jsonl` logs every document.
 
-## Stamps are never masked (`stamps.py`)
+**Digital signature (`pdfsign.rs`).** With a certificate, each published PDF
+is signed as PDF readers expect: an incremental update appends an invisible
+signature field whose value is a detached PKCS#7 signature
+(`adbe.pkcs7.detached`, SHA-256) over every byte of the file except the
+signature itself. The redacted PDF's bytes stay an unchanged prefix of the
+signed file. The manifest records the output's hash after signing and names
+the certificate by its SHA-256, so the manifest's Ed25519 signature also
+vouches for which certificate signed the PDF.
+
+With no certificate given, `redact` uses the one `rfpii certgen` saved
+(`~/.config/rfpii/signer.p12`). If there is none, it offers to create one:
+RSA-3072, self-signed, for digital signatures only (key usage
+digitalSignature and nonRepudiation; extended key usage emailProtection,
+which Acrobat accepts, and documentSigning). The private key is kept in a
+password-protected PKCS#12 file readable only by its owner, and the public
+certificate is written beside it to be published. A self-signed signature
+proves the file is intact and was signed by whoever holds that key. Who that
+is, readers learn only by comparing the certificate's fingerprint with the
+one the publisher announced. A certificate from a CA they already trust
+makes that link for them.
+
+## Stamps are never masked (`stamps.rs`)
 
 The presiding officer's stamp is what readers look for to tell a genuine
 form. It is often pressed across a signature, an ID or a phone number. The
@@ -301,7 +334,12 @@ part of a signature or a number visible under it.
   any ring found there that reaches into a mask is added. A ring there
   smaller than the stamp range must run all the way round: a handwritten
   "0" in a date, with a signature's strokes around it, fitted a small
-  broken ring, and the signature inside it was left visible.
+  broken ring, and the signature inside it was left visible. And a ring
+  there must run in long arcs: on the sample forms the inked arcs of real
+  rings, faint ones included, average 14 or more of 180 steps round, while
+  a column of IDs in blue pen (coloured, like stamp ink) put short strokes
+  all round a circle (arcs of 7 on average) and took the IDs' masks off.
+  Near masks a ring needs arcs of 10 or more.
 - **Protection.** Each stamp's disc, plus a margin (6 px + 4% of the radius),
   is rounded out to whole 8×8 blocks and removed from the mask canvas. Writing
   under a stamp stays visible; the page notes say how much was lifted.
@@ -319,10 +357,10 @@ part of a signature or a number visible under it.
 
 ### The edit is restricted to black blocks
 The pipeline never edits the image freely. Masks are drawn on a separate
-canvas, rounded **out** to whole 8×8 blocks (`pipeline.py`), and only then
+canvas, rounded **out** to whole 8×8 blocks (`pipeline.rs`), and only then
 applied to the image as **stored**:
 
-- **JPEG sources (all KIEMS transmissions; `proof.py`).** The edit is made on
+- **JPEG sources (all KIEMS transmissions; `proof.rs`).** The edit is made on
   the JPEG's quantised DCT coefficients:
   - a masked luma block gets the DC value that decodes to black, and zero AC;
   - a chroma block whose whole area is masked is set to neutral grey;
@@ -349,7 +387,7 @@ altered, only obscured, and the manifest records where.
   too. A mask block touching any of them stops publication.
 
 ### The record
-- **Manifest.** For each document (`process.py`) it records:
+- **Manifest.** For each document (`process.rs`) it records:
   - the source file's SHA-256 (the IEBC portal / KIEMS copy) and the hash of
     the embedded image;
   - the output's SHA-256;
@@ -362,7 +400,7 @@ altered, only obscured, and the manifest records where.
     hidden (never the characters themselves);
   - any VLM verdicts.
 
-  It is signed with the publisher's Ed25519 key (`manifest.py`).
+  It is signed with the publisher's Ed25519 key (`manifest.rs`).
 - **Ledger.** `ledger.jsonl` is append-only and hash-chained. Each entry commits
   to the previous one, so altering, dropping or back-dating any entry breaks
   the chain.
@@ -386,7 +424,7 @@ reproduce the output bit for bit.
 
 ### Tested
 On the 215 real Forms 34A, all 188 published forms verify. Re-running a
-random sample of 12 reproduced each one bit for bit. Tampering is detected in
+random sample reproduced each one bit for bit. Tampering is detected in
 each of these cases (also in the test suite):
 
 - changing one coefficient of one block in the votes table (caught by four
@@ -406,7 +444,7 @@ each of these cases (also in the test suite):
 | "The original itself is fake." | Out of scope for redaction. The manifest ties each form to its source hash, KIEMS kit serial, capture time and QR, for comparison with IEBC records. |
 | "The signing key was stolen." | Keep it offline. Publish its fingerprint once. Rotate by announcing a new key in a signed statement from the old one. |
 
-## VLM assistance (`vlm.py`, Ollama Cloud or local)
+## VLM assistance (`vlm.rs`, Ollama Cloud or local)
 
 A vision model is used where judgement helps and speed doesn't matter. There
 are three ways to run it:
@@ -628,16 +666,16 @@ before the test).
 A template's reference image must have its handwriting erased, keeping the
 printed rules (see `README.md`). The form's PII must never end up in the repo.
 
-## Forms without a template (`generic.py`)
+## Forms without a template (`generic.rs`)
 
 Older forms (2017 Forms 34A, the 2021 by-election Forms 35A, 36A and 38A) came
 in many printings and were scanned or photographed in every orientation.
 A template per printing doesn't scale, so a form with no template is
 **read**, using the same printed labels and rules a person would look for.
-It is on by default (`--no-generic` turns it off) and needs the
-`.[generic]` extra.
+It is on by default (`--no-generic` turns it off) and needs the OCR models
+(`setup-deps.sh` installs them).
 
-1. **OCR, locally** (`ocr.py`). RapidOCR with the PP-OCRv3 models, on the CPU;
+1. **OCR, locally** (`ocr.rs`). RapidOCR's PP-OCR models on ONNX Runtime, on the CPU;
    nothing leaves the machine. The recogniser's output is decoded here, so
    every character has a position and a confidence. Labels are matched
    allowing for misreads ("Shature", "bate 17-10-2019").
@@ -717,7 +755,8 @@ the protected stamps outlined and the blacked blocks shaded:
 
 - Every stamp is found and untouched (the IEBC logo is often taken for one
   as well, which does no harm).
-- Signatures in the declaration and the agents table are masked, and so are
+- Signatures in the declaration and the agents table are masked through
+  the middle, and so are
   the officers' sign-offs under the comments.
 - IDs and phone numbers, in the table or written elsewhere, keep all but 3
   digits.
@@ -734,6 +773,39 @@ by a test where one can be written:
 - a cursive signature that OCR reads as a word;
 - a signature merged with a printed label OCR missed;
 - a faint stamp the circle search fitted off its ring.
+
+## Implementation
+
+The tool is written in Rust (`rust/`). It was first written in Python, which
+stayed the reference until the Rust version made the same decisions on all
+the samples: on the 215 Forms 34A, the 42 Forms 34B and the 42 older forms
+(the same seeds for both), every document was published or withheld alike,
+with the same blocks blacked out, the same masks, notes, protected regions
+and page alignment. Each version's verifier accepts the other's published
+forms. With four workers, the Rust version took 112 s for the 215 Forms 34A
+(Python: about 260 s); on forms read without a template OCR dominates, and
+both run the same models (42 older forms: 300 s against 450 s).
+
+To get the same output, and not just similar output, it calls the native
+libraries the Python version ran on, built the same way. A masking decision
+can turn on the last digit of a float, so a similar library is not enough:
+
+| What | Library | How it is linked |
+|---|---|---|
+| Image processing, features, homographies | OpenCV 5.0 | built from the opencv-python source distribution with the wheel's CPU dispatch, Intel IPP and LAPACK options |
+| PDF rendering and image extraction | MuPDF 1.28.5 | PyMuPDF's `libmupdf`, through a small C shim (`csrc/render.c`) that makes the same calls PyMuPDF does |
+| JPEG coefficients | libjpeg | a private, renamed static copy (`csrc/jdct.c`), so it can't clash with MuPDF's or OpenCV's |
+| OCR | ONNX Runtime 1.29 with RapidOCR's models | loaded at run time; RapidOCR's pre- and post-processing ported line by line |
+| Least squares (`np.polyfit`, `lstsq`, `inv`) | numpy's OpenBLAS (LAPACK `dgelsd`, `dgesv`) | loaded at run time |
+
+numpy's semantics are reproduced where results depend on them: float32
+arithmetic, pairwise summation, how `linspace`, `arange` and `percentile`
+compute, and Python's random number generator for the seeded choice of
+hidden characters. `rust/scripts/setup-deps.sh` installs the libraries from
+the packages they ship in.
+
+Documents are processed in parallel (`--workers`), each on one thread, so
+results don't depend on how the work is split.
 
 ## Known limits
 - **Form 34B layouts.** Layouts A, B and C have templates. Four other
@@ -752,10 +824,14 @@ by a test where one can be written:
 - **Faint strokes of a signature can show.** A stroke too faint to read
   as ink (a thin flourish between a signature's initial and its final
   tick) is not masked; the parts either side of it are, each on its own.
-- **Signature boxes merge in dense tables.** Where agents sign across
-  neighbouring rows, the boxes merge into one patch. Any writing inside a
-  signature box (e.g. a phone number continued into the column, or part of
-  the "Signature" label) is hidden with it.
+- **Writing joined to a signature is banded with it.** Writing that touches
+  a signature (a phone number continued into the column, part of the
+  "Signature" label) is taken as part of it and loses its middle too.
+- **How much of a signature shows is a judgement.** The band hides the
+  middle half of each signature's height; the tops and bottoms of the
+  strokes show. A signature made mostly of tall loops shows more of them
+  than a compact one. Masks are applied in whole 8×8 blocks, which adds up
+  to 7 px to the band at each edge.
 - **Thin pen strokes on embossed forms.** On a form whose background
   scans as thin lines (below), pen strokes as thin as that background (a
   fine, flat flourish) are dropped with it and stay visible; the rest of
