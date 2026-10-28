@@ -557,34 +557,41 @@ wrapped JSON, `bbox`/`box`/`box_2d`, free-form labels), and Gemini-style
 **At scale.** Ollama Cloud refused (HTTP 429) more than 12 requests at once
 from the account this was tested with, so requests are capped across all
 workers (`--vlm-concurrency`, 10) and retried with backoff on 429, 5xx and
-dropped connections. The review adds 2.4 model calls a form on
+dropped connections. The review adds 2.3 model calls a form on
 average (one look per round, one check per spot not already black), each
 about 3 s with `gemma4:31b`; a form spends most of its time waiting, so
 run about three workers per core, as memory allows (each worker peaks at
-about 1.3 GB). On 4 cores with 8 workers the 215 Forms 34A took 392 s
-(0.55 forms/s; without the review 0.8 forms/s). For 50,000 forms that is
+about 1.3 GB). On 4 cores with 8 workers the 215 Forms 34A took 380 s
+(0.57 forms/s; without the review 0.8 forms/s). For 50,000 forms that is
 about 120,000 calls: at 12 at once on one account, about 8–9 hours of model
 time, which more cores don't shorten. More accounts, a plan with a higher
 limit, or a local GPU running the same model lift that limit; the local work
 then runs at about 5 core-seconds a form (about 4 hours on 16 cores).
 
-**Results on the 215 Forms 34A** (`--vlm-audit --vlm-rescue`): 209
+**Results on the 215 Forms 34A** (`--vlm-audit --vlm-rescue`): 210
 published, against 205 without the review and 188 before any of this.
 - The five pages whose columns couldn't be placed were rescued: their
   ID/phone columns hidden whole, and the review found nothing after.
-- The review masked 50 more spots on 43 published pages. Checked by eye
-  against the originals, 37 were real misses (signatures, mostly in the
-  comments, and a phone number), 4 were unclear, and 9 were not: writing on
-  four stamps, a date, a name, a printed "Tel. Contact" header, a stray mark
-  and the word "signature" written out. Steps 3 and 4 as described
-  above (the check must match the finder's label; spots on a stamp are
-  left) were added after this run to remove those. 166 pages needed
-  nothing.
-- All 209 verify, and `--rerun` reproduces each of the 48 pages the review
+- The review masked 45 more spots on 38 published pages. Checked by eye
+  against the originals, 38 were real misses (signatures, mostly in the
+  comments), 5 were unclear (a name written beside a signature, a box
+  mostly beside one) and 2 were not: a date and the word "signature"
+  written out. It left 8 spots on stamps visible. 172 pages needed nothing
+  after the first look, 35 after a second and 3 after a third.
+- An earlier run, before the label match in step 3 and step 4 were added,
+  masked 50 spots, of which 9 were not PII (writing on stamps, a date, a name, the printed
+  "Tel. Contact" header, a stray mark) and 4 unclear.
+- All 210 verify, and `--rerun` reproduces each of the 42 pages the review
   changed bit for bit, from the manifest alone.
-- Six go to review: four the page alignment can't match, one whose table
-  is placed so far off that hiding its columns would touch the results,
-  and one the review still flagged after two rounds of masking.
+- Five go to review: four the page alignment can't match, and one whose
+  table is placed so far off that hiding its columns would touch the
+  results.
+- The models don't answer the same way twice. The same spot was called a
+  phone number in one run and a vote count in the next (it was masked by
+  the rules either way), and a page the review still flagged after its
+  last round in one run was published in the next. Each run's findings
+  are recorded, so what was published can always be reproduced; what a
+  new run would find can't.
 
 What it doesn't do: it is a second pair of eyes, not a guarantee. Some
 signatures it doesn't find or the check reads as words; writing on a stamp
