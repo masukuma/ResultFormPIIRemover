@@ -230,9 +230,14 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
             zz = Zone(z.name, (z.rect[0], z.rect[1] - up, z.rect[2], z.rect[3] + up + down)) if up or down else z
             masking.blackout(canvas, mapper([z]), zz, a.template.padding)
             report.append({"zone": z.name, "mode": "blackout"})
+    def on_line(cells) -> bool:
+        # An underlined field (not a table column, and placed where expected):
+        # only writing on its own line is a signature, not the date below it.
+        return not cells[0].region and margin(cells) == (0.0, 0.0)
+
     for cells in signatures.values():
         report += masking.signature_column(canvas, gray, mapper(cells), cells, ms, margin(cells), a.template.image,
-                                           strikes=struck(cells))
+                                           centered=on_line(cells), strikes=struck(cells), exclude=stamp_ink)
     for cells in columns.values():
         report += masking.partial_column(canvas, gray, mapper(cells), cells, zms(cells), rng, margin(cells),
                                          a.template.image,
@@ -259,7 +264,8 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
                                                        strikes=struck(cells), exclude=stamp_ink))]
     leaks += [r for cells in signatures.values()
               if verify and (r := masking.verify_signatures(gray, out, mapper(cells), cells, a.template.image, ms,
-                                                            margin(cells), keep=keep, strikes=struck(cells)))]
+                                                            margin(cells), keep=keep, centered=on_line(cells),
+                                                            strikes=struck(cells), exclude=stamp_ink))]
     if leaks:
         return fail("leak check: " + "; ".join(leaks), report, notes)
     return PageResult(True, out, a.template.name, a.inliers, a.score, "",
@@ -336,7 +342,7 @@ def redact_generic(img: np.ndarray, ms: MaskSettings | None = None, rng: random.
             # a field on a text line takes only writing centred on it, not the
             # lines above and below that its search window reaches
             report += masking.signature_column(canvas, gray, f, fl.zones, ms, printed=print_mask,
-                                               centered=fl.source != "table", strikes=struck(fl))
+                                               centered=fl.source != "table", strikes=struck(fl), exclude=stamp_ink)
         else:
             report += masking.partial_column(canvas, gray, f, fl.zones, field_settings(fl), rng, ref=print_ref,
                                              strikes=struck(fl), exclude=stamp_ink)
@@ -360,7 +366,7 @@ def redact_generic(img: np.ndarray, ms: MaskSettings | None = None, rng: random.
                 continue  # masked whole, box and all
             if fl.kind == "signature":
                 r = masking.verify_signatures(gray, out, f, fl.zones, None, ms, keep=keep, printed=print_mask,
-                                              centered=fl.source != "table", strikes=struck(fl))
+                                              centered=fl.source != "table", strikes=struck(fl), exclude=stamp_ink)
             else:
                 r = masking.verify_column(out, f, fl.zones, print_ref, field_settings(fl), strikes=struck(fl),
                                           exclude=stamp_ink)

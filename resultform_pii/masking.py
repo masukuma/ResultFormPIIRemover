@@ -702,7 +702,8 @@ def _sig_window(cells: list[Zone], s: MaskSettings, margin=(0.0, 0.0), more_belo
     return above, below
 
 
-def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=None, centered=False, strikes=None):
+def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=None, centered=False, strikes=None,
+                     exclude=None):
     """Signature blobs in a column. ``printed`` (template space, nonzero =
     printed text known to be there, e.g. typed "XXXX" in unused rows, or a
     label an officer signed next to): its ink is no part of any signature.
@@ -714,6 +715,8 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=Non
     row_h = float(np.median([z.rect[3] for z in cells]))
     ink = ink_mask(strip, row_h, signature=True)
     _erase_strikes(ink, origin, strikes)
+    if exclude is not None:  # stamps: their rings are not signatures, and are never masked
+        ink[_column_strip(exclude, f, cells, above, below, SIG_OVERRUN)[0] > 127] = 0
     if printed is not None:
         ink[_ref_crop(255 - printed, origin, strip.shape) < 128] = 0
     stamps = _remove_stamp_rings(ink)
@@ -735,14 +738,14 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=Non
 def signature_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zone], s: MaskSettings,
                      margin: tuple[float, float] = (0.0, 0.0), ref: np.ndarray | None = None,
                      pad: float = 6.0, printed: np.ndarray | None = None, centered: bool = False,
-                     strikes: list[Strike] | None = None) -> list[dict]:
+                     strikes: list[Strike] | None = None, exclude: np.ndarray | None = None) -> list[dict]:
     """Black out each signature on its own box, instead of the whole column.
 
     Ink in the column (plus SIG_OVERRUN px each side, plus the zone's search
     margin above/below) is split into signatures; each gets its own padded
     box. Empty rows stay untouched."""
     blobs, origin, bands, cells = _find_signatures(gray, f, cells, s, margin, ref, SIG_BELOW, printed, centered,
-                                                   strikes)
+                                                   strikes, exclude)
     counts = [0] * len(cells)
     for x0, y0, x1, y1, _ in blobs:
         quad = np.float64([[x0 - pad, y0 - pad], [x1 + pad, y0 - pad], [x1 + pad, y1 + pad], [x0 - pad, y1 + pad]])
@@ -757,7 +760,8 @@ def signature_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Z
 def verify_signatures(gray: np.ndarray, out: np.ndarray, f: Mapper, cells: list[Zone], ref: np.ndarray | None,
                       s: MaskSettings, margin=(0.0, 0.0), more_below: float = SIG_BELOW,
                       keep: np.ndarray | None = None, printed: np.ndarray | None = None,
-                      centered: bool = False, strikes: list[Strike] | None = None) -> str:
+                      centered: bool = False, strikes: list[Strike] | None = None,
+                      exclude: np.ndarray | None = None) -> str:
     """Coverage check: find signatures again on the *original* image, over a
     window reaching further down (drift on bent pages is downward), and
     require each to be at least 90% under black in the redacted image.
@@ -767,7 +771,7 @@ def verify_signatures(gray: np.ndarray, out: np.ndarray, f: Mapper, cells: list[
     it, and ink lying mostly inside a stamp (the stamp's own lettering, or
     writing on top of it) is not required to be masked at all."""
     blobs, origin, _, cells = _find_signatures(gray, f, cells, s, margin, ref, more_below, printed, centered,
-                                               strikes)
+                                               strikes, exclude)
     above, below = _sig_window(cells, s, margin, more_below)
     o = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY) if out.ndim == 3 else out
     ostrip = _column_strip(o, f, cells, above, below, SIG_OVERRUN)[0]
