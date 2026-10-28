@@ -140,7 +140,13 @@ date was masked with it:
 - the field's printed underline joins the strokes it crosses, so a loop of
   the signature through the line stays part of it, but it sets no mask's
   width: on layout B the underline is shorter than the field, and was taken
-  as part of the signature, stretching its mask to the line's end;
+  as part of the signature, stretching its mask to the line's end. Where
+  the scan breaks the line into dashes, ink lying wholly within a few
+  pixels of it is taken as the line too: joined through it, those pieces
+  stretched the mask along the line and past a stamp;
+- a field's line is at most two thin lines. A scan striped all over with
+  long horizontal lines has no line taken out at all: every stripe would
+  have been taken for it, and the signature written across them with it;
 - each signature is masked in up to three boxes (above its line, on it,
   below it), so a loop reaching down covers its own width of the line
   below, not the whole signature's.
@@ -705,6 +711,11 @@ by a test where one can be written:
   neighbouring rows, the boxes merge into one patch. Any writing inside a
   signature box (e.g. a phone number continued into the column, or part of
   the "Signature" label) is hidden with it.
+- **Striped scans get small masks on empty fields.** One 34B scan
+  (Diaspora) is covered in broken horizontal stripes. Pieces of them in
+  signature fields and columns are taken for writing and masked, so empty
+  fields there show scattered black bars. That over-masks; telling stripe
+  pieces from a faint signature's broken strokes would risk the reverse.
 - **Block granularity.** Blocks are 8 px wide and a handwritten digit is about
   15–20 px, so a black block can also clip the edge of a neighbouring visible
   character.
