@@ -432,14 +432,16 @@ pub fn snap(gray: &Mat, h: &[[f64; 3]; 3], region: &Region) -> Result<Snap> {
     let dst: Vector<Point2f> = p.iter().flat_map(|r| r.iter().map(|q| Point2f::new(q[0] as f32, q[1] as f32))).collect();
     let g = calib3d::find_homography(&src, &dst, &mut Mat::default(), 0, 3.0)?;
     let gh = util::arr3(&g)?;
-    let mut se = 0.0;
-    let mut n = 0.0;
-    for (a, b) in src.iter().zip(dst.iter()) {
-        let q = util::project(&gh, [a.x as f64, a.y as f64]);
-        se += (q[0] - b.x as f64).powi(2) + (q[1] - b.y as f64).powi(2);
-        n += 1.0;
-    }
-    let rms = (se / n).sqrt();
+    // as numpy: float32 projections against the float64 grid
+    let d2: Vec<f64> = src
+        .iter()
+        .zip(p.iter().flatten())
+        .map(|(a, q)| {
+            let r = util::project(&gh, [a.x as f64, a.y as f64]);
+            (r[0] as f32 as f64 - q[0]).powi(2) + (r[1] as f32 as f64 - q[1]).powi(2)
+        })
+        .collect();
+    let rms = util::np_mean(&d2).sqrt();
     if rms > max_rms {
         return Ok(Snap { rms, ..Snap::fail(format!("{}: rule grid doesn't fit (rms {:.1}px)", region.name, rms), ph.len(), pv.len()) });
     }
