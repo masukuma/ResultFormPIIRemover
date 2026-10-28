@@ -725,7 +725,12 @@ def _own_rule(strip: np.ndarray, lo: int, hi: int) -> np.ndarray:
     # line separately, so that writing between two lines is never taken.
     runs = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1)))
     rule = np.zeros_like(bw)
-    for line in np.split(rows, np.flatnonzero(np.diff(rows) > 3) + 1) if len(rows) else ():
+    lines = np.split(rows, np.flatnonzero(np.diff(rows) > 3) + 1) if len(rows) else []
+    if len(lines) > 2 or any(line[-1] - line[0] > 12 for line in lines):
+        # Not a printed line (a scan striped all over, say): taking it out
+        # would take out whatever is written across it.
+        return rule
+    for line in lines:
         top, bot = max(line[0] - 2, 0), line[-1] + 3
         rule[top:bot] = runs[top:bot]
     return cv2.dilate(rule, np.ones((3, 3), np.uint8))  # ink_mask's speckle opening shifts ink by a pixel
@@ -765,6 +770,15 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=Non
         # and stay.
         rule = _own_rule(strip, lo, hi)
         ink[rule > 0] = 0
+        # What is left of the line where the scan broke it into dashes: ink
+        # lying wholly within a few pixels of it. Joined through the line,
+        # those pieces stretched a signature's mask along all of it.
+        near = cv2.dilate(rule.any(axis=1).astype(np.uint8)[:, None], np.ones((7, 1), np.uint8))[:, 0] == 0
+        n, lab, st, _ = cv2.connectedComponentsWithStats((ink > 0).astype(np.uint8))
+        off_line = np.concatenate([[0], np.cumsum(near)])
+        flat = off_line[st[:, 1] + st[:, 3]] == off_line[st[:, 1]]
+        flat[0] = False
+        ink[flat[lab]] = 0
         bridge = cv2.dilate(rule, np.ones((5, 1), np.uint8))  # spans the gap cut where the line was taken out
         n, lab = cv2.connectedComponents(((ink > 0) | (bridge > 0)).astype(np.uint8))
         on = ink > 0

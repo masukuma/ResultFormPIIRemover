@@ -252,3 +252,52 @@ def test_the_date_below_an_underlined_signature_stays_visible(underline):
     unmasked[sig_ink & (np.arange(img.shape[0]) > 205)[:, None]] = 20  # only the loop left showing
     assert "not fully masked" in masking.verify_signatures(img, unmasked, IDENTITY, field, None, MaskSettings(),
                                                            centered=True)
+
+
+def _underlined_signature(line) -> tuple[np.ndarray, np.ndarray, list[Zone]]:
+    """A signature on its line, 150-400 px; ``line(img)`` draws the line."""
+    img = np.full((320, 900), 235, np.uint8)
+    line(img)
+    rng = np.random.default_rng(1)
+    pts = np.cumsum(rng.integers(-5, 6, (60, 2)), axis=0) + (150, 178)
+    pts[:, 0] = np.linspace(150, 400, 60)
+    pts = np.clip(pts, (0, 160), (900, 196))
+    cv2.polylines(img, [pts.astype(np.int32)], False, 20, 2)
+    sig = np.zeros(img.shape, np.uint8)
+    cv2.polylines(sig, [pts.astype(np.int32)], False, 1, 2)
+    return img, sig > 0, [Zone("ro_signature", (100, 150, 600, 55), "signature", search=(0, 10))]
+
+
+def test_a_broken_underline_does_not_stretch_the_signature_mask():
+    """A scan breaks the line into dashes; joined through the line, they
+    stretched the mask along all of it, up to a stamp beyond."""
+    def dashed(img):
+        cv2.line(img, (60, 200), (780, 200), 60, 2)
+        for x in range(450, 780, 40):  # gaps the line runs through less cleanly
+            img[197:204, x:x + 20] = 235
+            img[201:203, x + 4:x + 12] = 60
+    img, sig, field = _underlined_signature(dashed)
+    canvas = np.full(img.shape, 255, np.uint8)
+    masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), centered=True)
+    assert (canvas[sig] == 0).mean() > 0.97
+    assert (canvas[:, 420:] == 255).all()
+
+
+def test_a_striped_scan_is_no_underline():
+    """Some scans are striped with long horizontal lines all over. They are
+    not the field's line: taking them out would take the signature with them."""
+    def stripes(img):
+        rng = np.random.default_rng(2)
+        for y in range(140, 260, 5):  # broken and uneven, as scanned
+            x = int(rng.integers(0, 40))
+            while x < 900:
+                n = int(rng.integers(60, 250))
+                img[y:y + 2, x:x + n] = 110
+                x += n + int(rng.integers(8, 30))
+    img, sig, field = _underlined_signature(stripes)
+    canvas = np.full(img.shape, 255, np.uint8)
+    masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), centered=True)
+    assert (canvas[sig] == 0).mean() > 0.97
+    out = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    assert "not fully masked" in masking.verify_signatures(img, out, IDENTITY, field, None, MaskSettings(),
+                                                           centered=True)
