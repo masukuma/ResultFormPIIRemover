@@ -10,6 +10,10 @@ form: 34B
 reference: reference.png
 page_long_side: 3308  # the reference is cut from a 2339x3308 page
 padding: 8
+# Agents table rows here are tall (80 px or more) and agents often write small: a
+# character counts from a quarter of the row height (40% by default), or a
+# whole ID written small is taken for unreadable ink and hidden entirely.
+min_glyph_h: 0.25
 # Features at 2400 px with a larger budget, as for layouts B and C: at the
 # default 1200 px the security-print background crowds out the text's
 # features on large scans (pages up to 4960 px).

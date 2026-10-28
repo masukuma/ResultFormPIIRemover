@@ -206,6 +206,22 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
     def struck(cells) -> list:
         return strikes.get(cells[0].region, [])
 
+    # Stamps: found before masking, so that an ID field a stamp lies on doesn't
+    # take the stamp's ring for characters. They are never masked (below).
+    t = a.template
+    tw, th = t.size
+    k = _scale(a.H, (tw / 2, th / 2)) * (t.page_long_side or max(tw, th)) / 2340.0
+    # stamp radius: 60-135 px on a 2340 px page (stamps measure 70-110; loops
+    # in signatures and dates, which must stay masked, come out at 30-60)
+    r_range = (60 * k, 135 * k)
+    maps = stamps.ink_maps(img)
+    on_page = stamps.find(img, r_range, maps=maps)
+    stamp_ink = stamps.protect_mask(gray.shape, on_page, STAMP_MARGIN) if on_page else None
+    def zms(cells) -> MaskSettings:
+        # a template's glyph-size floor is for its table rows; single lines
+        # sit close to the next line's writing, and keep the default
+        return dataclasses.replace(ms, min_glyph_h=t.min_glyph_h) if t.min_glyph_h and cells[0].region else ms
+
     canvas = np.full(gray.shape, 255, np.uint8)  # 0 = hide
     report = []
     for z in a.template.zones:
@@ -218,18 +234,12 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
         report += masking.signature_column(canvas, gray, mapper(cells), cells, ms, margin(cells), a.template.image,
                                            strikes=struck(cells))
     for cells in columns.values():
-        report += masking.partial_column(canvas, gray, mapper(cells), cells, ms, rng, margin(cells), a.template.image,
-                                         strikes=struck(cells))
+        report += masking.partial_column(canvas, gray, mapper(cells), cells, zms(cells), rng, margin(cells),
+                                         a.template.image,
+                                         strikes=struck(cells), exclude=stamp_ink)
 
     # Stamps: never masked.
-    t = a.template
-    tw, th = t.size
-    k = _scale(a.H, (tw / 2, th / 2)) * (t.page_long_side or max(tw, th)) / 2340.0
-    # stamp radius: 60-135 px on a 2340 px page (stamps measure 70-110; loops
-    # in signatures and dates, which must stay masked, come out at 30-60)
-    r_range = (60 * k, 135 * k)
-    maps = stamps.ink_maps(img)
-    found, keep, stamp_notes = protect_stamps(img, canvas, stamps.find(img, r_range, maps=maps), r_range, maps)
+    found, keep, stamp_notes = protect_stamps(img, canvas, on_page, r_range, maps)
     notes += stamp_notes
     blocks, out = _apply(img, canvas, keep)
 
@@ -245,8 +255,8 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
 
     # Final gate: re-read every masked column from the output.
     leaks = [r for cells in columns.values()
-             if verify and (r := masking.verify_column(out, mapper(cells), cells, a.template.image, ms,
-                                                       strikes=struck(cells)))]
+             if verify and (r := masking.verify_column(out, mapper(cells), cells, a.template.image, zms(cells),
+                                                       strikes=struck(cells), exclude=stamp_ink))]
     leaks += [r for cells in signatures.values()
               if verify and (r := masking.verify_signatures(gray, out, mapper(cells), cells, a.template.image, ms,
                                                             margin(cells), keep=keep, strikes=struck(cells)))]
@@ -292,7 +302,8 @@ def redact_generic(img: np.ndarray, ms: MaskSettings | None = None, rng: random.
         # template tables, but rows on these forms range from 1 to 1.4 text
         # lines, so here it is a share of the printed text height.
         row_h = float(np.median([z.rect[3] for z in fl.zones]))
-        return dataclasses.replace(ms, min_glyph_h=min(ms.min_glyph_h, 0.3 * generic.TEXT_H / row_h))
+        g = min(ms.min_glyph_h, 0.3 * generic.TEXT_H / row_h)
+        return dataclasses.replace(ms, min_glyph_h=g, min_glyph_h_out=g)
 
     print_mask, print_ref = generic.printed(L)
     # Lines drawn through unused rows of the agents table (see redact_page).
@@ -310,6 +321,10 @@ def redact_generic(img: np.ndarray, ms: MaskSettings | None = None, rng: random.
     def struck(fl):
         return strikes if fl.source == "table" else None
     canvas = np.full(gray.shape, 255, np.uint8)  # 0 = hide
+    r_range = tuple(v / L.frame.scale for v in generic.STAMP_R)
+    on_page = [stamps.Stamp(*f(np.float64([[st.cx, st.cy]]))[0], st.r / L.frame.scale, st.coverage, st.how)
+               for st in L.stamps]
+    stamp_ink = stamps.protect_mask(gray.shape, on_page, STAMP_MARGIN) if on_page else None
     report = []
     for fl in L.fields:
         if fl.kind == "signature" and fl.source == "free-text":
@@ -324,11 +339,8 @@ def redact_generic(img: np.ndarray, ms: MaskSettings | None = None, rng: random.
                                                centered=fl.source != "table", strikes=struck(fl))
         else:
             report += masking.partial_column(canvas, gray, f, fl.zones, field_settings(fl), rng, ref=print_ref,
-                                             strikes=struck(fl))
+                                             strikes=struck(fl), exclude=stamp_ink)
 
-    r_range = tuple(v / L.frame.scale for v in generic.STAMP_R)
-    on_page = [stamps.Stamp(*f(np.float64([[st.cx, st.cy]]))[0], st.r / L.frame.scale, st.coverage, st.how)
-               for st in L.stamps]
     found, keep, notes = protect_stamps(img, canvas, on_page, r_range)
     notes = L.notes + notes
     blocks, out = _apply(img, canvas, keep)
@@ -350,7 +362,8 @@ def redact_generic(img: np.ndarray, ms: MaskSettings | None = None, rng: random.
                 r = masking.verify_signatures(gray, out, f, fl.zones, None, ms, keep=keep, printed=print_mask,
                                               centered=fl.source != "table", strikes=struck(fl))
             else:
-                r = masking.verify_column(out, f, fl.zones, print_ref, field_settings(fl), strikes=struck(fl))
+                r = masking.verify_column(out, f, fl.zones, print_ref, field_settings(fl), strikes=struck(fl),
+                                          exclude=stamp_ink)
             if r:
                 leaks.append(r)
     if leaks:

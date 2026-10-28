@@ -94,6 +94,7 @@ class Template:
     feature_dim: int | None = None
     n_features: int | None = None
     open_top: frozenset = frozenset()  # structure regions hung under another table (see structure.Region)
+    min_glyph_h: float | None = None  # override MaskSettings.min_glyph_h (share of row height)
     # Filled in by prepare(): computed once per worker, reused for every page.
     regions: dict = field(default_factory=dict, repr=False)  # name -> structure.Region
     mask: np.ndarray | None = field(default=None, repr=False)
@@ -164,7 +165,8 @@ def load_template(directory: str | Path) -> Template:
                     float(spec["min_score"]) if "min_score" in spec else None,
                     int(spec["feature_dim"]) if "feature_dim" in spec else None,
                     int(spec["n_features"]) if "n_features" in spec else None,
-                    frozenset(r["name"] for r in spec.get("structure") or [] if r.get("open_top")))
+                    frozenset(r["name"] for r in spec.get("structure") or [] if r.get("open_top")),
+                    float(spec["min_glyph_h"]) if "min_glyph_h" in spec else None)
 
 
 def load_templates(root: str | Path) -> list[Template]:

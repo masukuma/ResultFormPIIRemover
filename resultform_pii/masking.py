@@ -36,6 +36,9 @@ class MaskSettings:
     # this window is masked
     mask_vpad: int = 3  # px above/below the glyph/row covered by a hidden slot
     min_glyph_h: float = 0.4  # glyph must be at least this share of row height
+    # ...and outside the rows themselves (the search margins, where headers and
+    # neighbouring lines are) at least this share, whatever min_glyph_h is
+    min_glyph_h_out: float = 0.4
     empty_ink: float = 0.01  # below this ink share a cell counts as empty
 
 
@@ -145,6 +148,18 @@ def _merge_strikes(segs: list[Strike]) -> list[Strike]:
         else:
             lines.append([x1, y1, x2, y2, sw])
     return [tuple(map(float, ln)) for ln in lines]
+
+
+def _in_rows(y: float, bands) -> bool:
+    return any(b0 <= y < b1 for b0, b1 in bands)
+
+
+def _exclude(ink: np.ndarray, exclude: np.ndarray | None, m: np.ndarray) -> None:
+    """Drop ink where ``exclude`` (image-sized, nonzero: e.g. stamps) is set;
+    ``m`` maps strip pixels to image coordinates."""
+    if exclude is not None:
+        e = cv2.remap(exclude, m[..., 0], m[..., 1], cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        ink[e > 0] = 0
 
 
 def _erase_strikes(ink: np.ndarray, origin, strikes: list[Strike] | None) -> None:
@@ -366,7 +381,8 @@ def choose_hidden(n: int, rule: str, rng: random.Random, s: "MaskSettings") -> l
 
 def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zone],
                    s: MaskSettings, rng: random.Random, margin: tuple[float, float] = (0.0, 0.0),
-                   ref: np.ndarray | None = None, strikes: list[Strike] | None = None) -> list[dict]:
+                   ref: np.ndarray | None = None, strikes: list[Strike] | None = None,
+                   exclude: np.ndarray | None = None) -> list[dict]:
     """Hide a random subset of characters in every cell of one table column.
 
     ``margin`` (px above, px below) widens the search when the column's
@@ -398,6 +414,7 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
     row_h = float(np.median([z.rect[3] for z in cells]))
     ink = ink_mask(strip, row_h)
     _erase_strikes(ink, to_template, strikes)
+    _exclude(ink, exclude, m)
 
     # cell bands in strip coordinates
     bands = [(z.rect[1] - y + vpad, z.rect[1] - y + vpad + z.rect[3]) for z in cells]
@@ -416,6 +433,8 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
     for gx, gy, gw, gh, area in st[1:]:
         if gh < s.min_glyph_h * row_h or area <= 30:
             continue
+        if gh < s.min_glyph_h_out * row_h and not _in_rows(gy + gh / 2, bands):
+            continue  # small, and not in a row: header text or the line above, not an entry
         if R_ink is not None and _looks_printed(ink, R_ink, gx, gy, gw, gh):
             printed.append(Glyph(int(gx), int(gx + gw), int(gy), int(gy + gh)))
             continue
@@ -439,6 +458,11 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
             per_row[i].append({"mode": "full"})
             continue
         hidden = choose_hidden(len(slots), cells[i].rule, rng, s)
+        # The line's typical extent, not its tallest outlier: a stroke from the
+        # line above (or a stamp's edge) would otherwise stretch every hidden
+        # digit's mask up into a name.
+        mt = float(np.median([g.y0 for g in line]))
+        mb = float(np.median([g.y1 for g in line]))
         # A hidden character's mask runs from the midpoint with its left
         # neighbour to the midpoint with its right one, over the line's full
         # height plus a margin. Glyph boxes come from cleaned ink (rule
@@ -447,9 +471,10 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
         pitch = (slots[-1].x1 - slots[0].x0) / len(slots)
         lo = [slots[0].x0 - pitch / 2] + [(a.x1 + b.x0) / 2 for a, b in zip(slots, slots[1:])]
         hi = [(a.x1 + b.x0) / 2 for a, b in zip(slots, slots[1:])] + [slots[-1].x1 + pitch / 2]
-        h = bot - top  # margins cover a shaved top bar, not the rows above/below
-        y0, y1 = top - 0.15 * h - 2, bot + 0.1 * h + 2
+        h = mb - mt  # margins cover a shaved top bar, not the rows above/below
         for j in hidden:
+            y0 = min(slots[j].y0, mt) - 0.15 * h - 2  # the whole of this character, at least the line's height
+            y1 = max(slots[j].y1, mb) + 0.1 * h + 2
             quad = np.float64([[lo[j], y0], [hi[j], y0], [hi[j], y1], [lo[j], y1]])
             _fill(img, f, quad + to_template)
         per_row[i].append({"mode": "partial", "slots": len(slots), "hidden": hidden})
@@ -477,7 +502,7 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
 
 def verify_column(out: np.ndarray, f: Mapper, cells: list[Zone], ref: np.ndarray | None,
                   s: MaskSettings, window: tuple[float, float] | None = None, max_run: int | None = None,
-                  strikes: list[Strike] | None = None) -> str:
+                  strikes: list[Strike] | None = None, exclude: np.ndarray | None = None) -> str:
     """Independent leak check on the redacted image: re-read the column over
     a window (px above, below) at least as wide as the one used for masking --
     drift on bent pages is downward, and the declaration with the officers'
@@ -506,6 +531,7 @@ def verify_column(out: np.ndarray, f: Mapper, cells: list[Zone], ref: np.ndarray
     row_h = float(np.median([z.rect[3] for z in cells]))
     ink = ink_mask(np.where(masked, 255, strip).astype(np.uint8), row_h)
     _erase_strikes(ink, (x, oy), strikes)
+    _exclude(ink, exclude, m)
     R = None
     if ref is not None:
         R = np.full((sh, sw), 255, np.uint8)
@@ -513,8 +539,10 @@ def verify_column(out: np.ndarray, f: Mapper, cells: list[Zone], ref: np.ndarray
         crop = ref[max(0, y0):y0 + sh, max(0, x0):x0 + sw]
         R[max(0, -y0):max(0, -y0) + crop.shape[0], max(0, -x0):max(0, -x0) + crop.shape[1]] = crop
     _, _, st, _ = cv2.connectedComponentsWithStats(ink)
+    bands = [(z.rect[1] - oy, z.rect[1] - oy + z.rect[3]) for z in cells]
     glyphs = [Glyph(int(a), int(a + b), int(c), int(c + d)) for a, c, b, d, area in st[1:]
               if d >= s.min_glyph_h * row_h and area > 30
+              and (d >= s.min_glyph_h_out * row_h or _in_rows(c + d / 2, bands))
               and not (R is not None and _looks_printed(ink, ink_mask(R, row_h), a, c, b, d))]
     for line in _text_lines(glyphs, row_h):
         line = _merge(line)
