@@ -33,7 +33,7 @@ def _cells(digits: int = 8) -> list[Zone]:
 IDENTITY = masking.homography(np.eye(3))
 
 
-def _middle_hidden(canvas: np.ndarray, sig: np.ndarray, chunk: int = 24) -> bool:
+def _middle_hidden(canvas: np.ndarray, sig: np.ndarray, chunk: int = 24, at_most: float = 0.85) -> bool:
     """One signature's ink (``sig``) is masked as prescribed: in every piece
     along it, the middle of its rows is under black, while a fair share of
     its ink (its tops and bottoms) stays visible."""
@@ -46,7 +46,7 @@ def _middle_hidden(canvas: np.ndarray, sig: np.ndarray, chunk: int = 24) -> bool
         lo, hi = np.quantile(ys[sel], (0.4, 0.6))
         if covered[sel & (ys >= lo) & (ys <= hi)].mean() < 0.8:
             return False
-    return 0.2 < covered.mean() < 0.85
+    return 0.2 < covered.mean() < at_most
 
 
 def _visible_runs(row_out: np.ndarray, row_in: np.ndarray) -> list[int]:
@@ -317,7 +317,7 @@ def test_a_striped_scan_is_no_underline():
     img, sig, field = _underlined_signature(stripes)
     canvas = np.full(img.shape, 255, np.uint8)
     masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), centered=True)
-    assert _middle_hidden(canvas, sig)
+    assert _middle_hidden(canvas, sig, at_most=0.95)  # stripes add to its height: a little more is hidden
     out = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     assert "not masked through the middle" in masking.verify_signatures(img, out, IDENTITY, field, None, MaskSettings(),
                                                            centered=True)

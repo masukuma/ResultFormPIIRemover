@@ -669,6 +669,7 @@ SIG_BELOW = 30.0  # extra px searched below: drift on bent pages is downward
 SIG_BAND_H = 0.5  # the band's thickness: this share of the signature's height...
 SIG_BAND_MIN = 10.0  # ...and at least this, px
 SIG_CHUNK = 24  # px: the band follows the writing in pieces this wide
+SIG_BAND_PAD = 2  # px masked beyond the band above and below
 
 
 def _column_strip(gray: np.ndarray, f: Mapper, cells: list[Zone], above: float, below: float, extra: float):
@@ -949,6 +950,9 @@ def signature_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Z
     for x0, y0, x1, y1, _, band in blobs:
         for bx0, by0, bx1, by1 in band:
             bx0, bx1 = bx0 - (pad if bx0 == x0 else 0), bx1 + (pad if bx1 == x1 else 0)
+            # a little beyond the band the check reads: its edge rows, warped
+            # back from the page, blend with the paper beside them
+            by0, by1 = by0 - SIG_BAND_PAD, by1 + SIG_BAND_PAD
             quad = np.float64([[bx0, by0], [bx1, by0], [bx1, by1], [bx0, by1]])
             _fill(img, f, quad + origin)
         cy = (y0 + y1) / 2

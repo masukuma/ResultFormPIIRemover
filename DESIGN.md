@@ -141,7 +141,9 @@ not the signature itself:
    doesn't thin it; at least 10 px). Each piece is centred on the middle
    row of its own ink and on that of the writing around it (the median of
    the middles of the two pieces either side); where they differ (a loop,
-   a tall letter) it covers both. Empty rows are untouched.
+   a tall letter) it covers both. The mask reaches 2 px beyond the band,
+   whose edge rows, warped back from the page, blend with the paper.
+   Empty rows are untouched.
 
 **Underlined fields** (a signature on a line, not in a table) take only
 writing on their own line. The date is written on the next line, often so
@@ -311,7 +313,12 @@ part of a signature or a number visible under it.
   any ring found there that reaches into a mask is added. A ring there
   smaller than the stamp range must run all the way round: a handwritten
   "0" in a date, with a signature's strokes around it, fitted a small
-  broken ring, and the signature inside it was left visible.
+  broken ring, and the signature inside it was left visible. And a ring
+  there must run in long arcs: on the sample forms the inked arcs of real
+  rings, faint ones included, average 14 or more of 180 steps round, while
+  a column of IDs in blue pen (coloured, like stamp ink) put short strokes
+  all round a circle (arcs of 7 on average) and took the IDs' masks off.
+  Near masks a ring needs arcs of 10 or more.
 - **Protection.** Each stamp's disc, plus a margin (6 px + 4% of the radius),
   is rounded out to whole 8×8 blocks and removed from the mask canvas. Writing
   under a stamp stays visible; the page notes say how much was lifted.

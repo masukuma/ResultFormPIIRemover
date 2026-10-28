@@ -98,3 +98,17 @@ def test_a_small_broken_ring_near_a_mask_is_not_a_stamp():
     _half_ring(big, 400, 400, 90, pen)
     found = stamps.near(big, hide, (50, 150), [])
     assert len(found) == 1 and abs(found[0].r - 90) < 10
+
+
+def test_writing_crossing_a_circle_near_a_mask_is_not_a_stamp():
+    """A column of IDs in blue pen ("coloured" ink, like stamp ink) can put
+    short strokes all round a circle. A stamp's ring, even broken, runs in
+    long arcs; crossings are short. Taken for a stamp, the IDs inside lost
+    their masks."""
+    pen = (160, 60, 20)
+    page = np.full((800, 800, 3), 245, np.uint8)
+    for a0 in range(0, 360, 10):  # short strokes all round a circle
+        cv2.ellipse(page, (400, 400), (90, 90), 0, a0, a0 + 5, pen, 3, cv2.LINE_AA)
+    hide = np.zeros(page.shape[:2], bool)
+    hide[380:420, 300:500] = True
+    assert stamps.near(page, hide, (50, 150), []) == []

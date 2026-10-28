@@ -142,6 +142,29 @@ LOOSE = {"dark": (0.7, 0.5, 0.45), "color": (0.4, 0.22, 0.3)}
 # all the way round with nothing outside it, which writing that happens to
 # lie on a circle doesn't do.
 FAINT = {"dark": (0.9, 0.4, 0.25), "color": (0.9, 0.2, 0.25)}
+# ...and its ink follows the circle in long arcs, even where it is broken: on
+# the sample forms the arcs of real rings average 14 or more of 180 steps
+# round, while handwriting crossing a circle (a column of IDs in blue pen,
+# which is "coloured") makes many short ones (seen: 7).
+MIN_ARC = 10
+
+
+def mean_arc(ink: np.ndarray, cx: float, cy: float, r: float, bins: int = 180) -> float:
+    """Mean length, in steps of 360/bins degrees, of the inked arcs of a ring."""
+    h, w = ink.shape
+    t = np.linspace(0, 2 * np.pi, bins, endpoint=False)[:, None]
+    tol = max(2.0, 0.05 * r)
+    radii = r + np.arange(-tol, tol + 0.5, 1.0)[None, :]
+    x = np.round(cx + radii * np.cos(t)).astype(int)
+    y = np.round(cy + radii * np.sin(t)).astype(int)
+    ok = (x >= 0) & (x < w) & (y >= 0) & (y < h)
+    hit = (ok & (ink[y.clip(0, h - 1), x.clip(0, w - 1)] > 0)).any(1)
+    if hit.all() or not hit.any():
+        return float(bins) if hit.all() else 0.0
+    hit = np.roll(hit, -int(np.argmin(hit)))  # start in a gap
+    edges = np.diff(np.concatenate([[0], hit.astype(int), [0]]))
+    runs = np.flatnonzero(edges == -1) - np.flatnonzero(edges == 1)
+    return float(runs.mean())
 
 
 def _candidates(ink: np.ndarray, r_range: tuple[float, float], param2: float) -> np.ndarray:
@@ -289,9 +312,14 @@ def near(img: np.ndarray, hide: np.ndarray, r_range: tuple[float, float], known:
         x, y, w, h, _ = st[i]
         X0, Y0 = max(0, x - reach), max(0, y - reach)
         sub = {k: m[Y0:y + h + reach, X0:x + w + reach] for k, m in maps.items()}
-        for t in _rings(sub, rr, 22, (LOOSE, FAINT), "near-mask", (X0, Y0)):
+        for kind, cx, cy, r, meas in _measure(sub, rr, 22, (X0, Y0)):
+            if not _passing([(kind, cx, cy, r, meas)], (LOOSE, FAINT), "near-mask"):
+                continue
+            t = Stamp(cx, cy, r, meas[0], "near-mask")
             if not hs[(xx - t.cx) ** 2 + (yy - t.cy) ** 2 <= (t.r * 1.05) ** 2].any():
                 continue  # only rings that reach the mask matter here
+            if mean_arc(sub[kind], cx - X0, cy - Y0, r) < MIN_ARC:
+                continue  # crossings, not a ring
             if t.r < rr[0] and t.coverage < FAINT["color"][0]:
                 # Smaller than any stamp, and broken: a handwritten "0" with
                 # the strokes around it (a date under a signature) fits such
