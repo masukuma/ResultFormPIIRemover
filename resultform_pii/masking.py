@@ -229,7 +229,26 @@ def _binarize(strip: np.ndarray) -> np.ndarray:
     c = cv2.GaussianBlur(strip, (3, 3), 0).astype(np.float32)
     p1, p99 = np.percentile(c, [1, 99])
     c = np.clip((c - p1) / max(p99 - p1, 60.0) * 255, 0, 255).astype(np.uint8)
-    return cv2.adaptiveThreshold(c, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, 45)
+    bw = cv2.adaptiveThreshold(c, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, 45)
+    return _destripe(bw)
+
+
+STRIPED = 0.08  # share of a strip's rows mostly covered by thin lines that makes it a striped scan
+
+
+def _destripe(bw: np.ndarray) -> np.ndarray:
+    """Some forms are embossed, or scanned with a striped background: at
+    template scale the background comes out as thin, dark horizontal lines
+    every few pixels, its lettering as kinks in them. In empty fields they
+    were taken for writing and masked. Where many rows of a strip are mostly
+    thin line (no plain scan comes near: 0-1% of rows, against 16-31% on the
+    one embossed form in the samples), thin horizontal runs are dropped. Pen
+    strokes are thicker; a stripe crossing one leaves it whole."""
+    thin = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (12, 1)))
+    thin &= ~cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3)))
+    if ((thin > 0).mean(axis=1) > 0.2).mean() < STRIPED:
+        return bw
+    return cv2.subtract(bw, thin)
 
 
 def ink_mask(strip: np.ndarray, row_h: float, signature: bool = False) -> np.ndarray:
@@ -872,7 +891,10 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=Non
             rows = np.arange(b[1], b[3])
             inside = sub[(rows >= lo) & (rows < hi)].sum()
             return inside / max(sub.sum(), 1)
-        blobs = [b for b in blobs if share(b) >= 0.3]
+        # Ink cut off by the window's top edge that ends in the field's upper
+        # half hangs down from the line above (its underline, the foot of
+        # an ID); a signature written on this line reaches further down.
+        blobs = [b for b in blobs if share(b) >= 0.3 and not (b[1] <= 1 and b[3] < (lo + hi) / 2)]
     return blobs, origin, bands, cells
 
 

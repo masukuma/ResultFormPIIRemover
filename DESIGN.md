@@ -181,6 +181,14 @@ mapped edge by edge so they stay covered on curled pages.
      testing;
    - leftover thin fragments of rules;
    - printed dotted leaders ("ID Number: ........");
+   - an embossed or striped background. Some forms are embossed, and scan
+     with a background of thin, dark horizontal lines every few pixels, its
+     lettering kinks in them, as dark as print. In empty fields it was
+     taken for writing and masked. Where many rows of a strip are mostly
+     thin line (8% or more; 0-1% on plain scans, 16-31% on the embossed one
+     in the samples), thin horizontal runs (12 px or longer, under 3 px
+     tall) are dropped. Pen strokes are thicker, and a line crossing one
+     leaves it whole. This applies to signatures as well;
    - strike lines found over the whole table (below);
    - the ink of stamps found on the page. Stamps are found before anything
      is masked: a ring read as a digit stretched one ID's masks up into the
@@ -743,11 +751,10 @@ by a test where one can be written:
   neighbouring rows, the boxes merge into one patch. Any writing inside a
   signature box (e.g. a phone number continued into the column, or part of
   the "Signature" label) is hidden with it.
-- **Striped scans get masks on empty fields.** One 34B scan (Diaspora) is
-  covered in broken horizontal stripes. Pieces of them in signature and ID
-  fields are taken for writing and masked, so empty fields there show black
-  bars. That over-masks; telling stripe
-  pieces from a faint signature's broken strokes would risk the reverse.
+- **Thin pen strokes on embossed forms.** On a form whose background
+  scans as thin lines (below), pen strokes as thin as that background (a
+  fine, flat flourish) are dropped with it and stay visible; the rest of
+  the signature is masked.
 - **Block granularity.** Blocks are 8 px wide and a handwritten digit is about
   15–20 px, so a black block can also clip the edge of a neighbouring visible
   character.

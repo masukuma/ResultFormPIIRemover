@@ -409,3 +409,34 @@ def test_crumbs_of_print_in_an_empty_field_are_not_a_signature():
     canvas = np.full(img.shape, 255, np.uint8)
     rep = masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), centered=True)
     assert rep[0]["mode"] == "empty" and (canvas == 255).all()
+
+
+def test_an_embossed_background_in_empty_fields_is_not_writing():
+    """Embossed forms scan with a background of thin dark horizontal lines
+    every few pixels, its lettering kinks in them. In empty fields it was
+    taken for writing and masked; written fields are still masked."""
+    def embossed(img):
+        rng = np.random.default_rng(5)
+        for y in range(0, img.shape[0], 5):
+            x = 0
+            while x < img.shape[1]:  # runs of line, each kinked a pixel or two up or down
+                n = int(rng.integers(20, 120))
+                dy = int(rng.integers(-1, 2))
+                img[y + dy:y + dy + 2, x:x + n] = 25
+                x += n
+        for _ in range(img.size // 900):  # the lettering: kinks bridging neighbouring lines
+            x, y = int(rng.integers(0, img.shape[1] - 4)), int(rng.integers(0, img.shape[0] - 6))
+            img[y:y + 6, x:x + 2] = 25
+    img, sig, field = _underlined_signature(lambda im: (embossed(im), cv2.line(im, (60, 200), (780, 200), 30, 2)))
+    canvas = np.full(img.shape, 255, np.uint8)
+    rep = masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), centered=True)
+    assert rep[0]["mode"] == "signature" and (canvas[sig] == 0).mean() > 0.97
+    assert (canvas[:, 430:] == 255).all()  # the empty rest of the field
+    empty = np.full((320, 900), 235, np.uint8)
+    embossed(empty)
+    ids = _id_field(empty)
+    canvas = np.full(empty.shape, 255, np.uint8)
+    assert masking.partial_column(canvas, empty, IDENTITY, ids, MaskSettings(), random.Random(1))[0]["mode"] == "empty"
+    sigs = [Zone("s", (100, 210, 600, 55), "signature", search=(0, 10))]
+    assert masking.signature_column(canvas, empty, IDENTITY, sigs, MaskSettings(), centered=True)[0]["mode"] == "empty"
+    assert (canvas == 255).all()
