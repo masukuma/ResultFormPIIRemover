@@ -37,6 +37,7 @@ zones:
     rect: [538, 160, 275, 81]
     rows: 4
     row_step: 83.3
+    search: [60, 20]   # the Returning Officer's name, written large, can start 60 px below the table
     region: agents
   - name: agent_phone
     action: partial
@@ -45,6 +46,7 @@ zones:
     rect: [1131, 160, 314, 81]
     rows: 4
     row_step: 83.3
+    search: [60, 20]   # the Returning Officer's name, written large, can start 60 px below the table
     region: agents
   - name: agent_signatures
     action: signature

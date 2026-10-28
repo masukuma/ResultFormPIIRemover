@@ -301,3 +301,80 @@ def test_a_striped_scan_is_no_underline():
     out = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     assert "not fully masked" in masking.verify_signatures(img, out, IDENTITY, field, None, MaskSettings(),
                                                            centered=True)
+
+
+@pytest.mark.parametrize("with_ref", [False, True])
+def test_a_flat_flourish_is_not_the_printed_line(with_ref):
+    """A signature's long straight tail above its line is a long flat line
+    too; taken for the printed line, it was left visible."""
+    def line(img):
+        cv2.line(img, (60, 200), (780, 200), 60, 2)
+    img, sig, field = _underlined_signature(line)
+    end = tuple(int(v) for v in np.argwhere(sig)[np.argmax(np.argwhere(sig)[:, 1])][::-1])
+    cv2.line(img, end, (end[0] + 10, 186), 20, 2)  # the tail, drawn on from the signature
+    cv2.line(img, (end[0] + 10, 186), (720, 186), 20, 2)
+    tail = np.zeros(img.shape, np.uint8)
+    cv2.line(tail, (end[0] + 10, 186), (720, 186), 1, 2)
+    ref = None
+    if with_ref:
+        ref = np.full(img.shape, 235, np.uint8)
+        cv2.line(ref, (60, 208), (780, 208), 60, 2)  # a layout variant: 8 px off
+    canvas = np.full(img.shape, 255, np.uint8)
+    masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), ref=ref, centered=True)
+    assert (canvas[sig] == 0).mean() > 0.97
+    assert (canvas[tail > 0] == 0).mean() > 0.97
+    assert (canvas[150:205, 740:] == 255).all()  # the line beyond the tail
+
+
+def _id_field(img: np.ndarray) -> list[Zone]:
+    """An officer's ID field: from just below the name's line (y 115) to just
+    below its own (y 200), on a line running 60-780."""
+    cv2.line(img, (60, 115), (780, 115), 60, 2)
+    cv2.line(img, (60, 197), (780, 197), 60, 2)
+    return [Zone("ro_id", (100, 118, 600, 85), "partial", 8, rule="id", search=(0, 6))]
+
+
+def test_writing_too_small_to_read_is_hidden_at_its_own_width():
+    """An ID written too small to read as characters is hidden whole, but
+    only as wide as the writing: across the field's full width the mask ran
+    on behind the stamp beside it."""
+    img = np.full((320, 900), 235, np.uint8)
+    field = _id_field(img)
+    cv2.putText(img, "2442587", (130, 190), cv2.FONT_HERSHEY_SIMPLEX, 1.2, 20, 4)  # ~28 px: under 40% of 85
+    canvas = np.full(img.shape, 255, np.uint8)
+    rep = masking.partial_column(canvas, img, IDENTITY, field, MaskSettings(), random.Random(1))
+    assert rep[0]["mode"] == "full"
+    digits = img[150:196] < 120
+    assert (canvas[150:196][digits] == 0).all()
+    assert (canvas[:, 400:] == 255).all()
+
+
+def test_the_name_above_reaching_into_an_id_field_is_not_part_of_the_id():
+    """A name written large and low reaches into the ID field below it: cut
+    off at the field's top, its foot was taken for an eighth character, and
+    one of the three hidden slots went to it."""
+    img = np.full((320, 900), 235, np.uint8)
+    field = _id_field(img)
+    cv2.putText(img, "KIP", (420, 145), cv2.FONT_HERSHEY_SIMPLEX, 2.0, 20, 4)  # the name, low
+    cv2.putText(img, "6665112", (120, 190), cv2.FONT_HERSHEY_SIMPLEX, 1.3, 20, 3)
+    s = MaskSettings(min_glyph_h=0.25)
+    canvas = np.full(img.shape, 255, np.uint8)
+    rep = masking.partial_column(canvas, img, IDENTITY, field, s, random.Random(3))
+    assert rep[0]["mode"] == "partial" and rep[0]["lines"][0]["slots"] == 7, rep
+    assert (canvas[100:150, 410:560] == 255).all()  # the name stays visible
+    out = cv2.cvtColor(np.where(canvas == 0, 0, img).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+    assert masking.verify_column(out, IDENTITY, field, None, s) == ""
+
+
+def test_print_sitting_on_the_line_is_not_joined_to_the_signature():
+    """The line joins strokes crossing it, not everything touching it: a
+    security print's lettering sitting on the line stretched a signature's
+    mask along it."""
+    def line(img):
+        cv2.line(img, (60, 200), (780, 200), 60, 2)
+        cv2.putText(img, "ELECTORAL", (560, 198), cv2.FONT_HERSHEY_SIMPLEX, 0.9, 90, 2)
+    img, sig, field = _underlined_signature(line)
+    canvas = np.full(img.shape, 255, np.uint8)
+    masking.signature_column(canvas, img, IDENTITY, field, MaskSettings(), centered=True)
+    assert (canvas[sig] == 0).mean() > 0.97
+    assert (canvas[150:205, 420:550] == 255).all()

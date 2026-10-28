@@ -71,6 +71,18 @@ def blackout(img: np.ndarray, f: Mapper, zone: Zone, pad: float) -> None:
     _fill(img, f, zone.padded(pad))
 
 
+def _ink_span(ink: np.ndarray, y0: float, y1: float, pad: float) -> tuple[float, float] | None:
+    """Left and right ends of the ink between rows y0 and y1 (pieces over 30
+    px), widened by ``pad``: what a mask hiding all the writing there must
+    cover. None if there is none."""
+    _, _, st, _ = cv2.connectedComponentsWithStats(
+        (ink[max(int(y0), 0):max(int(np.ceil(y1)), 0)] > 0).astype(np.uint8))
+    big = st[1:][st[1:, 4] > 30]
+    if not len(big):
+        return None
+    return float(big[:, 0].min()) - pad, float((big[:, 0] + big[:, 2]).max()) + pad
+
+
 Strike = tuple[float, float, float, float, float]  # x1, y1, x2, y2 (template px), stroke width
 
 
@@ -148,6 +160,13 @@ def _merge_strikes(segs: list[Strike]) -> list[Strike]:
         else:
             lines.append([x1, y1, x2, y2, sw])
     return [tuple(map(float, ln)) for ln in lines]
+
+
+def _from_above(cells: list[Zone], bands, gy: float, gh: float) -> bool:
+    """On a single underlined field: writing cut off by the window's top edge
+    that ends in the field's upper half is the line above's (a name written
+    large and low), not part of the number written on this line."""
+    return not cells[0].region and gy <= 1 and gy + gh < (bands[0][0] + bands[0][1]) / 2
 
 
 def _in_rows(y: float, bands) -> bool:
@@ -440,6 +459,8 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
             continue
         if gh < s.min_glyph_h_out * row_h and not _in_rows(gy + gh / 2, bands):
             continue  # small, and not in a row: header text or the line above, not an entry
+        if _from_above(cells, bands, gy, gh):
+            continue
         if R_ink is not None and _looks_printed(ink, R_ink, gx, gy, gw, gh):
             printed.append(Glyph(int(gx), int(gx + gw), int(gy), int(gy + gh)))
             continue
@@ -458,7 +479,12 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
         top, bot = min(g.y0 for g in line), max(g.y1 for g in line)
         slots = char_slots(line, cells[i].digits, w)
         if slots is None:  # can't segment this line: hide it whole
-            quad = np.float64([[0, top], [w, top], [w, bot], [0, bot]])
+            # All of its ink, glyph or not (characters too small to count
+            # are part of it), but not the field's whole width: on an
+            # officer's line that ran on behind the stamp.
+            x0, x1 = _ink_span(ink, top, bot, 0.25 * row_h) or (0, w)
+            x0, x1 = max(x0, 0), min(x1, w)
+            quad = np.float64([[x0, top], [x1, top], [x1, bot], [x0, bot]])
             _fill(img, f, _grow(quad, s.mask_vpad + 4) + to_template)
             per_row[i].append({"mode": "full"})
             continue
@@ -498,7 +524,15 @@ def partial_column(img: np.ndarray, gray: np.ndarray, f: Mapper, cells: list[Zon
             continue
         share = stray[int(b0):int(b1)].mean() / 255 if b1 > b0 else 0.0
         if share >= 3 * s.empty_ink:
-            blackout(img, f, z, s.mask_vpad + 4)
+            # Ink, but no characters made of it: hide all of it (the cell's
+            # height, the ink's width).
+            span = _ink_span(stray, b0, b1, 0.25 * row_h)
+            if span is None:
+                blackout(img, f, z, s.mask_vpad + 4)
+            else:
+                x0, x1 = max(span[0], 0), min(span[1], w)
+                quad = np.float64([[x0, b0], [x1, b0], [x1, b1], [x0, b1]])
+                _fill(img, f, _grow(quad, s.mask_vpad + 4, s.mask_vpad + 4) + to_template)
             report.append({"zone": z.name, "mode": "full"})
         else:
             report.append({"zone": z.name, "mode": "empty"})
@@ -548,6 +582,7 @@ def verify_column(out: np.ndarray, f: Mapper, cells: list[Zone], ref: np.ndarray
     glyphs = [Glyph(int(a), int(a + b), int(c), int(c + d)) for a, c, b, d, area in st[1:]
               if d >= s.min_glyph_h * row_h and area > 30
               and (d >= s.min_glyph_h_out * row_h or _in_rows(c + d / 2, bands))
+              and not _from_above(cells, bands, c, d)
               and not (R is not None and _looks_printed(ink, ink_mask(R, row_h), a, c, b, d))]
     for line in _text_lines(glyphs, row_h):
         line = _merge(line)
@@ -712,27 +747,42 @@ def _signature_blobs(strip: np.ndarray, ink: np.ndarray, extra: float,
     return blobs
 
 
-def _own_rule(strip: np.ndarray, lo: int, hi: int) -> np.ndarray:
+def _own_rule(strip: np.ndarray, lo: int, hi: int, ref: np.ndarray | None = None) -> np.ndarray:
     """The printed line a field is written on (255): long and flat, within
     the field's rows. Taken out of a signature's ink it sets no box's size;
-    the strokes it joins stay one signature."""
+    the strokes it joins stay one signature.
+
+    ``ref``: the reference cropped like the strip; the line must be where
+    the reference has it. A signature's long flat flourish is a line too,
+    and was taken out (left visible) as one. Without a reference, the
+    lowest line in the field's lower part."""
     bw = _binarize(strip)
-    long = cv2.morphologyEx(bw, cv2.MORPH_OPEN,
-                            cv2.getStructuringElement(cv2.MORPH_RECT, (max(150, bw.shape[1] // 4), 1)))
-    rows = np.flatnonzero(long[max(lo - 4, 0):max(hi + 4, 0)].any(axis=1)) + max(lo - 4, 0)
-    # The whole line, ends included (a long run finds it, but a gap or a
-    # stroke crossing it breaks that run): horizontal runs on its rows. Each
-    # line separately, so that writing between two lines is never taken.
-    runs = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1)))
+    k = cv2.getStructuringElement(cv2.MORPH_RECT, (max(150, bw.shape[1] // 4), 1))
+    r0, r1 = max(lo - 4, 0), max(hi + 4, 0)
+    rows = np.flatnonzero(cv2.morphologyEx(bw, cv2.MORPH_OPEN, k)[r0:r1].any(axis=1)) + r0
     rule = np.zeros_like(bw)
     lines = np.split(rows, np.flatnonzero(np.diff(rows) > 3) + 1) if len(rows) else []
     if len(lines) > 2 or any(line[-1] - line[0] > 12 for line in lines):
         # Not a printed line (a scan striped all over, say): taking it out
         # would take out whatever is written across it.
         return rule
-    for line in lines:
-        top, bot = max(line[0] - 2, 0), line[-1] + 3
-        rule[top:bot] = runs[top:bot]
+    if ref is not None:
+        printed = cv2.morphologyEx(np.where(ref < 128, 255, 0).astype(np.uint8), cv2.MORPH_OPEN, k)
+        prows = np.flatnonzero(printed[r0:r1].any(axis=1)) + r0
+        if not len(prows):
+            return rule
+        at, reach = prows[np.argmin(np.abs(prows - hi))], 20  # a layout variant moves it ~10 px
+    else:
+        at, reach = hi, 0.4 * (hi - lo)
+    lines = [line for line in lines if abs(line.mean() - at) <= reach]
+    if not lines:
+        return rule
+    line = min(lines, key=lambda l: abs(l.mean() - at))
+    # The whole line, ends included (a long run finds it, but a gap or a
+    # stroke crossing it breaks that run): horizontal runs on its rows.
+    runs = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1)))
+    top, bot = max(line[0] - 2, 0), line[-1] + 3
+    rule[top:bot] = runs[top:bot]
     return cv2.dilate(rule, np.ones((3, 3), np.uint8))  # ink_mask's speckle opening shifts ink by a pixel
 
 
@@ -768,7 +818,7 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=Non
         # it to be joined into one blob. Tails and loops of the signature
         # itself are drawn in one stroke with it, or cross its underline,
         # and stay.
-        rule = _own_rule(strip, lo, hi)
+        rule = _own_rule(strip, lo, hi, _ref_crop(ref, origin, strip.shape))
         ink[rule > 0] = 0
         # What is left of the line where the scan broke it into dashes: ink
         # lying wholly within a few pixels of it. Joined through the line,
@@ -779,7 +829,18 @@ def _find_signatures(gray, f, cells, s, margin, ref, more_below=0.0, printed=Non
         flat = off_line[st[:, 1] + st[:, 3]] == off_line[st[:, 1]]
         flat[0] = False
         ink[flat[lab]] = 0
-        bridge = cv2.dilate(rule, np.ones((5, 1), np.uint8))  # spans the gap cut where the line was taken out
+        # The line joins only strokes crossing it (ink just above and just
+        # below it): not everything that touches it, such as the lettering
+        # of a security print sitting on it.
+        bridge = np.zeros_like(rule)
+        rows = np.flatnonzero(rule.any(axis=1))
+        if len(rows):
+            top, bot = rows[0], rows[-1] + 1
+            above = ink[max(top - 4, 0):top].any(axis=0)
+            below = ink[bot:bot + 4].any(axis=0)
+            wide = np.ones(7, np.uint8)  # a slanted stroke comes out a few px further along
+            cross = (np.convolve(above, wide, "same") > 0) & (np.convolve(below, wide, "same") > 0)
+            bridge[max(top - 2, 0):bot + 2, cross] = 255
         n, lab = cv2.connectedComponents(((ink > 0) | (bridge > 0)).astype(np.uint8))
         on = ink > 0
         rows = slice(max(lo, 0), max(hi, 0))

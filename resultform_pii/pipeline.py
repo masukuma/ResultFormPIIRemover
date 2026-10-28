@@ -218,9 +218,10 @@ def redact_page(img: np.ndarray, templates: list[Template], s: AlignSettings,
     on_page = stamps.find(img, r_range, maps=maps)
     stamp_ink = stamps.protect_mask(gray.shape, on_page, STAMP_MARGIN) if on_page else None
     def zms(cells) -> MaskSettings:
-        # a template's glyph-size floor is for its table rows; single lines
-        # sit close to the next line's writing, and keep the default
-        return dataclasses.replace(ms, min_glyph_h=t.min_glyph_h) if t.min_glyph_h and cells[0].region else ms
+        # A template's glyph-size floor: its forms are written small (on an
+        # officer's line too, where a whole ID was otherwise hidden at the
+        # line's full width).
+        return dataclasses.replace(ms, min_glyph_h=t.min_glyph_h) if t.min_glyph_h else ms
 
     canvas = np.full(gray.shape, 255, np.uint8)  # 0 = hide
     report = []
