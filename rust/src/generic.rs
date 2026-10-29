@@ -60,7 +60,7 @@ fn re(p: &str) -> Regex {
     Regex::new(p).unwrap()
 }
 
-pub(crate) static ID_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)passport|(?<![a-z])[I1l]\s?\.?\s?D\s*\.?\s*(?:/|no\b|no\.|num|number)|national\s*id"));
+pub(crate) static ID_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)passp[a-z]{0,4}|(?<![a-z])[I1l]\s?\.?\s?D\s*\.?\s*(?:/|no\b|no\.|num|number)|national\s*id"));
 pub(crate) static TEL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)(?<![a-z])tel(?![a-z])|telephone|contact|phone|mobile"));
 pub(crate) static SIG_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)signature|(?<![a-z])sign(?![a-z])"));
 static DATE_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)(?<!di)date"));
@@ -68,7 +68,8 @@ pub(crate) static REFUSAL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)refus"));
 static LABEL_RE: Lazy<Regex> = Lazy::new(|| {
     re(r"(?i)(?<!di)date|signature|name|officer|polling|station|constituency|county|ward|passport|(?<![a-z])tel(?![a-z])|contact|(?<![a-z])I\.?D(?![a-z])")
 });
-static DECL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)^\s*declaration|^\W*we,?\s*the\s*undersigned"));
+// the section, not a title "Declaration of ... results" (2013's Form 34)
+static DECL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)^\s*(?:\d{1,2}\s*[.)]\s*)?declaration(?!\s*of)|^\W*we,?\s*the\s*undersigned"));
 static COUNT_LABEL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)total\s*(?:number|valid)|registered\s*voters|valid\s*votes\s*(?:cast|obtained)"));
 static FREE_ID_RE: Lazy<Regex> = Lazy::new(|| re(r"(?<![\d/-])((?:\d\s?){6,8}\d)(?![\d/-])"));
 static ID_PREFIX_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)(?<![a-z])(?:[I1l|]\s?\.?\s?D|ID\s*no|ID\s*number)\s*\.?\s*[:.,;#-]?\s*(\S.{4,15})"));
@@ -751,6 +752,123 @@ fn declaration(l: &mut Layout, top: f64, bottom: f64) -> BTreeSet<usize> {
     used
 }
 
+static PARTY_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)party|independent"));
+static HEAD_WORDS: Lazy<Regex> = Lazy::new(|| re(r"(?i)names?|of|candidates?|or|agents?|party|independent|date|reasons?|for|refusal|to|sign|serial|remarks?|the|if|any|present|no"));
+
+/// Has every column of the table whose heading row is at `cy` a heading
+/// read, each a PII column found (`kinds`) or of none (number, name, party,
+/// date, reasons for refusal)? Then a table without ID or phone columns (a
+/// 2013 Form 34's: name, signature, reasons for refusal) has none. An
+/// unread or unknown heading may be the one missed; a column too narrow for
+/// a number needs none. A stamp over the headings, or a party column (the
+/// agents' table since 2017, which has them), says it may be missing.
+fn headings_read(l: &Layout, hs: &[Line], vs: &[Line], cy: f64, kinds: &BTreeSet<String>) -> bool {
+    let h = TEXT_H;
+    // the table's width: its top rule, the longest just above the headings
+    let Some(top) = hs.iter().filter(|r| r.at((r.lo + r.hi) / 2.0) < cy && r.at((r.lo + r.hi) / 2.0) > cy - 2.0 * h).max_by(|a, b| a.length().partial_cmp(&b.length()).unwrap()) else {
+        return false;
+    };
+    let row: Vec<&OLine> = l.lines.iter().filter(|o| (o.cy() - cy).abs() < 0.6 * h).collect();
+    // a stamp on the heading row may hide a heading, and the rule beside it
+    if l.stamps.iter().any(|s| (s.cy - cy).abs() < s.r + h && top.lo - h < s.cx + s.r && s.cx - s.r < top.hi + h) {
+        return false;
+    }
+    // a table with a party column is the agents' table of the forms since
+    // 2017, which has both ID and phone columns
+    if row.iter().any(|o| has(&PARTY_RE, &o.text)) && !(kinds.contains("id") && kinds.contains("phone")) {
+        return false;
+    }
+    // a column rule doesn't run through a heading (a scanner's streak may)
+    let mut xs: Vec<f64> = vs
+        .iter()
+        .filter(|v| v.lo < cy && cy < v.hi)
+        .map(|v| v.at(cy))
+        .filter(|&x| top.lo - h < x && x < top.hi + h && !row.iter().any(|o| o.bbox().0 + 0.5 * h < x && x < o.bbox().2 - 0.5 * h))
+        .collect();
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    if xs.len() < 3 {
+        return false;
+    }
+    for p in xs.windows(2) {
+        let (a, b) = (p[0], p[1]);
+        // too narrow for an ID or phone number (the rows' numbers)
+        if b - a < 3.0 * h {
+            continue;
+        }
+        let heads: Vec<&&OLine> = row.iter().filter(|o| a < center_x(o) && center_x(o) < b).collect();
+        if heads.is_empty() {
+            return false;
+        }
+        for o in heads {
+            let kind = if has(&ID_RE, &o.text) {
+                Some("id")
+            } else if has(&TEL_RE, &o.text) {
+                Some("phone")
+            } else if has(&SIG_RE, &o.text) && !has(&REFUSAL_RE, &o.text) {
+                Some("signature")
+            } else {
+                None
+            };
+            let known = match kind {
+                Some(k) => kinds.contains(k),
+                // a letter or two misread in a long heading ("to ign")
+                None => {
+                    let letters = o.text.chars().filter(|c| c.is_alphabetic()).count() as f64;
+                    let left = HEAD_WORDS.replace_all(&o.text, "").chars().filter(|c| c.is_alphabetic()).count() as f64;
+                    left <= 2.0f64.max(0.2 * letters)
+                }
+            };
+            if !known {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// A page that opens with an officer's lines, no declaration above them:
+/// it goes on with the declaration of the page before (a 2013 Form 34's
+/// back: the deputy's lines, the agents, comments), and has no results on
+/// it if no count is printed on it either. A word of results anywhere above
+/// the comments (a blurred front page whose labels OCR garbled) says
+/// otherwise.
+fn goes_on_with_declaration(lines: &[OLine], page_h: f64) -> bool {
+    lines.iter().any(|ln| ln.cy() < 0.2 * page_h && has(&ROLE_RE, &ln.text) && !stamps::is_stamp_text(&ln.text))
+        && !lines.iter().any(|ln| ln.cy() < 0.7 * page_h && has(&RESULTS_WORD_RE, &ln.text))
+}
+
+// an officer's role, not "presidential"
+static ROLE_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)deputy\s*presid|presiding\s*officer"));
+static RESULTS_WORD_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)vot|ballot|regist|reject|disput|result"));
+
+static AGENTS_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)agent"));
+
+/// Is there an agents' section below the results? With no table read under
+/// it, what they wrote there would be left to the free-text reading, which
+/// misses table cells.
+fn agents_section(lines: &[OLine], boundary: f64) -> bool {
+    lines.iter().any(|ln| ln.cy() > boundary && has(&AGENTS_RE, &ln.text))
+}
+
+static SECTION_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)agents|candidates|comments|refus"));
+
+/// Where officers' lines that run on from `from` end: each next labelled line
+/// (name, ID, signature, date) starting within a line and a half of the last.
+fn officer_lines_end(lines: &[OLine], from: f64) -> f64 {
+    let mut bottom = from;
+    loop {
+        let next = lines
+            .iter()
+            .filter(|ln| ln.bbox().1 < bottom + 1.5 * TEXT_H && ln.bbox().3 > bottom && has(&LABEL_RE, &ln.text))
+            .map(|ln| ln.bbox().3 + 0.3 * TEXT_H)
+            .reduce(f64::max);
+        match next {
+            Some(b) if b > bottom => bottom = b,
+            _ => return bottom,
+        }
+    }
+}
+
 // --- labelled fields outside tables -------------------------------------------------------------
 
 fn next_label_x(l: &Layout, ln: &OLine, after: f64) -> Option<f64> {
@@ -770,6 +888,7 @@ fn next_label_x(l: &Layout, ln: &OLine, after: f64) -> Option<f64> {
 }
 
 static FIVE_DIGITS: Lazy<Regex> = Lazy::new(|| re(r"\d{5}"));
+static JOIN_RE: Lazy<Regex> = Lazy::new(|| re(r"^[\s/.:,-]*$"));
 
 fn labels(l: &mut Layout, used: &BTreeSet<usize>, top: f64) {
     let right = l.lines.iter().map(|ln| ln.bbox().2).reduce(f64::max).unwrap_or(l.frame.size.0 as f64);
@@ -783,10 +902,18 @@ fn labels(l: &mut Layout, used: &BTreeSet<usize>, top: f64) {
                 continue;
             }
             let Some(m) = rx.find(&ln.text).ok().flatten() else { continue };
-            if kind != "signature" && has(&FIVE_DIGITS, &ln.text[m.end()..]) {
+            // a label of several words ("ID No. / Passport:") ends after the last
+            let mut end = m.end();
+            for n in rx.find_iter(&ln.text).filter_map(|n| n.ok()).filter(|n| n.start() >= m.end()) {
+                if !has(&JOIN_RE, &ln.text[end..n.start()]) {
+                    break;
+                }
+                end = n.end();
+            }
+            if kind != "signature" && has(&FIVE_DIGITS, &ln.text[end..]) {
                 continue;
             }
-            let (_, x1) = ln.span(char_index(&ln.text, m.start()), char_index(&ln.text, m.end()));
+            let (_, x1) = ln.span(char_index(&ln.text, m.start()), char_index(&ln.text, end));
             let h = ln.height();
             let end = next_label_x(l, &ln, x1);
             let fx0 = x1 + 0.15 * h;
@@ -1310,11 +1437,17 @@ pub fn analyze(img: &Mat, o: &mut Ocr) -> Result<Analysis> {
     let (ww, hh) = (f.size.0 as f64, f.size.1 as f64);
     let decl: Vec<OLine> = l.lines.iter().filter(|ln| has(&DECL_RE, &ln.text)).cloned().collect();
     let counts: Vec<OLine> = l.lines.iter().filter(|ln| has(&COUNT_LABEL_RE, &ln.text)).cloned().collect();
-    if decl.is_empty() {
+    let continued = decl.is_empty() && counts.is_empty() && goes_on_with_declaration(&l.lines, hh);
+    if decl.is_empty() && !continued {
         l.problems.push("can't tell where the results end (no 'Declaration' label or declaration text)".into());
         return Ok(Analysis::Layout(Box::new(l)));
     }
-    let boundary = decl.iter().map(|ln| ln.bbox().1).fold(f64::INFINITY, f64::min) - 0.3 * decl[0].height();
+    let boundary = if continued {
+        l.notes.push("no results on this page: it goes on with the declaration".into());
+        0.0
+    } else {
+        decl.iter().map(|ln| ln.bbox().1).fold(f64::INFINITY, f64::min) - 0.3 * decl[0].height()
+    };
     if !counts.is_empty() && counts.iter().map(|ln| ln.bbox().3).fold(f64::NEG_INFINITY, f64::max) > boundary {
         l.problems.push("count labels below the declaration: can't tell where the results end".into());
         return Ok(Analysis::Layout(Box::new(l)));
@@ -1322,13 +1455,24 @@ pub fn analyze(img: &Mat, o: &mut Ocr) -> Result<Analysis> {
     l.protected.push(("results".into(), vec![[0.0, 0.0], [ww, 0.0], [ww, boundary], [0.0, boundary]]));
     let mut used = tables(&mut l, &hs, &vs)?;
     let heads: Vec<f64> = l.fields.iter().filter(|fl| fl.source == "table").map(|fl| fl.label_box.1).collect();
-    let decl_bottom = heads.iter().cloned().filter(|&y| y > boundary).reduce(f64::min).unwrap_or(boundary + 9.0 * TEXT_H) - 0.3 * TEXT_H;
+    // the declaration runs down to the agents' table, or else to the next
+    // section's heading; with neither, over the officers' own lines (a 2013
+    // Form 34 stacks name, ID, signature and date one under another)
+    let next = l.lines.iter().filter(|ln| ln.bbox().1 > boundary && has(&SECTION_RE, &ln.text)).map(|ln| ln.bbox().1).reduce(f64::min);
+    let lines_on = boundary + 9.0 * TEXT_H;
+    let decl_bottom = match heads.iter().cloned().filter(|&y| y > boundary).reduce(f64::min).or(next) {
+        Some(y) => y,
+        None => officer_lines_end(&l.lines, lines_on),
+    } - 0.3 * TEXT_H;
     let extra = read_band(o, &work, boundary, decl_bottom, 2.5)?;
     l.lines.extend(extra);
     used.extend(declaration(&mut l, boundary, decl_bottom));
     labels(&mut l, &used, boundary);
     let bottoms: Vec<f64> = l.fields.iter().filter(|fl| fl.source == "table").flat_map(|fl| fl.zones.iter()).map(|z| z.rect[1] + z.rect[3]).collect();
-    let free_top = bottoms.iter().cloned().reduce(f64::max).unwrap_or(decl_bottom);
+    // free writing below the tables; with none found, below the officers'
+    // lines, but no higher than nine lines down (a table there, unread, has
+    // headings in print no one wrote)
+    let free_top = bottoms.iter().cloned().reduce(f64::max).unwrap_or(decl_bottom.max(lines_on - 0.3 * TEXT_H));
     let band = read_band(o, &work, free_top, hh, 2.5)?;
     let band_from = l.lines.len();
     l.lines.extend(band);
@@ -1337,7 +1481,16 @@ pub fn analyze(img: &Mat, o: &mut Ocr) -> Result<Analysis> {
     let kinds: BTreeSet<String> = l.fields.iter().filter(|fl| fl.source == "table").map(|fl| fl.kind.clone()).collect();
     let all: BTreeSet<String> = ["id", "phone", "signature"].iter().map(|s| s.to_string()).collect();
     if !kinds.is_empty() && kinds != all {
-        l.problems.push(format!("agents table: found only {} columns", kinds.iter().cloned().collect::<Vec<_>>().join(", ")));
+        let found = kinds.iter().cloned().collect::<Vec<_>>().join(", ");
+        let head = l.fields.iter().filter(|fl| fl.source == "table").map(|fl| (fl.label_box.1 + fl.label_box.3) / 2.0).fold(f64::INFINITY, f64::min);
+        if headings_read(&l, &hs, &vs, head, &kinds) {
+            l.notes.push(format!("agents table: {} columns only, every other heading read and none for an ID or phone number", found));
+        } else {
+            l.problems.push(format!("agents table: found only {} columns", found));
+        }
+    }
+    if kinds.is_empty() && agents_section(&l.lines, boundary) {
+        l.problems.push("agents' section found, but no table read under it".into());
     }
     if l.fields.is_empty() {
         l.problems.push("no PII fields recognised".into());

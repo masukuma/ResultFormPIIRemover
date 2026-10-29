@@ -30,6 +30,14 @@ changes with the number of candidates (or stations, on a tally form).
 | Free text | "Reasons for Refusal to Sign", "Presiding Officer's Comments" | signatures, sometimes an ID or phone | the same, comments stay readable |
 | Stamps | the round IEBC stamp, anywhere | — | never masked |
 
+The 2013 Form 34 (President, polling station) is the same parts over two
+pages, laid out differently:
+- **Front:** the results, then the declaration, the presiding officer's
+  name, ID or passport number, signature and date one under another.
+- **Back:** the deputy's lines (the same four), then a table of the
+  candidates' agents with only "Name", "Signature" and "Reasons for refusal
+  to sign", then the presiding officer's comments. No results at all.
+
 **B-series (tally: 34B to 38B).** Several pages:
 - **Results pages:** a table of polling stations (rows) by candidates (columns). They carry no one's details.
 - **Declaration page:** the totals (protected), then the same declaration, officer lines and agents table as an A form. On this page the officers are the Returning Officer and Deputy, and the agents are the candidates or their agents.
@@ -58,16 +66,23 @@ readable.
 2. OCR reads the printed labels.
 3. Printed rules give the tables.
 4. Each label's meaning gives the role of the field next to it or below it.
-5. Everything above the declaration is protected.
+5. Everything above the declaration is protected. A page that opens with
+   an officer's lines and prints no counts goes on with the declaration of
+   the page before (the 2013 back page): it has no results to protect.
+6. A signatories table missing the ID or phone column is taken as it is
+   only when every other column's heading is read, and none of them is
+   for an ID or phone number: otherwise the missing column may simply not
+   have been read. An agents' section with no table read under it sends
+   the page to review.
 
 This works on any form. But on one photo by itself, a faint rule, a curled
 page or a misread label is enough to lose a column.
 
 Measured without templates on the 2022 Forms 34A, which do have a template
 to compare with:
-- It publishes 72 of 215, against 204 with the template.
-- On the forms both publish, it covers 72% of the masks the template makes.
-- 49 of those 72 forms miss at least one mask.
+- It publishes 54 of 215, against 204 with the template.
+- On the forms both publish, it covers 76% of the masks the template makes.
+- 35 of those 54 forms miss at least one mask.
 - On the 42 Forms 34B it publishes none: the results pages have no
   declaration, so the reader can't tell where their results end.
 
@@ -213,6 +228,22 @@ each turned up among the 56 forms published from the two 2017 batches,
 checking by eye those whose masks changed with the layouts. Until the
 structural reader checks a moved column against the words of its
 heading, the vision review is the backstop here too.
+
+The 2013 Forms 34 are flatbed scans, clean and upright, read by the
+structural reader alone (no template, nothing learned):
+
+| Scans | Pages | Published | Sent to review |
+|---|---|---|---|
+| Diaspora (5 forms, front and back) | 10 | 10 | 0 |
+| Baringo North, first file, page by page | 153 | 146 | 7 |
+
+Of the seven, four have a stamp near the deputy's line that OCR read as a
+second officer; of the others, a back page wasn't recognised as one, an
+agents' heading row wasn't read whole, and an ID label was misread. On the pages checked by eye the masks are
+right; an officer's ID or signature under the stamp stays visible, as
+everywhere. The scans come a constituency to a PDF (up to 160 pages of
+many forms), and a PDF is redacted as one document: one page that fails
+holds back the whole file. They were measured page by page.
 
 The by-election samples have one page per printing: too few to learn
 from. They are the structural reader's (milestone 3).
