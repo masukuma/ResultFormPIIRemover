@@ -212,6 +212,12 @@ fn refit_by_headers(gray: &Mat, h: &[[f64; 3]; 3], reference: &Mat, headers: &[[
     Ok(Some((util::mul3(h, &[[a, 0.0, b], [0.0, 1.0, dy], [0.0, 0.0, 1.0]]), [a, b, dy])))
 }
 
+/// A column's printed header matched at least this well (NCC) is trusted to
+/// say where the column is; found more than `HEADER_ACROSS` px across from
+/// it, or half a row up or down, the column was placed wrong.
+const HEADER_NCC: f64 = 0.6;
+const HEADER_ACROSS: f64 = 25.0;
+
 pub fn redact_page(img: &Mat, templates: &[Template], s: &AlignSettings, ms: &MaskSettings, rng: &mut PyRandom, o: &PageOptions) -> Result<PageResult> {
     redact_page_at(img, 0, templates, s, ms, rng, o)
 }
@@ -350,18 +356,31 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
     // must then pass the same check; or the page fails. The signature
     // columns of its table are moved by their own headers when that passes
     // the check too.
-    let mut moved: Vec<(String, Mapper, [f64; 2])> = Vec::new();
+    //
+    // Each column's printed header is also a witness of its own: found
+    // clearly a good way across from the column, or half a row or more above
+    // or below it (a table matched a rule or a row off: its rules look the
+    // same at every column's edges), the column is moved down to it and
+    // placed again by it, for signatures too.
+    let mut moved: Vec<(String, Mapper, [f64; 3])> = Vec::new();
     let mut misplaced = Vec::new();
     let mut unsure: Vec<String> = Vec::new();
     if o.verify {
         // A header found clearly is itself evidence of where the column is,
         // when faint rules can't be seen.
-        let again = |f: &Mapper, cells: &[Zone], require: bool| -> Result<Option<(Mapper, [f64; 2])>> {
+        let again = |f: &Mapper, cells: &[Zone], require: bool, dy: f64| -> Result<Option<(Mapper, [f64; 3])>> {
             let Some(header) = cells[0].fence[0] else { return Ok(None) };
-            let Some((g, ab, ncc)) = masking::place_by_header(&gray, f, &t.image, header, cells)? else { return Ok(None) };
-            Ok(if masking::check_column_edges(&gray, &g, cells, require && ncc < 0.55)?.is_empty() { Some((g, ab)) } else { None })
+            let f = masking::shifted(f.clone(), [0.0, dy]);
+            let Some((g, ab, ncc)) = masking::place_by_header(&gray, &f, &t.image, header, cells)? else { return Ok(None) };
+            Ok(if masking::check_column_edges(&gray, &g, cells, require && ncc < 0.55)?.is_empty() { Some((g, [ab[0], ab[1], dy])) } else { None })
         };
-        let across = |cells: &[Zone], ab: [f64; 2]| {
+        let header_off = |f: &Mapper, cells: &[Zone]| -> Result<Option<[f64; 2]>> {
+            let Some(header) = cells[0].fence[0] else { return Ok(None) };
+            let row_h = util::median(&cells.iter().map(|z| z.rect[3]).collect::<Vec<_>>());
+            let (d, ncc) = masking::find_label(&gray, f, &t.image, header, cells[0].rect[2].max(120.0), 120.0)?;
+            Ok(d.filter(|d| ncc >= HEADER_NCC && (d[0].abs() > HEADER_ACROSS || d[1].abs() >= 0.5 * row_h)))
+        };
+        let across = |cells: &[Zone], ab: [f64; 3]| {
             let mid = cells[0].rect[0] + cells[0].rect[2] / 2.0;
             ab[0] * mid + ab[1] - mid
         };
@@ -372,13 +391,17 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
             }
             let f = placed(cells)?;
             let require = is_failed(&cells[0].region);
-            let r = masking::check_column_edges(&gray, &f, cells, require)?;
+            let off = header_off(&f, cells)?;
+            let r = match off {
+                Some(d) => format!("{}: printed header found {:+.0}px across, {:+.0}px down from the column", key, d[0], d[1]),
+                None => masking::check_column_edges(&gray, &f, cells, require)?,
+            };
             if r.is_empty() {
                 continue;
             }
-            match again(&f, cells, require)? {
+            match again(&f, cells, require, off.map(|d| d[1]).unwrap_or(0.0))? {
                 Some((g, ab)) => {
-                    notes.push(format!("{}: placed by its printed header, {:+.0}px across ({})", key, across(cells, ab), r.split(": ").nth(1).unwrap_or(&r)));
+                    notes.push(format!("{}: placed by its printed header, {:+.0}px across, {:+.0}px down ({})", key, across(cells, ab), ab[2], r.split(": ").nth(1).unwrap_or(&r)));
                     moved.push((key.clone(), g, ab));
                     tables.push(cells[0].region.clone());
                 }
@@ -389,12 +412,26 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
             }
         }
         for (key, cells) in &signatures {
-            if !misplaced.is_empty() || !tables.contains(&cells[0].region) {
+            if !misplaced.is_empty() || cells[0].region.is_empty() {
                 continue;
             }
-            if let Some((g, ab)) = again(&placed(cells)?, cells, false)? {
-                notes.push(format!("{}: placed by its printed header, {:+.0}px across", key, across(cells, ab)));
-                moved.push((key.clone(), g, ab));
+            let f = placed(cells)?;
+            let off = header_off(&f, cells)?;
+            if off.is_none() && !tables.contains(&cells[0].region) {
+                continue;
+            }
+            match again(&f, cells, false, off.map(|d| d[1]).unwrap_or(0.0))? {
+                Some((g, ab)) => {
+                    notes.push(format!("{}: placed by its printed header, {:+.0}px across, {:+.0}px down", key, across(cells, ab), ab[2]));
+                    moved.push((key.clone(), g, ab));
+                }
+                // its own header says it is off and it can't be placed
+                None if off.is_some() => {
+                    let d = off.unwrap();
+                    misplaced.push(format!("{}: printed header found {:+.0}px across, {:+.0}px down from the column", key, d[0], d[1]));
+                    unsure.push(key.clone());
+                }
+                None => {}
             }
         }
     }
@@ -472,9 +509,9 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
     }
     // strikes in the frame of a column placed again
     let struck = |cells: &[Zone]| -> Vec<Strike> {
-        let [a, b] = moved.iter().find(|(k, _, _)| k == cells[0].key()).map(|m| m.2).unwrap_or([1.0, 0.0]);
+        let [a, b, dy] = moved.iter().find(|(k, _, _)| k == cells[0].key()).map(|m| m.2).unwrap_or([1.0, 0.0, 0.0]);
         let v = strikes.iter().find(|(n, _)| *n == cells[0].region).map(|(_, v)| v.clone()).unwrap_or_default();
-        v.into_iter().map(|(x1, y1, x2, y2, w)| ((x1 - b) / a, y1, (x2 - b) / a, y2, w)).collect()
+        v.into_iter().map(|(x1, y1, x2, y2, w)| ((x1 - b) / a, y1 - dy, (x2 - b) / a, y2 - dy, w)).collect()
     };
 
     // Stamps: found before masking; never masked (below).

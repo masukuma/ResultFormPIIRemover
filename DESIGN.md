@@ -168,6 +168,16 @@ pass the same check; on a table that didn't snap, a header matched clearly
 signature column of a table whose columns moved is moved by its own header
 too, if that passes the check. The page notes record each move.
 
+**Each column's header as a witness.** The edge check can't see a table
+matched a whole column or a whole row off: every agents column has a rule at
+each edge. Each column's own header ("ID/Passport No.", "Tel. Contact",
+"Signature") is therefore looked for wherever its column was placed. Found
+clearly (NCC 0.6 or better) more than 25 px across or half a row or more up
+or down, the column is moved down to it and placed again by it as above,
+signature columns included, or the page is held. Over the 215 Forms 34A the
+headers of well-placed columns were found within 25 px across and 18 px up
+or down.
+
 On the 215 Forms 34A these took the forms held by the edge check from 22 to
 5; together with the fences (which cleared a leak-check failure that was
 the header read as writing) 205 publish instead of 188. Every page they
