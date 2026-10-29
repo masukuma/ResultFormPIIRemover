@@ -45,6 +45,45 @@ impl Default for AlignSettings {
     }
 }
 
+impl AlignSettings {
+    /// As a manifest records them: all of them, since any can change which
+    /// pages pass and where their zones land, and `verify --rerun` must
+    /// repeat the redaction exactly.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "max_dim": self.max_dim,
+            "n_features": self.n_features,
+            "ratio": self.ratio,
+            "ransac_thresh": self.ransac_thresh,
+            "min_inliers": self.min_inliers,
+            "min_inlier_ratio": self.min_inlier_ratio,
+            "min_area_frac": self.min_area_frac,
+            "max_side_ratio": self.max_side_ratio,
+            "min_score": self.min_score,
+        })
+    }
+
+    /// From a manifest's record. What it doesn't record is the default:
+    /// manifests written before alignment settings were recorded were
+    /// redacted with the defaults.
+    pub fn from_json(v: &serde_json::Value) -> Self {
+        let d = AlignSettings::default();
+        let int = |k: &str, x: i64| v.get(k).and_then(|y| y.as_i64()).unwrap_or(x);
+        let num = |k: &str, x: f64| v.get(k).and_then(|y| y.as_f64()).unwrap_or(x);
+        AlignSettings {
+            max_dim: int("max_dim", d.max_dim),
+            n_features: int("n_features", d.n_features),
+            ratio: num("ratio", d.ratio),
+            ransac_thresh: num("ransac_thresh", d.ransac_thresh),
+            min_inliers: int("min_inliers", d.min_inliers),
+            min_inlier_ratio: num("min_inlier_ratio", d.min_inlier_ratio),
+            min_area_frac: num("min_area_frac", d.min_area_frac),
+            max_side_ratio: num("max_side_ratio", d.max_side_ratio),
+            min_score: num("min_score", d.min_score),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Alignment {
     pub template: Option<usize>, // index into the template list

@@ -323,3 +323,50 @@ fn what_the_review_finds_is_masked_and_replayed() {
     assert!(r.ok(), "{}", r.text());
     assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 3);
 }
+
+/// The re-run check of `verify` on `m` (the manifest at `manifest_path`).
+fn rerun_check(root: &Path, manifest_path: &Path, original: &Path, redacted: &Path) -> bool {
+    let r = check(root, redacted, Some(manifest_path), original, &[], None, Some(&root.join("templates")));
+    r.checks.iter().find(|(_, msg)| msg.contains("re-running")).map(|(ok, _)| *ok).expect("a re-run check")
+}
+
+#[test]
+fn alignment_settings_are_recorded_and_the_rerun_uses_them() {
+    // redacted with alignment settings of its own
+    let root = tmpdir("align-settings");
+    write_template(&root.join("templates").join("sample_rs1")).unwrap();
+    let (scan, _) = simulate_scan(&filled_form(4).unwrap(), 5, 2.0, 1.3).unwrap();
+    std::fs::create_dir_all(root.join("in")).unwrap();
+    std::fs::write(root.join("in").join(NAME), image_pdf(PageImage::Jpeg(&io::encode(&scan, "jpg", 80).unwrap()), 1612.0, 2280.0)).unwrap();
+    assert_eq!(rfpii(&["keygen", s(&root.join("keys"))]), 0);
+    let rc = rfpii(&[
+        "redact", s(&root.join("in")), "--templates", s(&root.join("templates")), "--out", s(&root.join("out")),
+        "--review", s(&root.join("review")), "--workers", "1", "--sign-key", s(&root.join("keys/signing_key.pem")),
+        "--no-pdf-signature", "--min-inliers", "20", "--min-score", "0.2",
+    ]);
+    assert_eq!(rc, 0, "{}", std::fs::read_to_string(root.join("review/report.jsonl")).unwrap_or_default());
+    let m = manifest(&root);
+    assert_eq!(m["settings"]["align"]["min_inliers"], 20);
+    assert_eq!(m["settings"]["align"]["min_score"], 0.2);
+    assert_eq!(m["settings"]["align"]["max_dim"], 1200);
+    let mpath = root.join("out").join(NAME.replace(".PDF", ".manifest.json"));
+    let (orig, red) = (root.join("in").join(NAME), published(&root));
+    assert!(rerun_check(&root, &mpath, &orig, &red), "the recorded settings reproduce the output");
+    // a recorded threshold the page doesn't meet: the re-run, which uses it, fails
+    let mut bad = m.clone();
+    bad["settings"]["align"]["min_score"] = serde_json::json!(0.999);
+    let bpath = root.join("bad.manifest.json");
+    std::fs::write(&bpath, serde_json::to_string(&bad).unwrap()).unwrap();
+    assert!(!rerun_check(&root, &bpath, &orig, &red), "the re-run must use the recorded alignment settings");
+}
+
+#[test]
+fn manifests_without_alignment_settings_rerun_with_the_defaults() {
+    let d = rfpii::align::AlignSettings::default();
+    let a = rfpii::align::AlignSettings::from_json(&Value::Null);
+    assert_eq!((a.min_inliers, a.min_score, a.max_dim, a.ratio), (d.min_inliers, d.min_score, d.max_dim, d.ratio));
+    let b = rfpii::align::AlignSettings::from_json(&serde_json::json!({"min_inliers": 20}));
+    assert_eq!((b.min_inliers, b.min_score), (20, d.min_score));
+    let c = rfpii::align::AlignSettings::from_json(&d.to_json());
+    assert_eq!(c.to_json(), d.to_json());
+}

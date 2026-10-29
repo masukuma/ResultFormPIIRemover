@@ -113,7 +113,10 @@ no red block should touch one.
   manifests, which the publisher announces publicly when the batch is
   released. A manifest that wasn't in the batch can't be added later.
 - **Re-running the redaction.** `--rerun templates/` repeats the whole redaction
-  from the recorded random seed, with the recorded code and template versions.
+  from the recorded random seed, with the recorded code and template versions
+  and the recorded settings (`settings` in the manifest: the masking rules,
+  and under `align` every alignment threshold, such as `--min-inliers` and
+  `--min-score`; a manifest without them was made with the defaults).
   It must give a bit-identical result, which shows the published file is
   exactly what the documented process produces. For forms read without a
   template, and Forms 34A (whose comments are read with OCR), the manifest
