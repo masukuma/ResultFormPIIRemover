@@ -177,3 +177,41 @@ fn learning_a_batch_leaves_printings_already_learned() {
     let tally: Vec<String> = (0..6).map(|k| format!("1_34_B_00502101010010{}_Y3KK12CQ5IA00V1_20220809_200956.PDF", k)).collect();
     assert!(learn_all(&tally, None, &out, &LearnOptions::default(), true).is_err());
 }
+
+/// A blank form's agents' table, 7 rows of 40 px under a heading row, and
+/// what a reader that missed it made of it: its "Signature" heading taken
+/// for an officer's signature line, as on the 2017 printings.
+#[test]
+fn an_officer_line_inside_the_agents_table_is_its_heading() {
+    let mut g = gray(900, 1000, 235);
+    for y in [380, 440, 480, 520, 560, 600, 640, 680] {
+        line(&mut g, (250, y), (850, y), colour(40.0), 2);
+    }
+    line(&mut g, (250, 720), (850, 720), colour(40.0), 4);
+    for x in [250, 450, 650, 850] {
+        line(&mut g, (x, 380), (x, 720), colour(40.0), 2);
+    }
+    let head = |t: &str, x0: f32, x1: f32| {
+        let n = t.chars().count();
+        OLine::new([[x0, 395.0], [x1, 395.0], [x1, 425.0], [x0, 425.0]], t.into(), 0.95, (0..n).map(|i| (i as f64 + 0.5) / n as f64).collect(), vec![0.95; n])
+    };
+    let officer = |y: f64| Field { kind: "signature".into(), zones: vec![Zone::new("signature", [660.0, y, 180.0, 34.0], "signature")], source: "declaration".into(), label: "Signature".into(), label_box: (600.0, y, 650.0, y + 34.0) };
+    let mut l = Layout {
+        frame: generic::Frame { k: 0, skew: 0.0, scale: 1.0, m: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], size: (1000, 900), text_h: TEXT_H },
+        image: crate::testutil::to_bgr(&g),
+        gray: g.clone(),
+        lines: vec![head("ID/Passport No.", 260.0, 440.0), head("Tel. Contact", 460.0, 640.0), head("Signature", 660.0, 840.0)],
+        fields: vec![officer(315.0), officer(395.0)],
+        protected: vec![("results".into(), vec![[0.0, 0.0], [1000.0, 0.0], [1000.0, 300.0], [0.0, 300.0]])],
+        stamps: vec![],
+        problems: vec![],
+        notes: vec![],
+        officer_names: BTreeSet::new(),
+    };
+    with_profile_table(&mut l, &g).unwrap();
+    let kinds: BTreeSet<&str> = l.fields.iter().filter(|f| f.source == "table").map(|f| f.kind.as_str()).collect();
+    assert_eq!(kinds, BTreeSet::from(["id", "phone", "signature"]), "the table is read from its rules");
+    let officers: Vec<f64> = l.fields.iter().filter(|f| f.source == "declaration").map(|f| f.zones[0].rect[1]).collect();
+    assert_eq!(officers, vec![315.0], "the line above the table stays, its heading goes");
+    assert!(l.notes.iter().any(|n| n.contains("inside the agents' table dropped")), "{:?}", l.notes);
+}

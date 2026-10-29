@@ -188,7 +188,7 @@ Measured without any hand-made template (`rfpii learn`, then `redact`):
 |---|---|---|---|---|
 | 2022 Form 34A (national) | 215 | 40, in about 2 minutes on 4 cores | 194 | 204 |
 | 2017 Form 34A, first round (sideways photos on tables) | 46 | 32 | 35 | none |
-| 2017 Form 34A, repeat election | 25 | 23 | 18 | none |
+| 2017 Form 34A, repeat election | 25 | 19 | 21 | none |
 
 On the 2022 forms the learned layout masks what the hand template masks,
 but by design (partial digits, signature bands, stamps never masked) and
@@ -203,6 +203,16 @@ reader, which flips with small changes of scale and position: on 4 of the
 template, tuned on these forms, masks. Making
 that reader robust belongs to milestone 3; until then the vision review
 (`--vlm-audit`) is what catches it.
+
+The 2017 photos show two more weak points, which the leak check misses
+because it reads a column where the column was placed. A column moved
+across by a false match of its heading ("Tel. Contact" matched the
+"Candidate" of the heading beside it) is masked in the wrong column. And
+an ID written above its row's line falls outside the first row. One of
+each turned up among the 56 forms published from the two 2017 batches,
+checking by eye those whose masks changed with the layouts. Until the
+structural reader checks a moved column against the words of its
+heading, the vision review is the backstop here too.
 
 The by-election samples have one page per printing: too few to learn
 from. They are the structural reader's (milestone 3).

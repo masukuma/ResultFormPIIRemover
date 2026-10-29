@@ -212,6 +212,14 @@ fn refit_by_headers(gray: &Mat, h: &[[f64; 3]; 3], reference: &Mat, headers: &[[
     Ok(Some((util::mul3(h, &[[a, 0.0, b], [0.0, 1.0, dy], [0.0, 0.0, 1.0]]), [a, b, dy])))
 }
 
+/// How far down a table moved, from the shifts of the columns its printed
+/// headers placed: one printed table moves as one, so shifts a row or more
+/// apart mean a header matched something else, and say nothing (None).
+fn table_shift(dys: &[f64], row_h: f64) -> Option<f64> {
+    let (lo, hi) = dys.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, &v| (a.0.min(v), a.1.max(v)));
+    (hi - lo <= 0.5 * row_h).then(|| util::median(dys))
+}
+
 /// A column's printed header matched at least this well (NCC) is trusted to
 /// say where the column is; found more than `HEADER_ACROSS` px across from
 /// it, or half a row up or down, the column was placed wrong.
@@ -395,6 +403,8 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
             ab[0] * mid + ab[1] - mid
         };
         let mut tables: Vec<String> = Vec::new();
+        // columns moved down to where their own printed header was found
+        let mut witnessed: Vec<(String, f64)> = Vec::new();
         for (key, cells) in &columns {
             if cells[0].region.is_empty() || whole.contains(key) {
                 continue;
@@ -412,12 +422,52 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
             match again(&f, cells, require, off.map(|d| d[1]).unwrap_or(0.0))? {
                 Some((g, ab)) => {
                     notes.push(format!("{}: placed by its printed header, {:+.0}px across, {:+.0}px down ({})", key, across(cells, ab), ab[2], r.split(": ").nth(1).unwrap_or(&r)));
+                    if off.is_some() {
+                        witnessed.push((key.clone(), ab[2]));
+                    }
                     moved.push((key.clone(), g, ab));
                     tables.push(cells[0].region.clone());
                 }
                 None => {
                     misplaced.push(r);
                     unsure.push(key.clone());
+                }
+            }
+        }
+        // The columns of one printed table move together. Headers found a
+        // row or more apart matched something else, one of them: where the
+        // table is can't be told. A column whose header said nothing, left
+        // where it was while the others moved a row or more, is off with
+        // them and moves too.
+        for region in tables.iter().collect::<std::collections::BTreeSet<_>>() {
+            let cols: Vec<&(String, Vec<Zone>)> = columns.iter().filter(|(k, c)| c[0].region == *region && !whole.contains(k)).collect();
+            let row_h = util::median(&cols.iter().flat_map(|(_, c)| c.iter().map(|z| z.rect[3])).collect::<Vec<_>>());
+            let dys: Vec<f64> = witnessed.iter().filter(|(k, _)| cols.iter().any(|(ck, _)| ck == k)).map(|(_, d)| *d).collect();
+            if dys.is_empty() {
+                continue;
+            }
+            let Some(dy) = table_shift(&dys, row_h) else {
+                let at: Vec<String> = dys.iter().map(|d| format!("{:+.0}px", d)).collect();
+                misplaced.push(format!("{}: its columns' printed headers put the table at different heights ({} down)", region, at.join(", ")));
+                unsure.extend(cols.iter().map(|(k, _)| k.clone()));
+                continue;
+            };
+            if dy.abs() < 0.5 * row_h {
+                continue;
+            }
+            for (key, cells) in cols {
+                if moved.iter().any(|(k, _, _)| k == key) {
+                    continue;
+                }
+                match again(&placed(cells)?, cells, is_failed(&cells[0].region), dy)? {
+                    Some((g, ab)) => {
+                        notes.push(format!("{}: moved {:+.0}px down with its table's other columns", key, dy));
+                        moved.push((key.clone(), g, ab));
+                    }
+                    None => {
+                        misplaced.push(format!("{}: its table's other columns moved {:+.0}px down, and it can't be placed there", key, dy));
+                        unsure.push(key.clone());
+                    }
                 }
             }
         }

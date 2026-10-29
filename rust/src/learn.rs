@@ -490,6 +490,11 @@ fn structure(l: &Layout) -> (usize, usize) {
 /// replace the reader's, and what the reader made of their headings
 /// (fields after them taken for labels, a table it couldn't complete) is
 /// dropped.
+///
+/// A reader that found no table takes the declaration to run on a few
+/// lines into it, and the table's "Signature" heading for an officer's: no
+/// officer signs inside the agents' table, so declaration lines from its
+/// top border down are dropped once it is found.
 fn with_profile_table(l: &mut Layout, median: &Mat) -> Result<()> {
     let found: BTreeSet<String> = l.fields.iter().filter(|f| f.source == "table").map(|f| f.kind.clone()).collect();
     if found.len() == 3 {
@@ -498,7 +503,12 @@ fn with_profile_table(l: &mut Layout, median: &Mat) -> Result<()> {
     let mut bgr = Mat::default();
     imgproc::cvt_color_def(median, &mut bgr, imgproc::COLOR_GRAY2BGR)?;
     let gray = util::gray(&generic::warp(&bgr, &l.frame)?)?;
-    let Some(ProfileTable { fields: cols, .. }) = profile_table(l, &gray)? else { return Ok(()) };
+    let Some(ProfileTable { fields: cols, rect, .. }) = profile_table(l, &gray)? else { return Ok(()) };
+    let before = l.fields.len();
+    l.fields.retain(|f| f.source != "declaration" || f.zones.iter().all(|z| z.rect[1] + z.rect[3] / 2.0 < rect[1] - 0.3 * TEXT_H));
+    if l.fields.len() < before {
+        l.notes.push(format!("{} declaration line(s) inside the agents' table dropped (its headings)", before - l.fields.len()));
+    }
     let kinds: BTreeSet<String> = cols.iter().map(|f| f.kind.clone()).collect();
     if kinds.len() <= found.len() {
         return Ok(());
@@ -908,7 +918,8 @@ pub fn learn(sources: &[String], form: &str, name: &str, out: &Path, opts: &Lear
 
     let mut yaml = String::new();
     let mut fields_rec: Vec<Value> = Vec::new();
-    let mut notes: Vec<String> = Vec::new();
+    // what reading the blank form changed or doubted, then the checks below
+    let mut notes: Vec<String> = l.notes.clone();
     yaml += &format!(
         "# Learned by rfpii {} from {} pages of {} (no one drew this template).\n# reference.png is the pixel-wise median of those pages, its fields emptied;\n# writing.png shows where people wrote on them. learned.json lists the pages and checks.\n",
         env!("CARGO_PKG_VERSION"),
