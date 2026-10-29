@@ -645,6 +645,16 @@ published, against 205 without the review and 188 before any of this.
 - Five go to review: four the page alignment can't match, and one whose
   table is placed so far off that hiding its columns would touch the
   results.
+- With each column on its own rows and checked against its own header,
+  209 publish. The sixth held is the form whose table the snap had put a
+  row high and 70-160 px across: it had published with an agent's phone
+  number in full. Its Tel. Contact column can't be placed where its header
+  is, and hiding it whole would touch the results. The header check moved
+  the columns of 30 published pages, mostly whole tables a row or more up
+  or down; checked by eye on six of them, five now sit on their printed
+  rows and one Signature column is still a row high (its header matched in
+  the wrong place, close enough to pass). The review masked 46 spots on 37
+  pages; all 209 verify and the 42 pages it changed replay bit for bit.
 - The models don't answer the same way twice. The same spot was called a
   phone number in one run and a vote count in the next (it was masked by
   the rules either way), and a page the review still flagged after its
