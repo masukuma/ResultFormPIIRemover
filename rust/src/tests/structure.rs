@@ -96,3 +96,24 @@ fn rules_running_up_past_a_table_that_ends_where_expected() {
     let p = sn.map(&[[500.0, r[5]]]);
     assert!((p[0][1] - (r[5] + 6.0)).abs() < 4.0);
 }
+
+#[test]
+fn zones_drawn_on_a_sloped_reference_are_levelled_onto_the_grid() {
+    // The grid holds the reference's rows at their height at x = c[0]; a
+    // point drawn on the reference 100px right of that, on a row sloping
+    // down 2%, is 2px lower on the same row.
+    let s = Snap {
+        ok: true,
+        xs: vec![0.0, 200.0],
+        ys: vec![0.0, 100.0],
+        p: vec![vec![[10.0, 20.0], [210.0, 20.0]], vec![[10.0, 120.0], [210.0, 120.0]]],
+        slope: 0.02,
+        vslope: -0.01,
+        c: [100.0, 50.0],
+        ..Default::default()
+    };
+    let q = s.map(&[[200.0, 52.0], [100.0, 50.0]]);
+    // on the row at y = 50; and on the column rules' lean, 0.02px across
+    assert!((q[0][1] - 70.0).abs() < 1e-9 && (q[0][0] - 210.02).abs() < 1e-9, "{:?}", q[0]);
+    assert!((q[1][0] - 110.0).abs() < 1e-9 && (q[1][1] - 70.0).abs() < 1e-9); // the centre doesn't move
+}

@@ -52,14 +52,16 @@ zones:
     region: agents
     fence:
       below: [82, 1474, 378, 36]      # "Agents or Candidates (if present)"
-  # Agents table, 11 rows. Names stay visible.
+  # Agents table, 11 rows. Names stay visible. Each column's rows follow the
+  # printed rows over that column in the reference, which run lower to the
+  # right; on a page each column's rows are found by its own rules.
   - name: agent_id
     action: partial
     rule: id           # hide 3 random characters
     digits: 8
-    rect: [500, 1562, 178, 36.4]
+    rect: [500, 1569, 178, 36.3]
     rows: 11
-    row_step: 36.4
+    row_step: 36.3
     region: agents
     fence:
       above: [524, 1529, 146, 28]     # "ID/Passport No."
@@ -68,9 +70,9 @@ zones:
     action: partial
     rule: phone        # keep the prefix (0734...), hide 3 of the last 6 digits
     digits: 10
-    rect: [1050, 1566, 171, 36.4]
+    rect: [1050, 1576, 171, 36.5]
     rows: 11
-    row_step: 36.4
+    row_step: 36.5
     region: agents
     fence:
       above: [1078, 1537, 118, 26]    # "Tel. Contact"
@@ -78,9 +80,9 @@ zones:
   # Agents' signatures: each masked by a band through its middle; empty rows untouched.
   - name: agent_signatures
     action: signature
-    rect: [1221, 1562, 225, 36.4]
+    rect: [1221, 1581.5, 225, 36.5]
     rows: 11
-    row_step: 36.4
+    row_step: 36.5
     region: agents
     fence:
       above: [1290, 1543, 104, 25]    # "Signature"

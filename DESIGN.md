@@ -126,6 +126,28 @@ looked for a little above its row, and a header's print taken for its ink
 blacked the header out on many pages. A snapped table's cells are never cut
 by a fence, only what lies outside them.
 
+**Each column on its own rows.** A sheet is folded and bent, and the
+reference photo is no exception: its rows run 1.6% downhill to the right.
+Each column's zones are drawn on the rows printed over that column (the
+agents' Signature rows lie 12 px below their ID rows). The snapped grid
+holds rows at their height at the table's centre, so a point drawn on the
+reference is first carried along the reference's slope onto it (and along
+its column rules' lean). A label to one side bounds a column at the label's
+level carried across the same way: "Reasons for Refusal", at the far left,
+is level with the table's bottom rule at the Signature column, where the
+last agent's signature hangs below it. A widened search may also run on
+past it by 5% of the distance across, for a page tilted against the
+alignment. Finding each column's rows on the page from its own faint printed
+rules was tried: rows of handwriting make the same faint dips, and the fits
+locked onto them, so it isn't used.
+
+**Signatures in a table that didn't snap.** Its rows are then the
+template's, and down a column of eleven the writing can drift most of a row
+off them; cut at those rows, a signature is banded in the wrong place. On
+one Form 34A the last agent's signature hung below where the search stopped
+and only the top of it was hidden. In such a table each signature is hidden
+whole. Two signature lines a line apart (the officers') keep their bands.
+
 **Finding a table again by its headers.** The bottom of a curled page can
 put the agents table 100–250 px from where the page alignment expects it,
 at a slightly different scale; then the rules are searched for in the wrong
@@ -145,6 +167,16 @@ pass the same check; on a table that didn't snap, a header matched clearly
 (0.55 or better) counts as evidence where faint rules can't be seen. The
 signature column of a table whose columns moved is moved by its own header
 too, if that passes the check. The page notes record each move.
+
+**Each column's header as a witness.** The edge check can't see a table
+matched a whole column or a whole row off: every agents column has a rule at
+each edge. Each column's own header ("ID/Passport No.", "Tel. Contact",
+"Signature") is therefore looked for wherever its column was placed. Found
+clearly (NCC 0.6 or better) more than 25 px across or half a row or more up
+or down, the column is moved down to it and placed again by it as above,
+signature columns included, or the page is held. Over the 215 Forms 34A the
+headers of well-placed columns were found within 25 px across and 18 px up
+or down.
 
 On the 215 Forms 34A these took the forms held by the edge check from 22 to
 5; together with the fences (which cleared a leak-check failure that was
@@ -613,6 +645,16 @@ published, against 205 without the review and 188 before any of this.
 - Five go to review: four the page alignment can't match, and one whose
   table is placed so far off that hiding its columns would touch the
   results.
+- With each column on its own rows and checked against its own header,
+  209 publish. The sixth held is the form whose table the snap had put a
+  row high and 70-160 px across: it had published with an agent's phone
+  number in full. Its Tel. Contact column can't be placed where its header
+  is, and hiding it whole would touch the results. The header check moved
+  the columns of 30 published pages, mostly whole tables a row or more up
+  or down; checked by eye on six of them, five now sit on their printed
+  rows and one Signature column is still a row high (its header matched in
+  the wrong place, close enough to pass). The review masked 46 spots on 37
+  pages; all 209 verify and the 42 pages it changed replay bit for bit.
 - The models don't answer the same way twice. The same spot was called a
   phone number in one run and a vote count in the next (it was masked by
   the rules either way), and a page the review still flagged after its

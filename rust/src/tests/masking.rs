@@ -665,6 +665,38 @@ fn a_widened_search_stops_at_the_label_below_the_table() {
     assert!(!comment(&canvas) && rep[5]["mode"] == "signature");
 }
 
+#[test]
+fn down_a_table_whose_rules_were_not_matched_signatures_are_hidden_whole() {
+    // Its rows are then the template's, and down the column the writing has
+    // drifted most of a row below them: cut at those rows, the bands would
+    // miss. Each signature is hidden whole, the last one too, below the last
+    // cell; two signature lines a line apart keep their bands.
+    let img = signature_table(&[(1, 20), (2, 110), (5, 40)]);
+    let cs: Vec<Zone> = sig_cells().into_iter().map(|z| Zone { rect: [z.rect[0], z.rect[1] - 22.0, z.rect[2], z.rect[3]], ..z }).collect();
+    let share = |canvas: &Mat, rows: std::ops::Range<i32>| {
+        let (gi, c) = (img_of(&img), img_of(canvas));
+        let (mut ink, mut hidden) = (0, 0);
+        for y in Y + rows.start * ROW_H..Y + rows.end * ROW_H {
+            for x in X + 4..X + W - 4 {
+                let on_rule = (0..=ROWS).any(|r| y >= Y + r * ROW_H - 3 && y < Y + r * ROW_H + 3);
+                if gi.at(x as usize, y as usize) < 120 && !on_rule {
+                    ink += 1;
+                    hidden += (c.at(x as usize, y as usize) == 0) as usize;
+                }
+            }
+        }
+        hidden as f64 / ink as f64
+    };
+    let wide = SigOptions { reach: Reach::margin(50.0, 200.0), ..none() };
+    let mut canvas = gray(600, 500, 255);
+    sigs(&mut canvas, &img, &cs, &wide);
+    assert!(share(&canvas, 0..ROWS) >= 0.98, "{}", share(&canvas, 0..ROWS));
+    assert_eq!(verify_sig(&img, &apply(&canvas, &img), &cs, &wide), "");
+    let mut banded = gray(600, 500, 255);
+    sigs(&mut banded, &img, &cs[..2], &wide);
+    assert!(share(&banded, 1..2) < 0.9);
+}
+
 /// A ruled column under its printed header, `dx` px across and `k` times as
 /// wide as at x = 300..500.
 fn headed_column(dx: i32, k: f64) -> Mat {

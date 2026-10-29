@@ -1187,8 +1187,10 @@ pub struct SigBlob {
 }
 
 /// Separate signatures: strokes joined mostly sideways; a blob spanning
-/// several rows is cut at the row boundaries.
-fn signature_blobs(ink: &Img, extra: f64, w: f64, min_ink: usize, bands: &[(f64, f64)], stamps: &[(i64, i64, i64)], bridge: Option<&Img>) -> Result<Vec<SigBlob>> {
+/// several rows is cut at the row boundaries. `whole`: the rows are only
+/// the template's (their table's rules weren't matched), so a blob is
+/// neither cut at them nor banded: it is hidden whole.
+fn signature_blobs(ink: &Img, extra: f64, w: f64, min_ink: usize, bands: &[(f64, f64)], stamps: &[(i64, i64, i64)], bridge: Option<&Img>, whole: bool) -> Result<Vec<SigBlob>> {
     let mut src = ink.clone();
     if let Some(b) = bridge {
         for (v, &bv) in src.d.iter_mut().zip(&b.d) {
@@ -1228,6 +1230,9 @@ fn signature_blobs(ink: &Img, extra: f64, w: f64, min_ink: usize, bands: &[(f64,
         let rows: Vec<usize> = pix
             .iter()
             .map(|&(_, y)| {
+                if whole {
+                    return 0;
+                }
                 let r = edges.partition_point(|&e| e <= y as f64) as i64 - 1;
                 r.clamp(0, bands.len() as i64 - 1) as usize
             })
@@ -1260,7 +1265,7 @@ fn signature_blobs(ink: &Img, extra: f64, w: f64, min_ink: usize, bands: &[(f64,
         if y1 - y0 <= SIG_MIN_H {
             continue; // flat: a printed rule or its remains
         }
-        let band = middle_band(&xs, &ys);
+        let band = if whole { vec![(x0, y0, x1, y1)] } else { middle_band(&xs, &ys) };
         blobs.push(SigBlob { x0, y0, x1, y1, n: xs.len(), band });
     }
     Ok(blobs)
@@ -1440,7 +1445,11 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
         }
         bridge = Some(br);
     }
-    let mut blobs = signature_blobs(&ink, SIG_OVERRUN, cs.cells[0].rect[2], SIG_MIN_INK, &cs.bands, &stamps, bridge.as_ref())?;
+    // a widened search down a table's rows: its rules weren't matched, so
+    // the rows are the template's, and down a column of them the writing
+    // may drift a row or more off (two signature lines a line apart don't)
+    let whole = o.reach.margin != (0.0, 0.0) && cs.cells.len() > 2;
+    let mut blobs = signature_blobs(&ink, SIG_OVERRUN, cs.cells[0].rect[2], SIG_MIN_INK, &cs.bands, &stamps, bridge.as_ref(), whole)?;
     // writing cut off at the bottom edge, starting well below the last row: the next line's
     let (end, sh) = (cs.bands.last().unwrap().1, ink.h as i64);
     blobs.retain(|b| !(b.y1 >= sh - 1 && b.y0 as f64 > end + 0.5 * (sh as f64 - end)));
@@ -1464,7 +1473,8 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
     Ok((blobs, cs.origin, cs.bands, cs.cells, ink))
 }
 
-/// Mask each signature by a band through its middle.
+/// Mask each signature by a band through its middle (whole, down a table
+/// whose rows couldn't be matched).
 pub fn signature_column(img: &mut Mat, gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, o: &SigOptions) -> Result<Vec<serde_json::Value>> {
     use serde_json::json;
     let pad = 6.0;
