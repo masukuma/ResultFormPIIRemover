@@ -771,6 +771,44 @@ fn a_signature_line_keeps_its_printed_label_and_the_line_above() {
     assert!((175..201).any(|y| (436..500).any(|x| img_of(&canvas).at(x, y) == 0)));
 }
 
+#[test]
+fn faint_broken_rules_of_a_column_are_not_signatures() {
+    // A photo where the table's printed rules are faint breaks them into
+    // dashes the rule removal leaves; at the column's edges they cross in
+    // small "+"s, tall enough to pass for writing. Along the column's edges
+    // and its rows' lines they are set aside: only the signatures are masked.
+    let mut img = gray(600, 500, 235);
+    let dashed = |img: &mut Mat, a: (i32, i32), b: (i32, i32)| {
+        let n = ((b.0 - a.0).abs().max((b.1 - a.1).abs()) / 12).max(1);
+        for k in 0..n {
+            let (t0, t1) = (k as f64 / n as f64, (k as f64 + 0.6) / n as f64);
+            let p = |t: f64| (a.0 + ((b.0 - a.0) as f64 * t) as i32, a.1 + ((b.1 - a.1) as f64 * t) as i32);
+            line(img, p(t0), p(t1), colour(70.0), 2);
+        }
+    };
+    for r in 0..=ROWS {
+        dashed(&mut img, (X - 60, Y + r * ROW_H), (X + W + 60, Y + r * ROW_H));
+    }
+    for x in [X, X + W] {
+        dashed(&mut img, (x, Y - 40), (x, Y + ROWS * ROW_H));
+        for r in 0..=ROWS {
+            line(&mut img, (x - 6, Y + r * ROW_H), (x + 6, Y + r * ROW_H), colour(70.0), 2); // the crossings
+        }
+    }
+    for &(r, dx) in &[(0, 20), (3, 110)] {
+        let pts: Vec<(i32, i32)> = linspace((X + dx) as f64, (X + dx + 70) as f64, 40)
+            .iter()
+            .zip(JITTER_1)
+            .map(|(&x, j)| (x as i32, ((Y + r * ROW_H) as f64 + 18.0 + 9.0 * ((x - X as f64 - dx as f64) / 4.0).sin() + j as f64) as i32))
+            .collect();
+        polyline(&mut img, &pts, colour(20.0), 2);
+    }
+    let cs: Vec<Zone> = sig_cells().into_iter().map(|z| Zone { region: "t".into(), ..z }).collect();
+    let mut canvas = gray(600, 500, 255);
+    let rep = sigs(&mut canvas, &img, &cs, &none());
+    assert_eq!(modes(&rep), ["signature", "empty", "empty", "signature", "empty", "empty"]);
+}
+
 /// A ruled column under its printed header, `dx` px across and `k` times as
 /// wide as at x = 300..500.
 fn headed_column(dx: i32, k: f64) -> Mat {
