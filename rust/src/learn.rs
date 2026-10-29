@@ -838,7 +838,9 @@ pub fn learn(sources: &[String], form: &str, name: &str, out: &Path, opts: &Lear
         bail!("{}: the blank form can't be read ({})", name, tried.join(" | "));
     };
     let m = l.frame.to_image()?;
-    let text_h = TEXT_H / l.frame.scale;
+    // printed text height in the reference: every page was scaled to TEXT_H
+    // when turned upright (OCR boxes on the softer median measure smaller)
+    let text_h = TEXT_H;
     let line_box = |ln: &OLine| box_ref(&m, ln.bbox());
 
     // each page's writing, for checking the fields against it
@@ -864,7 +866,9 @@ pub fn learn(sources: &[String], form: &str, name: &str, out: &Path, opts: &Lear
         stack.len(),
         name
     );
-    yaml += &format!("name: {}\nform: {}\nreference: reference.png\npadding: 8\nlearned: true\n", slug(name), form);
+    // twice the features a photographed reference needs: a median's are
+    // fewer and softer
+    yaml += &format!("name: {}\nform: {}\nreference: reference.png\npadding: 8\nlearned: true\nn_features: 10000\n", slug(name), form);
     yaml += &format!("protect:\n  - name: results\n    rect: {}\n", rect_yaml([0.0, 0.0, w as f64, results_bottom]));
     yaml += &format!("review_area: {}\n", rect_yaml([0.0, results_bottom, w as f64, h as f64 - results_bottom]));
     yaml += &format!("text_h: {}\n", r1(text_h));
@@ -1123,6 +1127,14 @@ pub fn learn(sources: &[String], form: &str, name: &str, out: &Path, opts: &Lear
         reference = util::from_bytes(h, w, &px)?;
     }
     let reference = clean(&reference, &erase, &keep)?;
+    // its edges sharpened back: averaging pages a pixel apart softens them,
+    // and pages are matched to it by its corners
+    let reference = {
+        let (mut soft, mut sharp) = (Mat::default(), Mat::default());
+        imgproc::gaussian_blur(&reference, &mut soft, Size::new(0, 0), 2.0, 0.0, core::BORDER_REPLICATE, core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+        core::add_weighted(&reference, 3.0, &soft, -2.0, 0.0, &mut sharp, -1)?;
+        sharp
+    };
     imgcodecs::imwrite(&dir.join("reference.png"), &reference, &Vector::new())?;
     std::fs::write(dir.join("template.yaml"), &yaml)?;
     let record = json!({

@@ -1027,11 +1027,37 @@ fn in_capitals(reads: &[(String, Vec<f64>)], width: f64) -> bool {
 /// than a letter (OCR misses much of the handwriting, so "not read" says
 /// little there); unread writing within a stroke's gap of it is part of it.
 fn free_signatures(l: &mut Layout, top: f64, passes: &[usize], strict: bool) -> Result<()> {
+    // Names are left alone where OCR read them; where it read a name's last
+    // letters doubtfully, those may be a signature beside it (a first loop
+    // read as a "U") or the name's own. Whichever reading finds writing to be
+    // a signature, it is masked.
+    let mut found = find_free_signatures(l, top, passes, strict, false)?;
+    for f in find_free_signatures(l, top, passes, strict, true)? {
+        let inter = |a: BoxF, b: BoxF| (a.2.min(b.2) - a.0.max(b.0)).max(0.0) * (a.3.min(b.3) - a.1.max(b.1)).max(0.0);
+        let area = (f.0 .2 - f.0 .0) * (f.0 .3 - f.0 .1);
+        if !found.iter().any(|g| inter(g.0, f.0) >= 0.9 * area) {
+            found.push(f);
+        }
+    }
+    let h = TEXT_H;
+    for (bx, why) in found {
+        let cy = (bx.1 + bx.3) / 2.0;
+        let mut z = Zone::new(&format!("signature-text@{:.0},{:.0}", bx.0, cy), [bx.0 - 4.0, bx.1 - 4.0, bx.2 - bx.0 + 8.0, bx.3 - bx.1 + 8.0], "signature");
+        z.search = Some([0.3 * h, 0.3 * h]);
+        l.fields.push(Field { kind: "signature".into(), zones: vec![z], source: "free-text".into(), label: format!("unlabelled signature ({})", why), label_box: bx });
+        l.notes.push(format!("unlabelled handwriting at y={:.0} taken for a signature ({})", cy, why));
+    }
+    Ok(())
+}
+
+/// The signatures `free_signatures` finds, with names' doubtful end letters
+/// trimmed off them (`trim`) or not.
+fn find_free_signatures(l: &Layout, top: f64, passes: &[usize], strict: bool, trim: bool) -> Result<Vec<(BoxF, &'static str)>> {
     let h = TEXT_H;
     let (_, hh_total) = l.frame.size;
     let y0 = top.max(0.0) as i32;
     if ((hh_total - y0) as f64) < h {
-        return Ok(());
+        return Ok(vec![]);
     }
     let sub = crop(&l.gray, 0, y0, l.gray.cols(), l.gray.rows())?;
     let mut ink = masking::ink_mask(&sub, h, true)?;
@@ -1071,7 +1097,7 @@ fn free_signatures(l: &mut Layout, top: f64, passes: &[usize], strict: bool) -> 
             // letters read doubtfully at its ends may be the writing beside
             // the name (a signature's first loop read as a "U")
             let (mut a, mut b) = (a, b);
-            if ln.probs.len() == ln.chars.len() {
+            if trim && ln.probs.len() == ln.chars.len() {
                 while b > a + 1 && ln.probs[b - 1] < 0.7 {
                     b -= 1;
                 }
@@ -1196,17 +1222,7 @@ fn free_signatures(l: &mut Layout, top: f64, passes: &[usize], strict: bool) -> 
             }
         }
     }
-    for (bx, why, sure) in found {
-        if !sure {
-            continue;
-        }
-        let cy = (bx.1 + bx.3) / 2.0;
-        let mut z = Zone::new(&format!("signature-text@{:.0},{:.0}", bx.0, cy), [bx.0 - 4.0, bx.1 - 4.0, bx.2 - bx.0 + 8.0, bx.3 - bx.1 + 8.0], "signature");
-        z.search = Some([0.3 * h, 0.3 * h]);
-        l.fields.push(Field { kind: "signature".into(), zones: vec![z], source: "free-text".into(), label: format!("unlabelled signature ({})", why), label_box: bx });
-        l.notes.push(format!("unlabelled handwriting at y={:.0} taken for a signature ({})", cy, why));
-    }
-    Ok(())
+    Ok(found.into_iter().filter(|f| f.2).map(|f| (f.0, f.1)).collect())
 }
 
 // --- printed text inside fields --------------------------------------------------------------
@@ -1398,6 +1414,25 @@ pub fn read_free_text(img: &Mat, h: &[[f64; 3]; 3], rect: [f64; 4], text_h: f64,
     // working <- template: the area, scaled so printed text is TEXT_H high
     let m = [[s, 0.0, -s * x], [0.0, s, -s * y], [0.0, 0.0, 1.0]];
     let to_image = util::mul3(h, &util::inv3(&m)?);
+    // An area reaching past its reference (a learned layout's comments run
+    // on below the page it was learned on) ends where the photo does: past
+    // it the photo's last rows, repeated, would be read as writing.
+    let mut hh = hh;
+    if reference.is_some_and(|r| y + hh > r.rows() as f64) {
+        let below = |yw: f64| [0.0, w * s].iter().map(|&xw| util::project(&to_image, [xw, yw])[1]).fold(f64::NEG_INFINITY, f64::max) - img.rows() as f64;
+        if below(hh * s) > 0.0 && below(0.0) < 0.0 {
+            let (mut lo, mut hi) = (0.0, hh * s);
+            for _ in 0..30 {
+                let mid = (lo + hi) / 2.0;
+                if below(mid) > 0.0 {
+                    hi = mid
+                } else {
+                    lo = mid
+                }
+            }
+            hh = lo / s;
+        }
+    }
     let size = ((w * s).ceil() as i32, (hh * s).ceil() as i32);
     let mut work = Mat::default();
     imgproc::warp_perspective(

@@ -438,13 +438,11 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
                 .filter(|(k, _, _)| columns.iter().any(|(ck, c)| ck == k && c[0].region == cells[0].region))
                 .map(|(_, _, ab)| ab[2])
                 .collect();
-            if !table_dy.is_empty() {
+            if let (Some(d), false) = (off, table_dy.is_empty()) {
                 let dy = util::median(&table_dy);
                 let row_h = util::median(&cells.iter().map(|z| z.rect[3]).collect::<Vec<_>>());
-                if off.map_or(true, |d| (d[1] - dy).abs() > 0.5 * row_h) {
-                    if let Some(d) = off {
-                        notes.push(format!("{}: printed header found {:+.0}px down, but its table's columns moved {:+.0}px: moved with them", key, d[1], dy));
-                    }
+                if (d[1] - dy).abs() > 0.5 * row_h {
+                    notes.push(format!("{}: printed header found {:+.0}px down, but its table's columns moved {:+.0}px: moved with them", key, d[1], dy));
                     off = Some([0.0, dy]);
                 }
             }
