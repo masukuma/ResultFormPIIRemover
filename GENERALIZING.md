@@ -90,7 +90,8 @@ does.
 2. **Pick a seed** among the group's pages: sharp, flat, upright, and read
    well by OCR.
 3. **Align** every page to the seed: a homography from their printed
-   features (ORB, as for templates), then dense optical flow (DIS),
+   features (ORB, taken tile by tile: a photo's strongest corners are often
+   in the table or floor around the form), then dense optical flow (DIS),
    smoothed. Photos of a curled or folded page are off any one homography
    by up to 60 px in places, and a table's repeating rows give few
    distinct features to correct that locally. Paper bends smoothly, so a
@@ -98,20 +99,27 @@ does.
    handwriting averages out.
 4. **The median is the blank form.** Printing is identical on every page.
    Handwriting differs, so a pixel-wise median of the aligned pages keeps
-   the print and drops the writing. On 15 photos of Forms 34A the median is
-   already a legible blank form. The template's reference image is a real
-   page (the sharp one with the least writing) with its writing replaced
-   by that median.
-5. **Where people write.** Ink on a page that the median doesn't have is
-   writing. Accumulated over the group, it marks exactly where people write:
+   the print and drops the writing. The frame is cut to the form (what most
+   pages print, and a text line around it). The median, sharpened, is the
+   template's reference image.
+5. **Where people write.** A page has writing where it is much darker than
+   85% of the pages are there: print is as dark on nearly every page, and
+   even where most people write (the first agents' rows) their strokes
+   differ from page to page. Accumulated over the group, it marks exactly
+   where people write:
    - each officer's line;
    - every agent row;
    - the comments.
-6. **What each place is.** The structural reader reads the clean median:
-   labels, rules, rows and columns. On a blank, flat, sharp form it doesn't
-   misread. Each writing area gets its role from its label, under the A/B/C
-   rules above. A writing area no rule explains stops the learning: the
-   printing goes to review.
+6. **What each place is.** The structural reader reads the median (in a
+   few versions) for its labels: the officers' lines, the comments. The
+   agents' table is read from its rules instead: on the 2022 Form 34A they
+   are printed light grey, and where most people write the ghosts of their
+   writing are as dark, so a reader's thresholds lose them. Averaged along
+   its length, a rule is still a clear ridge: down the table between each
+   two headings for the columns, across it for the rows; the table ends
+   where its outer rules do. Those rules are then drawn into the reference,
+   where they are printed, for pages to be snapped to. Each field gets its
+   role from its label, under the A/B/C rules above.
 7. **Write the template.** The result is a template in the same format as a
    hand-made one:
    - protected results;
@@ -172,13 +180,40 @@ the learning alone.
 - **Speed:** learning costs little. Pages then run at template speed, not at
   OCR speed.
 
-## 4. Hand-made templates
+## 4. Where it stands (milestone 1)
+
+Measured without any hand-made template (`rfpii learn`, then `redact`):
+
+| Printing | Pages | Learned from | Published | Hand template |
+|---|---|---|---|---|
+| 2022 Form 34A (national) | 215 | 40, in about 2 minutes on 4 cores | 194 | 204 |
+| 2017 Form 34A, first round (sideways photos on tables) | 46 | 32 | 35 | none |
+| 2017 Form 34A, repeat election | 25 | 23 | 18 | none |
+
+On the 2022 forms the learned layout masks what the hand template masks,
+but by design (partial digits, signature bands, stamps never masked) and
+where the hand template itself is off: it places the agents' table a row
+or two out on some pages, masking headers and leaving signatures. Most
+forms it doesn't publish fail the alignment checks, and go to review.
+
+The weak point is the officer's sign-off under the comments (name,
+signature, date, written on a comment line). It is found by the free-text
+reader, which flips with small changes of scale and position: on 4 of the
+2022 forms the learned layout leaves a sign-off signature that the hand
+template, tuned on these forms, masks. Making
+that reader robust belongs to milestone 3; until then the vision review
+(`--vlm-audit`) is what catches it.
+
+The by-election samples have one page per printing: too few to learn
+from. They are the structural reader's (milestone 3).
+
+## 5. Hand-made templates
 
 These become test fixtures: the 2022 Form 34A and 34B templates are the
 reference that learned layouts are measured against. The app no longer
 needs them.
 
-## 5. Milestones
+## 6. Milestones
 
 | | Goal | Measured on |
 |---|---|---|

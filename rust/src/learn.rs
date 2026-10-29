@@ -140,11 +140,27 @@ impl Orb {
     }
 }
 
+/// ORB features spread over the page, tile by tile: the strongest corners
+/// of a photo are often all in what lies around the form (a table's grain, a
+/// dark floor), and a form's own corners, softer, would get none.
 fn orb(g: &Mat) -> Result<Orb> {
-    let mut o = ORB::create(8000, 1.2, 8, 31, 0, 2, ORB_ScoreType::HARRIS_SCORE, 31, 10)?;
+    const TILES: (i32, i32) = (6, 8);
+    const PER_TILE: i32 = 8000 / (TILES.0 * TILES.1);
+    let (w, h) = (g.cols(), g.rows());
+    let mut o = ORB::create(PER_TILE, 1.2, 8, 31, 0, 2, ORB_ScoreType::HARRIS_SCORE, 31, 10)?;
     let mut k = Vector::<KeyPoint>::new();
+    for j in 0..TILES.1 {
+        for i in 0..TILES.0 {
+            let mut mask = Mat::new_rows_cols_with_default(h, w, core::CV_8U, Scalar::all(0.0))?;
+            let r = core::Rect::new(i * w / TILES.0, j * h / TILES.1, w / TILES.0 + 1, h / TILES.1 + 1) & core::Rect::new(0, 0, w, h);
+            Mat::roi_mut(&mut mask, r)?.set_to(&Scalar::all(255.0), &core::no_array())?;
+            let mut t = Vector::<KeyPoint>::new();
+            o.detect(g, &mut t, &mask)?;
+            k.extend(t);
+        }
+    }
     let mut d = Mat::default();
-    o.detect_and_compute(g, &core::no_array(), &mut k, &mut d, false)?;
+    ORB::create(k.len().max(1) as i32, 1.2, 8, 31, 0, 2, ORB_ScoreType::HARRIS_SCORE, 31, 10)?.compute(g, &mut k, &mut d)?;
     let desc = if d.rows() > 0 { util::bytes(&d)? } else { vec![] };
     Ok(Orb { pts: k.iter().map(|k| k.pt()).collect(), desc, n: d.rows() })
 }
@@ -190,7 +206,7 @@ fn onto(seed: &Orb, seed_px: &[u8], size: Size, page: &Mat) -> Result<Option<(Ma
     let q: Vec<[f64; 2]> = [[0.0, 0.0], [w, 0.0], [w, ht], [0.0, ht]].iter().map(|&c| util::project(&hg, c)).collect();
     let poly: Vector<Point2f> = q.iter().map(|c| Point2f::new(c[0] as f32, c[1] as f32)).collect();
     let area = geometry::contour_area(&poly, false)?;
-    if !geometry::is_contour_convex(&poly)? || !(0.5..2.0).contains(&(area / (page.cols() as f64 * page.rows() as f64))) {
+    if !geometry::is_contour_convex(&poly)? || !(0.1..3.0).contains(&(area / (page.cols() as f64 * page.rows() as f64))) {
         return Ok(None);
     }
     let mut warped = Mat::default();
@@ -764,6 +780,39 @@ pub fn learn(sources: &[String], form: &str, name: &str, out: &Path, opts: &Lear
         }
     }
     let Blank { median, print, freq, writing } = blank(&stack, opts.print_share)?;
+    // The template is the form: the frame is cut to its print, with a text
+    // line's margin. What lies around it on the first page (a table, the
+    // floor) is not on the others, and pages are scored against it.
+    let (fw, fh) = (median.cols(), median.rows());
+    let cut = {
+        let pb = util::bytes(&util::morph(&print, imgproc::MORPH_OPEN, &util::ones_kernel(3, 3)?)?)?;
+        let cols: Vec<usize> = (0..fw as usize).map(|x| (0..fh as usize).filter(|&y| pb[y * fw as usize + x] != 0).count()).collect();
+        let rows: Vec<usize> = (0..fh as usize).map(|y| (0..fw as usize).filter(|&x| pb[y * fw as usize + x] != 0).count()).collect();
+        // the extent of the print but its outer half percent each side
+        let span = |v: &[usize]| -> (i32, i32) {
+            let total: usize = v.iter().sum();
+            let (mut acc, mut a, mut b) = (0usize, 0usize, v.len());
+            for (i, &c) in v.iter().enumerate() {
+                acc += c;
+                if acc * 200 < total {
+                    a = i + 1;
+                }
+                if acc * 200 <= total * 199 {
+                    b = i + 1;
+                }
+            }
+            (a as i32, b as i32)
+        };
+        let ((x0, x1), (y0, y1)) = (span(&cols), span(&rows));
+        let m = TEXT_H as i32;
+        core::Rect::new((x0 - m).max(0), (y0 - m).max(0), (x1 + m).min(fw) - (x0 - m).max(0), (y1 + m).min(fh) - (y0 - m).max(0))
+    };
+    let crop_m = |m: &Mat| -> Result<Mat> { Ok(Mat::roi(m, cut)?.try_clone()?) };
+    let crop_v = |v: &[u8]| -> Vec<u8> { (cut.y..cut.y + cut.height).flat_map(|y| (cut.x..cut.x + cut.width).map(move |x| (y * fw + x) as usize)).map(|i| v[i]).collect() };
+    let (median, print) = (crop_m(&median)?, crop_m(&print)?);
+    let freq: Vec<f32> = (cut.y..cut.y + cut.height).flat_map(|y| (cut.x..cut.x + cut.width).map(move |x| (y * fw + x) as usize)).map(|i| freq[i]).collect();
+    let writing: Vec<Vec<u8>> = writing.iter().map(|v| crop_v(v)).collect();
+    let stack: Vec<Mat> = stack.iter().map(|m| crop_m(m)).collect::<Result<_>>()?;
     let reference = median.try_clone()?;
     let (w, h) = (reference.cols(), reference.rows());
     // written first, so a printing that can't be learned can be looked at
