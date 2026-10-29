@@ -172,9 +172,14 @@ struct RedactArgs {
     #[arg(long, default_value_t = 2)]
     vlm_rounds: usize,
     /// Model that confirms each spot the review model finds (default:
-    /// gemma4:31b on Ollama Cloud, the review model locally)
+    /// gemma4:31b on Ollama Cloud, the review model locally). A decision
+    /// model such as clef is asked through /v1/systemone
     #[arg(long, default_value = "")]
     vlm_checker: String,
+    /// With a decision model as --vlm-checker: the probability at or above
+    /// which a spot is masked
+    #[arg(long, default_value_t = 0.5)]
+    vlm_check_threshold: f64,
     /// Requests to the model host at once, across all workers (Ollama Cloud
     /// answered 429 beyond 12 at once on the account this was tested with)
     #[arg(long, default_value_t = 10)]
@@ -320,9 +325,14 @@ fn vlm_proposal(v: &Ollama, pages: &[io::SourcePage], cfg: &Config, rel: &str) -
     Ok(out)
 }
 
-/// The review model and the model that confirms what it finds.
+/// The review model and the model that confirms what it finds, each asked
+/// what it is before the run starts.
 fn reviewer(a: &RedactArgs) -> Result<rfpii::vlm::Reviewer> {
-    let finder = Ollama::new(a.vlm.settings())?;
+    let mut finder = Ollama::new(a.vlm.settings())?;
+    finder.probe()?;
+    if finder.decision {
+        anyhow::bail!("{} is a decision model: it can check spots (--vlm-checker) but not find them", finder.s.model);
+    }
     let mut cs = a.vlm.settings();
     cs.model = if !a.vlm_checker.is_empty() {
         a.vlm_checker.clone()
@@ -331,7 +341,10 @@ fn reviewer(a: &RedactArgs) -> Result<rfpii::vlm::Reviewer> {
     } else {
         rfpii::vlm::DEFAULT_CLOUD_CHECKER.to_string()
     };
-    Ok(rfpii::vlm::Reviewer { finder, checker: Ollama::new(cs)? })
+    cs.check_threshold = a.vlm_check_threshold;
+    let mut checker = Ollama::new(cs)?;
+    checker.probe()?;
+    Ok(rfpii::vlm::Reviewer { finder, checker })
 }
 
 fn cmd_redact(a: RedactArgs) -> Result<i32> {

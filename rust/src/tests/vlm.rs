@@ -6,8 +6,9 @@ use std::io::{BufRead, BufReader, Read, Write as _};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
-/// A local server answering /api/chat with the queued replies; records
-/// every (path, body) it was sent.
+/// A local server answering with the queued replies, in turn: as a chat
+/// message on /api/chat, as they are on any other path. Records every
+/// (path, body) it was sent.
 struct Stub {
     url: String,
     requests: Arc<Mutex<Vec<(String, Value)>>>,
@@ -41,14 +42,18 @@ fn stub(replies: Vec<Value>) -> Stub {
             }
             let mut body = vec![0u8; len];
             r.read_exact(&mut body).unwrap();
-            seen.lock().unwrap().push((path, serde_json::from_slice(&body).unwrap()));
-            // a string reply is sent as is (models often wrap their JSON)
-            let content = match replies.next() {
-                Some(Value::String(t)) => t,
-                Some(v) => v.to_string(),
-                None => "{}".to_string(),
+            seen.lock().unwrap().push((path.clone(), serde_json::from_slice(&body).unwrap()));
+            let reply = replies.next().unwrap_or(json!({}));
+            let data = if path == "/api/chat" {
+                // a string reply is sent as is (models often wrap their JSON)
+                let content = match reply {
+                    Value::String(t) => t,
+                    v => v.to_string(),
+                };
+                serde_json::to_vec(&json!({"message": {"role": "assistant", "content": content}})).unwrap()
+            } else {
+                serde_json::to_vec(&reply).unwrap()
             };
-            let data = serde_json::to_vec(&json!({"message": {"role": "assistant", "content": content}})).unwrap();
             let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", data.len());
             conn.write_all(head.as_bytes()).unwrap();
             conn.write_all(&data).unwrap();
@@ -157,4 +162,38 @@ fn find_asks_about_each_spot_except_what_is_already_black() {
     assert!(req[1].1["messages"][0]["content"].as_str().unwrap().contains("red box"));
     let spots = r.record["spots"].as_array().unwrap();
     assert!(spots.len() == 2 && spots[1]["kept"] == false && spots[1]["what"].as_str().unwrap().contains("already black"));
+}
+
+#[test]
+fn a_decision_checker_scores_each_spot_and_the_score_is_recorded() {
+    // the review area is x 0..400, y 100..600: 400 x 500
+    let f = stub(vec![json!("[{\"box_2d\": [100, 100, 180, 300], \"label\": \"signature\"}, {\"box_2d\": [300, 100, 380, 300], \"label\": \"phone_number\"}]")]);
+    let finder = Ollama::new(settings(&f.url, "gemma4:31b")).unwrap();
+    let answer = |sig: f64, crossed: f64, num: f64| {
+        json!({"answers": {"what": {"type": "choice", "choice": "unmasked_signature", "probabilities": {
+            "unmasked_signature": sig, "masked_signature": crossed, "name": 0.0, "date": 0.0, "complete_number": num, "masked_number": 0.0, "printed": 0.0}}}})
+    };
+    let s = stub(vec![json!({"capabilities": ["decision", "vision"]}), answer(0.3, 0.25, 0.0), answer(0.1, 0.0, 0.4)]);
+    let mut checker = Ollama::new(settings(&s.url, "clef")).unwrap();
+    checker.probe().unwrap();
+    assert!(checker.decision && checker.s.check_threshold == 0.5);
+    let r = finder.find(&page(600, 400), [0, 100, 400, 500], &checker).unwrap();
+    // a signature crossed by its writer's own stroke still shows: 0.3 + 0.25;
+    // the phone number's 0.4 is under the threshold
+    assert_eq!(r.found, vec![crate::pipeline::Found { label: "signature".into(), rect: [40.0, 150.0, 120.0, 190.0] }]);
+    let req = s.requests.lock().unwrap();
+    assert_eq!(req[0], ("/api/show".to_string(), json!({"model": "clef"})));
+    assert!(req[1].0 == "/v1/systemone" && req[1].1["model"] == "clef" && req[1].1["questions"]["what"]["type"] == "choice");
+    assert_eq!(req[1].1["images"].as_array().unwrap().len(), 1);
+    let spots = r.record["spots"].as_array().unwrap();
+    assert!(spots[0]["p"] == 0.55 && spots[0]["kept"] == true && spots[1]["p"] == 0.4 && spots[1]["kept"] == false);
+    assert_eq!(r.record["check_threshold"], 0.5);
+}
+
+#[test]
+fn a_chat_model_is_not_a_decision_model() {
+    let s = stub(vec![json!({"capabilities": ["completion", "vision"]})]);
+    let mut c = Ollama::new(settings(&s.url, "gemma4:31b")).unwrap();
+    c.probe().unwrap();
+    assert!(!c.decision);
 }

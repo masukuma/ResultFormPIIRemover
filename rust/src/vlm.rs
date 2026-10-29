@@ -89,6 +89,22 @@ Look only at the writing inside the red box.
   Dates (e.g. 09-08-2022) and vote counts are not ID or phone numbers: false.
 Answer with JSON: {\"unmasked_signature\": bool, \"complete_number\": bool, \"what\": \"a few words\"}";
 
+/// The same check for a decision model (Clef): what the writing in the red
+/// box is, scored over every option at once.
+const DECIDE_STATE: &str = "A zoomed crop of a photographed Kenyan election result form after redaction: solid black rectangles are masks \
+added on purpose. Names of officials and agents, dates, vote counts, printed text and official stamps are allowed to show.";
+
+fn decide_questions() -> Value {
+    json!({"what": {"type": "choice", "instructions": "What is the handwriting inside the red box?", "criteria": {
+        "unmasked_signature": "A handwritten signature (a scribble, flourish or stylised initials, not readable as words) with no black mask across it",
+        "masked_signature": "A signature with a black bar or black blocks across it",
+        "name": "A name or other words written in readable letters (capitals or joined-up), even if signed beside",
+        "date": "A date or a vote count",
+        "complete_number": "An ID, passport or phone number with every digit readable",
+        "masked_number": "An ID, passport or phone number with some digits hidden under black",
+        "printed": "Printed text, lines, a stamp, or nothing handwritten"}}})
+}
+
 fn find_schema() -> Value {
     json!({"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {
         "label": {"type": "string", "enum": LABELS},
@@ -284,6 +300,9 @@ pub struct VlmSettings {
     pub timeout: f64,
     pub api_key: Option<String>,
     pub allow_remote_unredacted: bool,
+    /// A decision model's probability at or above which `check` confirms a
+    /// spot (a chat model answers 0 or 1).
+    pub check_threshold: f64,
 }
 
 impl Default for VlmSettings {
@@ -292,7 +311,7 @@ impl Default for VlmSettings {
         let host = std::env::var("OLLAMA_HOST").ok().filter(|h| !h.is_empty()).unwrap_or_else(|| {
             if api_key.is_some() { CLOUD_HOST.to_string() } else { "http://localhost:11434".to_string() }
         });
-        VlmSettings { host, model: String::new(), max_side: 1288, coords: "auto".into(), timeout: 300.0, api_key, allow_remote_unredacted: false }
+        VlmSettings { host, model: String::new(), max_side: 1288, coords: "auto".into(), timeout: 300.0, api_key, allow_remote_unredacted: false, check_threshold: 0.5 }
     }
 }
 
@@ -313,6 +332,9 @@ pub struct Box {
 
 pub struct Ollama {
     pub s: VlmSettings,
+    /// A decision model (Clef): answers typed questions through
+    /// /v1/systemone instead of chatting. Set by `probe`.
+    pub decision: bool,
 }
 
 fn hostname(url: &str) -> String {
@@ -340,7 +362,17 @@ impl Ollama {
         if !local && s.host.trim_end_matches('/') == CLOUD_HOST && s.api_key.is_none() {
             bail!("Ollama Cloud needs OLLAMA_API_KEY (create one at ollama.com/settings/keys)");
         }
-        Ok(Ollama { s })
+        Ok(Ollama { s, decision: false })
+    }
+
+    /// Ask the host what the model is (/api/show): a decision model is asked
+    /// through /v1/systemone. Fails if the host doesn't know the model, so a
+    /// misspelt model stops a run before its first page.
+    pub fn probe(&mut self) -> Result<()> {
+        let url = format!("{}/api/show", self.s.host.trim_end_matches('/'));
+        let reply = self.post(&url, &json!({"model": self.s.model}))?;
+        self.decision = reply["capabilities"].as_array().is_some_and(|c| c.iter().any(|v| v == "decision"));
+        Ok(())
     }
 
     pub fn local(&self) -> bool {
@@ -404,14 +436,14 @@ impl Ollama {
         Ok((serde_json::from_str(content)?, hex::encode(Sha256::digest(&sent))))
     }
 
-    /// One chat request, retried when the host is busy (429, 5xx) or the
-    /// connection drops; the reply's text.
-    fn post(&self, body: &Value) -> Result<String> {
+    /// One request, retried when the host is busy (429, 5xx) or the
+    /// connection drops; the reply.
+    fn post(&self, url: &str, body: &Value) -> Result<Value> {
         let _permit = Permit::take();
         let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs_f64(self.s.timeout))).http_status_as_error(false).build().into();
         let mut last = String::new();
         for attempt in 0..6u32 {
-            let mut req = agent.post(self.chat_url()).header("Content-Type", "application/json");
+            let mut req = agent.post(url).header("Content-Type", "application/json");
             if let Some(a) = self.authorization() {
                 req = req.header("Authorization", a);
             }
@@ -419,12 +451,13 @@ impl Ollama {
                 Ok(mut resp) => {
                     let status = resp.status().as_u16();
                     if status == 200 {
-                        let reply: Value = resp.body_mut().read_json().map_err(|e| anyhow!("Ollama reply: {e}"))?;
-                        return reply["message"]["content"].as_str().map(String::from).ok_or_else(|| anyhow!("Ollama reply has no message"));
+                        return resp.body_mut().read_json().map_err(|e| anyhow!("Ollama reply: {e}"));
                     }
                     last = format!("HTTP {}", status);
                     if !(status == 429 || status >= 500) {
-                        bail!("Ollama at {}: {}", self.s.host, last);
+                        // the host's reason, e.g. a decision model asked to chat
+                        let why = resp.body_mut().read_to_string().unwrap_or_default();
+                        bail!("Ollama at {}: {} {:.200}", self.s.host, last, why);
                     }
                 }
                 Err(e) => last = e.to_string(),
@@ -435,13 +468,32 @@ impl Ollama {
     }
 
     fn chat(&self, prompt: &str, sent: &[u8], schema: Value) -> Result<String> {
-        self.post(&json!({
+        let reply = self.post(&self.chat_url(), &json!({
             "model": self.s.model,
             "messages": [{"role": "user", "content": prompt, "images": [base64::engine::general_purpose::STANDARD.encode(sent)]}],
             "format": schema,
             "stream": false,
             "options": {"temperature": 0},
-        }))
+        }))?;
+        reply["message"]["content"].as_str().map(String::from).ok_or_else(|| anyhow!("Ollama reply has no message"))
+    }
+
+    /// A decision model's answer to `questions` about `sent`: per question,
+    /// the probability of each option.
+    fn decide(&self, sent: &[u8], questions: Value) -> Result<Value> {
+        let url = format!("{}/v1/systemone", self.s.host.trim_end_matches('/'));
+        let reply = self.post(&url, &json!({
+            "model": self.s.model,
+            "state": DECIDE_STATE,
+            "images": [base64::engine::general_purpose::STANDARD.encode(sent)],
+            "questions": questions,
+        }))?;
+        reply.get("answers").cloned().ok_or_else(|| anyhow!("{} answered without answers", self.s.model))
+    }
+
+    /// The prompt the checker is asked, for the record.
+    fn check_prompt(&self) -> String {
+        if self.decision { format!("{}\n{}", DECIDE_STATE, decide_questions()) } else { CHECK_PROMPT.to_string() }
     }
 
     /// What still shows on a *redacted* page inside `area` (image px x, y,
@@ -471,31 +523,44 @@ impl Ollama {
             // a spot that is largely black already is something masked (a
             // banded signature, a number with digits hidden): not asked about
             let black = black_share(&gray, r)?;
-            // the checker must see what the finder named: a name taken for
-            // a number, or a header for a phone, is confirmed as neither
-            let (keep, what) = if black >= 0.08 {
-                (false, format!("{:.0}% already black", black * 100.0))
+            let mut cand = json!({"label": sp.label, "box": r.iter().map(|&v| crate::pyjson::round_n(v, 1)).collect::<Vec<_>>()});
+            let keep = if black >= 0.08 {
+                cand["what"] = json!(format!("{:.0}% already black", black * 100.0));
+                false
             } else {
+                // the checker must see what the finder named: a name taken
+                // for a number, or a header for a phone, is confirmed as
+                // neither
                 let (sig, num, what) = checker.check(redacted, r)?;
-                (if sp.label == "signature" { sig } else { num }, what)
+                let p = if sp.label == "signature" { sig } else { num };
+                cand["what"] = json!(what);
+                if checker.decision {
+                    cand["p"] = json!(crate::pyjson::round_n(p, 4));
+                }
+                p >= checker.s.check_threshold
             };
-            cands.push(json!({"label": sp.label, "box": r.iter().map(|&v| crate::pyjson::round_n(v, 1)).collect::<Vec<_>>(), "kept": keep, "what": what}));
+            cand["kept"] = json!(keep);
+            cands.push(cand);
             if keep {
                 found.push(crate::pipeline::Found { label: sp.label, rect: r });
             }
         }
-        let record = json!({"model": self.s.model, "checker": checker.s.model, "host": hostname(&self.s.host),
-                            "find_prompt_sha256": hex::encode(Sha256::digest(FIND_PROMPT.as_bytes())),
-                            "check_prompt_sha256": hex::encode(Sha256::digest(CHECK_PROMPT.as_bytes())),
-                            "area": area, "image_sent_sha256": hex::encode(Sha256::digest(&sent)), "spots": cands});
+        let mut record = json!({"model": self.s.model, "checker": checker.s.model, "host": hostname(&self.s.host),
+                                "find_prompt_sha256": hex::encode(Sha256::digest(FIND_PROMPT.as_bytes())),
+                                "check_prompt_sha256": hex::encode(Sha256::digest(checker.check_prompt().as_bytes())),
+                                "area": area, "image_sent_sha256": hex::encode(Sha256::digest(&sent)), "spots": cands});
+        if checker.decision {
+            record["check_threshold"] = json!(checker.s.check_threshold);
+        }
         Ok(FindResult { found, record })
     }
 
     /// Is something the rules hide still showing in `r` (image px x0, y0,
-    /// x1, y1) of a *redacted* page: (an unmasked signature, a complete
-    /// number, what it is). Asked of a crop 80 px wider all round, zoomed
-    /// 2x, with `r` boxed in red; a reply that can't be read says yes.
-    pub fn check(&self, redacted: &Mat, r: [f64; 4]) -> Result<(bool, bool, String)> {
+    /// x1, y1) of a *redacted* page: the probability of an unmasked
+    /// signature, of a complete number, and what it is. Asked of a crop 80
+    /// px wider all round, zoomed 2x, with `r` boxed in red. A chat model
+    /// answers 0 or 1, and a reply that can't be read says yes.
+    pub fn check(&self, redacted: &Mat, r: [f64; 4]) -> Result<(f64, f64, String)> {
         let (iw, ih) = (redacted.cols(), redacted.rows());
         let x0 = ((r[0] - 80.0).max(0.0) as i32).min(iw - 1);
         let y0 = ((r[1] - 80.0).max(0.0) as i32).min(ih - 1);
@@ -510,14 +575,18 @@ impl Ollama {
         }
         let p = |x: f64, o: i32| ((x - o as f64) * 2.0) as i32;
         imgproc::rectangle_points(&mut z, opencv::core::Point::new(p(r[0], x0), p(r[1], y0)), opencv::core::Point::new(p(r[2], x0), p(r[3], y0)), opencv::core::Scalar::new(0.0, 0.0, 255.0, 0.0), 3, imgproc::LINE_8, 0)?;
+        if self.decision {
+            let a = &self.decide(&jpeg(&z)?, decide_questions())?["what"];
+            let p = |k: &str| a["probabilities"][k].as_f64().unwrap_or(0.0);
+            // spots asked about are under 8% black, so a "masked" one can
+            // only be crossed by the writer's own stroke: it still shows
+            return Ok((p("unmasked_signature") + p("masked_signature"), p("complete_number") + p("masked_number"), a["choice"].as_str().unwrap_or("").to_string()));
+        }
         let reply = self.chat(CHECK_PROMPT, &jpeg(&z)?, check_schema())?;
+        let yes = |k: &str, v: &Value| if v.get(k).and_then(|b| b.as_bool()).unwrap_or(true) { 1.0 } else { 0.0 };
         Ok(match loose_json(&reply) {
-            Some(v) => (
-                v.get("unmasked_signature").and_then(|b| b.as_bool()).unwrap_or(true),
-                v.get("complete_number").and_then(|b| b.as_bool()).unwrap_or(true),
-                v.get("what").and_then(|w| w.as_str()).unwrap_or("").to_string(),
-            ),
-            None => (true, true, "unreadable reply".to_string()),
+            Some(v) => (yes("unmasked_signature", &v), yes("complete_number", &v), v.get("what").and_then(|w| w.as_str()).unwrap_or("").to_string()),
+            None => (1.0, 1.0, "unreadable reply".to_string()),
         })
     }
 

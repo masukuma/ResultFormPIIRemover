@@ -237,8 +237,9 @@ fn batch_withholds_failed_document() {
     assert!(root.join("review/bad.json").exists());
 }
 
-/// A local stand-in for Ollama answering /api/chat with `replies` in turn;
-/// returns its URL and how many requests it has had.
+/// A local stand-in for Ollama answering /api/chat with `replies` in turn
+/// (and /api/show for a vision model); returns its URL and how many chat
+/// requests it has had.
 fn ollama_stub(replies: Vec<String>) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
     use std::io::{BufRead, BufReader, Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -266,8 +267,12 @@ fn ollama_stub(replies: Vec<String>) -> (String, std::sync::Arc<std::sync::atomi
             }
             let mut body = vec![0u8; len];
             r.read_exact(&mut body).unwrap();
-            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let data = serde_json::to_vec(&serde_json::json!({"message": {"role": "assistant", "content": replies.next().unwrap_or_else(|| "[]".into())}})).unwrap();
+            let data = if line.contains("/api/show") {
+                serde_json::to_vec(&serde_json::json!({"capabilities": ["completion", "vision"]})).unwrap()
+            } else {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                serde_json::to_vec(&serde_json::json!({"message": {"role": "assistant", "content": replies.next().unwrap_or_else(|| "[]".into())}})).unwrap()
+            };
             let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", data.len());
             conn.write_all(head.as_bytes()).unwrap();
             conn.write_all(&data).unwrap();

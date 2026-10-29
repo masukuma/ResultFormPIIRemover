@@ -112,6 +112,10 @@ Useful flags:
   confirms each spot on a zoomed crop (both default to `gemma4:31b` on Ollama
   Cloud). What was found is recorded in the manifest and replayed by
   `verify --rerun`.
+- `--vlm-checker clef`: confirm spots with Clef, a decision model, which
+  scores each spot instead of writing a reply: the same score every time,
+  recorded in the manifest. A spot is masked at a score of
+  `--vlm-check-threshold` (default 0.5) or more.
 - `--vlm-rescue`: with `--vlm-audit`, publish pages whose ID/phone columns
   can't be placed, with those columns hidden whole, once the review passes.
 - `--vlm-concurrency`: requests to the model host at once across all workers
