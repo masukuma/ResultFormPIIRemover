@@ -724,6 +724,53 @@ fn a_signature_hidden_whole_is_covered_along_its_ink() {
     assert!(hidden as f64 >= 0.98 * ink.iter().filter(|&&v| v).count() as f64, "{hidden} hidden");
 }
 
+/// Two signature lines (officers'), 56 px apart, with a printed "Date" at the
+/// end of each; above the first, the line before with a constituency written
+/// just over it. The page and its blank reference.
+fn signature_lines() -> (Mat, Mat, Vec<Zone>) {
+    let mut reference = gray(400, 700, 235);
+    for k in 0..2 {
+        let base = 150 + 56 * k + 45;
+        line(&mut reference, (100, base), (420, base), colour(60.0), 2);
+        text(&mut reference, "Date", (440, base), 0.8, colour(30.0), 2, true);
+    }
+    line(&mut reference, (100, 146), (420, 146), colour(60.0), 2); // the line before
+    let mut page = reference.clone();
+    text(&mut page, "LAMU WEST", (200, 146), 0.9, colour(20.0), 2, true); // its foot in the search
+    for k in 0..2 {
+        let base = 150 + 56 * k + 45;
+        let pts: Vec<(i32, i32)> = (0..40).map(|i| (150 + 4 * i, base - 14 + (9.0 * (i as f64 / 1.5).sin()) as i32 + JITTER_1[i as usize])).collect();
+        polyline(&mut page, &pts, colour(20.0), 2);
+    }
+    let cells = (0..2).map(|k| Zone { group: "o".into(), row: k, search: Some([12.0, 24.0]), region: "t".into(), ..zone(&format!("o[{}]", k), [100, 150 + 56 * k as i32, 400, 56], "signature") }).collect();
+    (page, reference, cells)
+}
+
+#[test]
+fn a_signature_line_keeps_its_printed_label_and_the_line_above() {
+    // "Date" at the end of the line lies in the search; so does the bottom of
+    // a constituency written just over the line before. Neither is the
+    // signature: the label is found on the page and its print set aside, and
+    // writing reaching in from the top and stopping above the first line's
+    // middle is the line above's. The signatures still get their bands.
+    let (page, reference, cells) = signature_lines();
+    let printed = printed_labels(&page, &identity(), &reference, &[[436.0, 175.0, 64.0, 26.0], [436.0, 231.0, 64.0, 26.0]]).unwrap();
+    let o = SigOptions { printed: Some(&printed), ..none() };
+    let mut canvas = gray(400, 700, 255);
+    let rep = sigs(&mut canvas, &page, &cells, &o);
+    assert_eq!(modes(&rep), ["signature", "signature"]);
+    let c = img_of(&canvas);
+    let black = |x0: i32, y0: i32, x1: i32, y1: i32| (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| c.at(x as usize, y as usize) == 0).count();
+    assert_eq!(black(436, 175, 500, 257), 0); // both "Date"s
+    assert_eq!(black(190, 110, 420, 147), 0); // the constituency
+    assert!(black(150, 170, 310, 200) > 0 && black(150, 226, 310, 256) > 0); // the signatures
+    assert_eq!(verify_sig(&page, &apply(&canvas, &page), &cells, &o), "");
+    // without the label set aside, the end of the line was taken for writing
+    let mut canvas = gray(400, 700, 255);
+    sigs(&mut canvas, &page, &cells, &none());
+    assert!((175..201).any(|y| (436..500).any(|x| img_of(&canvas).at(x, y) == 0)));
+}
+
 /// A ruled column under its printed header, `dx` px across and `k` times as
 /// wide as at x = 300..500.
 fn headed_column(dx: i32, k: f64) -> Mat {

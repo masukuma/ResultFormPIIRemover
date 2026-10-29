@@ -141,6 +141,17 @@ alignment. Finding each column's rows on the page from its own faint printed
 rules was tried: rows of handwriting make the same faint dips, and the fits
 locked onto them, so it isn't used.
 
+**The officers' signature lines.** They sit above the agents table and are
+placed by it, but where its rules can't be matched they are widened only
+downward: the page alignment is sure of the declaration, and above each line
+is the writing of the line before. Writing that reaches into the search from
+its top and stops above the first line's middle is that line's (a
+constituency written just over the Presiding Officer's signature line), not
+a signature. A zone's `print` labels ("Date" at the end of each line, inside
+its search) are found on the page and their print set aside, so they are
+never taken for writing; only those labels are, not the whole reference,
+whose signature cells still hold traces of the handwriting erased from it.
+
 **Signatures in a table that didn't snap.** Its rows are then the
 template's, and down a column of eleven the writing can drift most of a row
 off them; cut at those rows, a signature is banded in the wrong place. On

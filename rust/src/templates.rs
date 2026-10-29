@@ -26,6 +26,8 @@
 //!     action: signature  # a band through the middle of each signature
 //!     rect: [x, y, w, h]
 //!     search: [12, 24]   # px searched above/below for strokes that stray
+//!     print:             # printed labels in the search, found on the page:
+//!       - [x, y, w, h]   # never taken for writing (e.g. "Date" by the line)
 //!   - name: agent_id
 //!     action: partial    # mask random digits, keep the rest visible
 //!     digits: 8          # expected digit count (ID 8, phone 10)
@@ -81,6 +83,10 @@ pub struct Zone {
     /// column: when its table can't be snapped and the search is widened,
     /// the search stops at them.
     pub fence: [Option<[f64; 4]>; 2],
+    /// Printed labels (x, y, w, h) inside the zone's search ("Date" at the
+    /// end of a signature line): found on the page, their print is never
+    /// taken for writing.
+    pub print: Vec<[f64; 4]>,
 }
 
 impl Zone {
@@ -97,6 +103,7 @@ impl Zone {
             search: None,
             anchor: None,
             fence: [None, None],
+            print: vec![],
         }
     }
 
@@ -231,6 +238,10 @@ fn zones_from_spec(spec: &Value) -> Result<Vec<Zone>> {
             }
         }
     }
+    let print = match spec.get("print") {
+        Some(v) => v.as_sequence().ok_or_else(|| anyhow!("zone {:?}: print must be a list of [x, y, w, h]", name))?.iter().map(|r| rect4(r, &name)).collect::<Result<Vec<_>>>()?,
+        None => vec![],
+    };
     Ok((0..rows)
         .map(|r| Zone {
             name: if rows > 1 { format!("{}[{}]", name, r) } else { name.clone() },
@@ -244,6 +255,7 @@ fn zones_from_spec(spec: &Value) -> Result<Vec<Zone>> {
             search,
             anchor,
             fence,
+            print: print.clone(),
         })
         .collect())
 }

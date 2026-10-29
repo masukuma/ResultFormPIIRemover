@@ -1503,6 +1503,12 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
             inside as f64 / total.max(1) as f64
         };
         blobs.retain(|b| share(b) >= 0.3 && !(b.y0 <= 1 && (b.y1 as f64) < (lo + hi) as f64 / 2.0));
+    } else if cs.cells.len() <= 2 {
+        // signature lines, not a table's rows: writing reaching in from the
+        // top of the search and stopping above the first line's middle is
+        // the line above's (a constituency written just over the line)
+        let mid = (cs.bands[0].0 + cs.bands[0].1) / 2.0;
+        blobs.retain(|b| !(b.y0 <= 1 && (b.y1 as f64) < mid));
     }
     Ok((blobs, cs.origin, cs.bands, cs.cells, ink))
 }
@@ -1580,6 +1586,28 @@ pub fn verify_signatures(gray: &Mat, out: &Mat, f: &Mapper, cells: &[Zone], s: &
         return Ok(format!("{}: {} signature(s) not masked through the middle", cells2[0].key(), bad));
     }
     Ok(String::new())
+}
+
+/// Template-space mask (255) of printed `labels` that lie in a zone's search:
+/// each found on the page near where `f` puts it, and its print in the
+/// reference copied there, a few px wider, for `SigOptions::printed`.
+pub fn printed_labels(gray: &Mat, f: &Mapper, reference: &Mat, labels: &[[f64; 4]]) -> Result<Mat> {
+    let refg = Img::from_mat(&util::gray(reference)?)?;
+    let mut m = Img::new(refg.w, refg.h);
+    for &l in labels {
+        let (d, _) = find_label(gray, f, reference, l, 30.0, 30.0)?;
+        let [dx, dy] = d.unwrap_or([0.0, 0.0]).map(|v| v.round() as i64);
+        let [x, y, w, h] = l.map(|v| v.round() as i64);
+        for yy in y.max(0)..(y + h).min(refg.h as i64) {
+            for xx in x.max(0)..(x + w).min(refg.w as i64) {
+                let (tx, ty) = (xx + dx, yy + dy);
+                if refg.at(xx as usize, yy as usize) < 128 && tx >= 0 && ty >= 0 && (tx as usize) < m.w && (ty as usize) < m.h {
+                    m.set(tx as usize, ty as usize, 255);
+                }
+            }
+        }
+    }
+    util::dilate(&m.to_mat()?, &util::ones_kernel(5, 5)?)
 }
 
 /// Locate a printed label near where the template expects it. Returns the
