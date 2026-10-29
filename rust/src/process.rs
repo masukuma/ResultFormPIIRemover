@@ -376,7 +376,7 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
                 Some(m) => PageImage::Pixels(m),
                 None => PageImage::Jpeg(r.data.as_slice()),
             };
-            (img, sp.page_size, sp.rect, sp.rotate)
+            (img, sp.page_size, sp.place, sp.rotate)
         })
         .collect();
     let pdf = io::build_pdf(&items)?;
