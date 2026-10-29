@@ -89,12 +89,19 @@ does.
    Older files are grouped by their codes, or by alignment alone (2.4).
 2. **Pick a seed** among the group's pages: sharp, flat, upright, and read
    well by OCR.
-3. **Align** every page to the seed by its printed features (ORB and a
-   homography, as for templates).
+3. **Align** every page to the seed: a homography from their printed
+   features (ORB, as for templates), then dense optical flow (DIS),
+   smoothed. Photos of a curled or folded page are off any one homography
+   by up to 60 px in places, and a table's repeating rows give few
+   distinct features to correct that locally. Paper bends smoothly, so a
+   flow field smoothed over 25 px follows the bend while one page's
+   handwriting averages out.
 4. **The median is the blank form.** Printing is identical on every page.
    Handwriting differs, so a pixel-wise median of the aligned pages keeps
    the print and drops the writing. On 15 photos of Forms 34A the median is
-   already a legible blank form.
+   already a legible blank form. The template's reference image is a real
+   page (the sharp one with the least writing) with its writing replaced
+   by that median.
 5. **Where people write.** Ink on a page that the median doesn't have is
    writing. Accumulated over the group, it marks exactly where people write:
    - each officer's line;
@@ -147,6 +154,11 @@ A tally document is read page by page:
   290 Forms 35B, aligned on the declaration page alone.
 
 ## 3. Election night
+
+`rfpii redact --learn learned/ …` learns every printing in the batch that
+has no template in `learned/` yet, writes it there, and redacts the batch
+with it. Later batches reuse what is already learned. `rfpii learn` does
+the learning alone.
 
 - **Learning a printing:** the first forms of a printing are held until its
   layout is learned, then everything is published. Learning needs a handful

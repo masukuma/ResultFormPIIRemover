@@ -60,11 +60,11 @@ fn re(p: &str) -> Regex {
     Regex::new(p).unwrap()
 }
 
-static ID_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)passport|(?<![a-z])[I1l]\s?\.?\s?D\s*\.?\s*(?:/|no\b|no\.|num|number)|national\s*id"));
-static TEL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)(?<![a-z])tel(?![a-z])|telephone|contact|phone|mobile"));
-static SIG_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)signature|(?<![a-z])sign(?![a-z])"));
+pub(crate) static ID_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)passport|(?<![a-z])[I1l]\s?\.?\s?D\s*\.?\s*(?:/|no\b|no\.|num|number)|national\s*id"));
+pub(crate) static TEL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)(?<![a-z])tel(?![a-z])|telephone|contact|phone|mobile"));
+pub(crate) static SIG_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)signature|(?<![a-z])sign(?![a-z])"));
 static DATE_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)(?<!di)date"));
-static REFUSAL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)refus"));
+pub(crate) static REFUSAL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)refus"));
 static LABEL_RE: Lazy<Regex> = Lazy::new(|| {
     re(r"(?i)(?<!di)date|signature|name|officer|polling|station|constituency|county|ward|passport|(?<![a-z])tel(?![a-z])|contact|(?<![a-z])I\.?D(?![a-z])")
 });
@@ -81,7 +81,7 @@ static FREE_LABEL: Lazy<Regex> = Lazy::new(|| {
 });
 static NA_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)^\W*(?:n\s*/\s*a|nil|none|na)\W*$"));
 
-fn has(r: &Regex, t: &str) -> bool {
+pub(crate) fn has(r: &Regex, t: &str) -> bool {
     r.is_match(t).unwrap_or(false)
 }
 
@@ -331,7 +331,7 @@ fn binary(gray: &Mat) -> Result<Mat> {
 }
 
 /// Printed rules (stamps erased first).
-fn rules(gray: &Mat, stamp_list: &[Stamp]) -> Result<(Vec<Line>, Vec<Line>)> {
+pub fn rules(gray: &Mat, stamp_list: &[Stamp]) -> Result<(Vec<Line>, Vec<Line>)> {
     let mut bw = binary(gray)?;
     for st in stamp_list {
         imgproc::circle(&mut bw, Point::new(st.cx as i32, st.cy as i32), (st.r * 1.1 + 4.0) as i32, Scalar::all(0.0), -1, imgproc::LINE_8, 0)?;

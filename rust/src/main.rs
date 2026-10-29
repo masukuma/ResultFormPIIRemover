@@ -57,12 +57,36 @@ enum Cmd {
     },
     /// Draft a template's zones from a reference image with a VLM
     Propose(ProposeArgs),
+    /// Learn each printing's layout from its forms and write it as a template
+    Learn(LearnArgs),
     /// Generate a sample template and synthetic scans
     Demo {
         directory: PathBuf,
         #[arg(long, default_value_t = 20)]
         count: u64,
     },
+}
+
+#[derive(Args)]
+struct LearnArgs {
+    /// Files, directories or zip archives of forms (KIEMS-named files are
+    /// grouped by printing; others are taken as one printing)
+    #[arg(required = true)]
+    inputs: Vec<String>,
+    /// Directory to write the learned templates to
+    #[arg(long)]
+    out: PathBuf,
+    /// The form of files whose name doesn't say (e.g. 34A)
+    #[arg(long)]
+    form: Option<String>,
+    /// Pages used per printing, at most
+    #[arg(long, default_value_t = 40)]
+    max_pages: usize,
+    /// Pages a printing needs to be learned
+    #[arg(long, default_value_t = 5)]
+    min_pages: usize,
+    #[arg(long, default_value_t = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))]
+    workers: usize,
 }
 
 #[derive(Args, Clone)]
@@ -114,8 +138,16 @@ struct RedactArgs {
     #[arg(required = true)]
     inputs: Vec<String>,
     /// Template dir, or dir of template dirs
+    #[arg(long, required_unless_present = "learn")]
+    templates: Option<String>,
+    /// Learn the layout of each printing among the inputs that has no
+    /// template in this directory yet, write it there, then redact with
+    /// those templates (and --templates, if given)
     #[arg(long)]
-    templates: String,
+    learn: Option<PathBuf>,
+    /// With --learn: the form of files whose name doesn't say (e.g. 34A)
+    #[arg(long, requires = "learn")]
+    form: Option<String>,
     /// Publishable output (redacted PDFs, manifests, ledger)
     #[arg(long)]
     out: String,
@@ -355,7 +387,7 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
     mask.hide = a.hide;
     mask.phone_tail = a.phone_tail;
     let cfg = Config {
-        templates: a.templates.clone(),
+        templates: a.templates.clone().unwrap_or_default(),
         out: a.out.clone(),
         review: a.review.clone(),
         align,
@@ -387,13 +419,39 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
     std::fs::create_dir_all(&a.review)?;
     let ledger = a.ledger.clone().unwrap_or_else(|| Path::new(&a.out).join("ledger.jsonl"));
     let all = jobs(&a.inputs)?;
-    let mut todo = Vec::new();
-    for j in all {
-        if a.overwrite || !Path::new(&a.out).join(with_suffix(&j.1, ".pdf")).exists() {
-            todo.push(j);
+    let todo: Vec<(String, String)> = all
+        .iter()
+        .filter(|j| a.overwrite || !Path::new(&a.out).join(with_suffix(&j.1, ".pdf")).exists())
+        .cloned()
+        .collect();
+    let mut templates = match &a.templates {
+        Some(t) => load_templates(Path::new(t))?,
+        None => Vec::new(),
+    };
+    if let Some(dir) = &a.learn {
+        if !rfpii::ocr::available() {
+            anyhow::bail!("--learn needs OCR: {}", rfpii::ocr::check().err().map(|e| e.to_string()).unwrap_or_default());
+        }
+        let sources: Vec<String> = all.iter().map(|j| j.0.clone()).collect();
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(a.workers.max(1)).build()?;
+        let opts = rfpii::learn::LearnOptions::default();
+        let results = match pool.install(|| rfpii::learn::learn_all(&sources, a.form.as_deref(), dir, &opts, true)) {
+            Ok(r) => r,
+            Err(e) => {
+                println!("nothing to learn: {}", e);
+                Vec::new()
+            }
+        };
+        report_learned(&results, dir)?;
+        if dir.exists() {
+            if let Ok(l) = load_templates(dir) {
+                templates.extend(l);
+            }
         }
     }
-    let mut templates = load_templates(Path::new(&cfg.templates))?;
+    if templates.is_empty() {
+        anyhow::bail!("no templates: none given, and none could be learned");
+    }
     for t in templates.iter_mut() {
         prepare(t, &cfg.align)?;
     }
@@ -679,6 +737,46 @@ fn cmd_propose(a: ProposeArgs) -> Result<i32> {
     Ok(0)
 }
 
+fn cmd_learn(a: LearnArgs) -> Result<i32> {
+    if !rfpii::ocr::available() {
+        anyhow::bail!("learning needs OCR: {}", rfpii::ocr::check().err().map(|e| e.to_string()).unwrap_or_default());
+    }
+    let sources = io::list_inputs(&a.inputs)?;
+    let opts = rfpii::learn::LearnOptions { max_pages: a.max_pages, min_pages: a.min_pages, ..Default::default() };
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(a.workers.max(1)).build()?;
+    let results = pool.install(|| rfpii::learn::learn_all(&sources, a.form.as_deref(), &a.out, &opts, false))?;
+    let learned = report_learned(&results, &a.out)?;
+    Ok(if learned == results.len() { 0 } else { 2 })
+}
+
+/// Print what was learned and append it to `<out>/learn_report.jsonl`;
+/// returns how many printings were learned.
+fn report_learned(results: &[Result<rfpii::learn::Learned>], out: &Path) -> Result<usize> {
+    std::fs::create_dir_all(out)?;
+    let mut report = std::fs::OpenOptions::new().create(true).append(true).open(out.join("learn_report.jsonl"))?;
+    let mut learned = 0;
+    for r in results {
+        match r {
+            Ok(l) => {
+                learned += 1;
+                let used = l.record["pages_used"].as_array().map(|v| v.len()).unwrap_or(0);
+                let fields = l.record["fields"].as_array().map(|v| v.len()).unwrap_or(0);
+                println!("LEARNED {}: {} pages, {} fields -> {}", l.name, used, fields, l.dir.display());
+                for n in l.record["notes"].as_array().into_iter().flatten() {
+                    println!("  note: {}", n.as_str().unwrap_or(""));
+                }
+                writeln!(report, "{}", serde_json::to_string(&l.record)?)?;
+            }
+            Err(e) => {
+                println!("NOT LEARNED {}", e);
+                writeln!(report, "{}", serde_json::json!({"error": e.to_string()}))?;
+            }
+        }
+    }
+    println!("{}/{} printing(s) learned", learned, results.len());
+    Ok(learned)
+}
+
 fn cmd_demo(dir: &Path, count: u64) -> Result<i32> {
     use rfpii::synthetic;
     synthetic::write_template(&dir.join("templates").join("sample_rs1"))?;
@@ -709,6 +807,7 @@ fn main() {
         Cmd::Certgen(a) => cmd_certgen(a),
         Cmd::Preview { template, output } => cmd_preview(&template, &output),
         Cmd::Propose(a) => cmd_propose(a),
+        Cmd::Learn(a) => cmd_learn(a),
         Cmd::Demo { directory, count } => cmd_demo(&directory, count),
     };
     match r {

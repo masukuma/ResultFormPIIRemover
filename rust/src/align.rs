@@ -172,9 +172,23 @@ fn score(h: &[[f64; 3]; 3], t: &Template, scan: &Mat) -> Result<f64> {
     let sm = [[f, 0.0, 0.0], [0.0, f, 0.0], [0.0, 0.0, 1.0]];
     let m = util::mul3(&sm, &util::inv3(h)?);
     let mut warped = Mat::default();
-    imgproc::warp_perspective(scan, &mut warped, &util::mat3(&m)?, Size::new(sw, sh), imgproc::INTER_AREA, core::BORDER_CONSTANT, core::Scalar::default(), core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+    // A learned reference's frame is the first page's: other photos may not
+    // reach its edges. Beyond the photo is no evidence either way, so it is
+    // left out (rather than black, which no reference matches).
+    let border = if t.learned { core::BORDER_REPLICATE } else { core::BORDER_CONSTANT };
+    imgproc::warp_perspective(scan, &mut warped, &util::mat3(&m)?, Size::new(sw, sh), imgproc::INTER_AREA, border, core::Scalar::default(), core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+    // a learned reference has its lighting flattened: so has the page, or
+    // its shadows outweigh its print
+    let warped = if t.learned { util::flatten_light(&warped)? } else { warped };
     let reference = util::resize(&t.image, sw, sh, imgproc::INTER_AREA)?;
-    let keep = util::resize(&t.mask, sw, sh, imgproc::INTER_NEAREST)?;
+    let mut keep = util::resize(&t.mask, sw, sh, imgproc::INTER_NEAREST)?;
+    if t.learned {
+        let mut inside = Mat::default();
+        let ones = util::full_u8(scan.rows(), scan.cols(), 255)?;
+        imgproc::warp_perspective(&ones, &mut inside, &util::mat3(&m)?, Size::new(sw, sh), imgproc::INTER_NEAREST, core::BORDER_CONSTANT, core::Scalar::default(), core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+        let outside = util::bitnot(&util::morph(&inside, imgproc::MORPH_ERODE, &util::ones_kernel(5, 5)?)?)?;
+        keep = util::bitor(&keep, &outside)?;
+    }
     let (a, b, k) = (util::bytes(&util::gaussian(&reference, 5)?)?, util::bytes(&util::gaussian(&warped, 5)?)?, util::bytes(&keep)?);
     let mut av: Vec<f32> = a.iter().zip(&k).filter(|p| *p.1 == 0).map(|p| *p.0 as f32).collect();
     let mut bv: Vec<f32> = b.iter().zip(&k).filter(|p| *p.1 == 0).map(|p| *p.0 as f32).collect();

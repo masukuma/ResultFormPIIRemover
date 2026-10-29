@@ -62,7 +62,7 @@ curl -sSfL -o cvsrc/opencv.tar.gz "$url"
 tar xzf cvsrc/opencv.tar.gz -C cvsrc
 OpenBLAS_HOME=/opt/openblas-cv cmake -S cvsrc/opencv_python_headless-5.0.0.93/opencv -B cvbuild \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/opencv5 -DBUILD_SHARED_LIBS=ON \
-  -DBUILD_LIST=core,imgproc,imgcodecs,features,flann,geometry,calib,objdetect,dnn \
+  -DBUILD_LIST=core,imgproc,imgcodecs,features,flann,geometry,calib,objdetect,dnn,video \
   -DCPU_BASELINE=SSE3 -DCPU_DISPATCH=SSE4_1,SSE4_2,AVX,FP16,AVX2,AVX512_SKX \
   -DWITH_IPP=ON -DWITH_LAPACK=ON -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_TIFF=ON -DBUILD_OPENJPEG=ON -DBUILD_ZLIB=ON \
   -DWITH_WEBP=OFF -DWITH_AVIF=OFF -DWITH_OPENEXR=OFF -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_V4L=OFF \
