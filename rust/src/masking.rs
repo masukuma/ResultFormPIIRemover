@@ -1083,6 +1083,11 @@ pub const SIG_BAND_H: f64 = 0.5;
 pub const SIG_BAND_MIN: f64 = 10.0;
 pub const SIG_CHUNK: i64 = 24;
 pub const SIG_BAND_PAD: f64 = 2.0;
+/// A signature hidden whole is covered slice by slice this wide, each slice
+/// from the top to the bottom of the ink in it; ink more than `SIG_ENV_GAP`
+/// apart within a slice is covered piece by piece.
+pub const SIG_ENV_CHUNK: i64 = 8;
+pub const SIG_ENV_GAP: i64 = 10;
 
 pub struct ColumnStrip {
     pub strip: Mat,
@@ -1177,6 +1182,32 @@ pub fn middle_band(xs: &[i64], ys: &[i64]) -> Vec<(i64, i64, i64, i64)> {
     boxes
 }
 
+/// Boxes (x0, y0, x1, y1) covering all of one signature's ink, narrow slice
+/// by slice: every stroke is hidden, and the paper beside and between its
+/// strokes (the space after a phone number, the gap to the next signature)
+/// stays visible.
+pub fn envelope(xs: &[i64], ys: &[i64]) -> Vec<(i64, i64, i64, i64)> {
+    let x0 = *xs.iter().min().unwrap();
+    let x1 = *xs.iter().max().unwrap() + 1;
+    let mut boxes = Vec::new();
+    for a in (x0..x1).step_by(SIG_ENV_CHUNK as usize) {
+        let mut col: Vec<i64> = xs.iter().zip(ys).filter(|&(&x, _)| x >= a && x < a + SIG_ENV_CHUNK).map(|(_, &y)| y).collect();
+        if col.is_empty() {
+            continue;
+        }
+        col.sort_unstable();
+        let mut lo = col[0];
+        for w in col.windows(2) {
+            if w[1] - w[0] > SIG_ENV_GAP {
+                boxes.push((a, lo, (a + SIG_ENV_CHUNK).min(x1), w[0] + 1));
+                lo = w[1];
+            }
+        }
+        boxes.push((a, lo, (a + SIG_ENV_CHUNK).min(x1), col[col.len() - 1] + 1));
+    }
+    boxes
+}
+
 pub struct SigBlob {
     pub x0: i64,
     pub y0: i64,
@@ -1189,7 +1220,7 @@ pub struct SigBlob {
 /// Separate signatures: strokes joined mostly sideways; a blob spanning
 /// several rows is cut at the row boundaries. `whole`: the rows are only
 /// the template's (their table's rules weren't matched), so a blob is
-/// neither cut at them nor banded: it is hidden whole.
+/// neither cut at them nor banded: all its ink is hidden (`envelope`).
 fn signature_blobs(ink: &Img, extra: f64, w: f64, min_ink: usize, bands: &[(f64, f64)], stamps: &[(i64, i64, i64)], bridge: Option<&Img>, whole: bool) -> Result<Vec<SigBlob>> {
     let mut src = ink.clone();
     if let Some(b) = bridge {
@@ -1197,7 +1228,10 @@ fn signature_blobs(ink: &Img, extra: f64, w: f64, min_ink: usize, bands: &[(f64,
             *v |= bv;
         }
     }
-    let joined = util::dilate(&src.to_mat()?, &util::rect_kernel(SIG_JOIN + 6, 5)?)?;
+    // hidden whole, a stroke's pieces either side of a printed rule (taken
+    // out of the ink) are joined too: a tip cut off alone is too small to be
+    // a signature, and would be left showing
+    let joined = util::dilate(&src.to_mat()?, &util::rect_kernel(SIG_JOIN + 6, if whole { 11 } else { 5 })?)?;
     let mut lab = Mat::default();
     let n = imgproc::connected_components_def(&joined, &mut lab)? as usize;
     let lab = util::labels_vec(&lab)?;
@@ -1265,7 +1299,7 @@ fn signature_blobs(ink: &Img, extra: f64, w: f64, min_ink: usize, bands: &[(f64,
         if y1 - y0 <= SIG_MIN_H {
             continue; // flat: a printed rule or its remains
         }
-        let band = if whole { vec![(x0, y0, x1, y1)] } else { middle_band(&xs, &ys) };
+        let band = if whole { envelope(&xs, &ys) } else { middle_band(&xs, &ys) };
         blobs.push(SigBlob { x0, y0, x1, y1, n: xs.len(), band });
     }
     Ok(blobs)
@@ -1469,6 +1503,12 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
             inside as f64 / total.max(1) as f64
         };
         blobs.retain(|b| share(b) >= 0.3 && !(b.y0 <= 1 && (b.y1 as f64) < (lo + hi) as f64 / 2.0));
+    } else if cs.cells.len() <= 2 {
+        // signature lines, not a table's rows: writing reaching in from the
+        // top of the search and stopping above the first line's middle is
+        // the line above's (a constituency written just over the line)
+        let mid = (cs.bands[0].0 + cs.bands[0].1) / 2.0;
+        blobs.retain(|b| !(b.y0 <= 1 && (b.y1 as f64) < mid));
     }
     Ok((blobs, cs.origin, cs.bands, cs.cells, ink))
 }
@@ -1546,6 +1586,28 @@ pub fn verify_signatures(gray: &Mat, out: &Mat, f: &Mapper, cells: &[Zone], s: &
         return Ok(format!("{}: {} signature(s) not masked through the middle", cells2[0].key(), bad));
     }
     Ok(String::new())
+}
+
+/// Template-space mask (255) of printed `labels` that lie in a zone's search:
+/// each found on the page near where `f` puts it, and its print in the
+/// reference copied there, a few px wider, for `SigOptions::printed`.
+pub fn printed_labels(gray: &Mat, f: &Mapper, reference: &Mat, labels: &[[f64; 4]]) -> Result<Mat> {
+    let refg = Img::from_mat(&util::gray(reference)?)?;
+    let mut m = Img::new(refg.w, refg.h);
+    for &l in labels {
+        let (d, _) = find_label(gray, f, reference, l, 30.0, 30.0)?;
+        let [dx, dy] = d.unwrap_or([0.0, 0.0]).map(|v| v.round() as i64);
+        let [x, y, w, h] = l.map(|v| v.round() as i64);
+        for yy in y.max(0)..(y + h).min(refg.h as i64) {
+            for xx in x.max(0)..(x + w).min(refg.w as i64) {
+                let (tx, ty) = (xx + dx, yy + dy);
+                if refg.at(xx as usize, yy as usize) < 128 && tx >= 0 && ty >= 0 && (tx as usize) < m.w && (ty as usize) < m.h {
+                    m.set(tx as usize, ty as usize, 255);
+                }
+            }
+        }
+    }
+    util::dilate(&m.to_mat()?, &util::ones_kernel(5, 5)?)
 }
 
 /// Locate a printed label near where the template expects it. Returns the

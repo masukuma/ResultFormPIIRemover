@@ -141,12 +141,31 @@ alignment. Finding each column's rows on the page from its own faint printed
 rules was tried: rows of handwriting make the same faint dips, and the fits
 locked onto them, so it isn't used.
 
+**The officers' signature lines.** They sit above the agents table and are
+placed by it, but where its rules can't be matched they are widened only
+downward: the page alignment is sure of the declaration, and above each line
+is the writing of the line before. Writing that reaches into the search from
+its top and stops above the first line's middle is that line's (a
+constituency written just over the Presiding Officer's signature line), not
+a signature. A zone's `print` labels ("Date" at the end of each line, inside
+its search) are found on the page and their print set aside, so they are
+never taken for writing; only those labels are, not the whole reference,
+whose signature cells still hold traces of the handwriting erased from it.
+
 **Signatures in a table that didn't snap.** Its rows are then the
 template's, and down a column of eleven the writing can drift most of a row
 off them; cut at those rows, a signature is banded in the wrong place. On
 one Form 34A the last agent's signature hung below where the search stopped
-and only the top of it was hidden. In such a table each signature is hidden
-whole. Two signature lines a line apart (the officers') keep their bands.
+and only the top of it was hidden. In such a table all of each signature's
+ink is hidden, in slices 8 px wide, each from the top to the bottom of the
+ink in it (ink more than 10 px apart in a slice is covered piece by piece),
+with pieces of a stroke either side of a printed rule joined. The paper
+beside and between the strokes stays visible: the space after a phone
+number, the gap to the next signature, the date beside it. A box round each
+signature merged a column of touching signatures and the phone numbers
+before them into one blot (72% of that form's Signature column black,
+against 44% along the ink). Two signature lines a line apart (the
+officers') keep their bands.
 
 **Finding a table again by its headers.** The bottom of a curled page can
 put the agents table 100–250 px from where the page alignment expects it,

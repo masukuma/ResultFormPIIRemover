@@ -52,6 +52,9 @@ zones:
     region: agents
     fence:
       below: [82, 1474, 378, 36]      # "Agents or Candidates (if present)"
+    print:                            # "Date" at the end of each line
+      - [1278, 1384, 56, 22]
+      - [1278, 1434, 56, 24]
   # Agents table, 11 rows. Names stay visible. Each column's rows follow the
   # printed rows over that column in the reference, which run lower to the
   # right; on a page each column's rows are found by its own rules.

@@ -299,7 +299,17 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
     let fm = o.fallback_margin;
     let mut notes: Vec<String> = found_notes;
     notes.extend(failed.iter().map(|(_, why)| format!("{}; zones widened by {:.0}px up, {:.0}px down", why, fm.0, fm.1)));
-    let margin = |zones: &[Zone]| if is_failed(&zones[0].region) { fm } else { (0.0, 0.0) };
+    // a zone above its table (the officers' signatures over the agents
+    // table) lies where the page alignment is sure of it, and above it is
+    // the writing of the line before: widened down only
+    let margin = |zones: &[Zone]| {
+        let above = t.structure.iter().find(|(n, _)| *n == zones[0].region).is_some_and(|(_, r)| zones.iter().all(|z| z.rect[1] + z.rect[3] <= r[1]));
+        match (is_failed(&zones[0].region), above) {
+            (false, _) => (0.0, 0.0),
+            (true, true) => (0.0, fm.1),
+            (true, false) => fm,
+        }
+    };
 
     let base_mapper = |zones: &[Zone]| -> Result<Mapper> {
         if !zones[0].region.is_empty() && !is_failed(&zones[0].region) {
@@ -493,6 +503,15 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
     }
     let reach = |cells: &[Zone]| -> Reach { reaches.iter().find(|(k, _)| k == cells[0].key()).map(|(_, r)| *r).unwrap_or_default() };
 
+    // Printed labels in a signature zone's search, never its writing.
+    let mut prints: Vec<(String, Mat)> = Vec::new();
+    for (key, cells) in &signatures {
+        if !cells[0].print.is_empty() {
+            prints.push((key.clone(), masking::printed_labels(&gray, &mapper(cells)?, &t.image, &cells[0].print)?));
+        }
+    }
+    let printed = |cells: &[Zone]| prints.iter().find(|(k, _)| k == cells[0].key()).map(|(_, m)| m);
+
     // Lines drawn through unused rows, found per printed table.
     let mut strikes: Vec<(String, Vec<Strike>)> = Vec::new();
     for (n, rect) in &t.structure {
@@ -580,7 +599,7 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
             continue;
         }
         let st = struck(cells);
-        let opts = SigOptions { reach: reach(cells), reference: Some(&t.image), printed: None, centered: on_line(cells), strikes: Some(st.as_slice()), exclude: stamp_ink.as_ref() };
+        let opts = SigOptions { reach: reach(cells), reference: Some(&t.image), printed: printed(cells), centered: on_line(cells), strikes: Some(st.as_slice()), exclude: stamp_ink.as_ref() };
         report.extend(masking::signature_column(&mut canvas, &gray, &mapper(cells)?, cells, ms, &opts)?);
     }
     for (key, cells) in &columns {
@@ -671,7 +690,7 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
                 continue;
             }
             let st = struck(cells);
-            let opts = SigOptions { reach: reach(cells), reference: Some(&t.image), printed: None, centered: on_line(cells), strikes: Some(st.as_slice()), exclude: stamp_ink.as_ref() };
+            let opts = SigOptions { reach: reach(cells), reference: Some(&t.image), printed: printed(cells), centered: on_line(cells), strikes: Some(st.as_slice()), exclude: stamp_ink.as_ref() };
             let r = masking::verify_signatures(&gray, &out, &mapper(cells)?, cells, ms, Some(&keep), &opts)?;
             if !r.is_empty() {
                 leaks.push(r);
