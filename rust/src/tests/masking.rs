@@ -697,6 +697,33 @@ fn down_a_table_whose_rules_were_not_matched_signatures_are_hidden_whole() {
     assert!(share(&banded, 1..2) < 0.9);
 }
 
+#[test]
+fn a_signature_hidden_whole_is_covered_along_its_ink() {
+    // A long slanting signature across two rows: a box round it would black
+    // out the paper above and below the stroke, up to the number written
+    // before it. Covered along its ink instead, the paper more than a few px
+    // from any stroke stays visible.
+    let mut img = signature_table(&[]);
+    let pts: Vec<(i32, i32)> = (0..90).map(|k| (X + 20 + 2 * k, Y + 2 * ROW_H + 24 - 2 * k / 3 + (9.0 * (k as f64 / 2.0).sin()) as i32 + JITTER_2[k as usize])).collect();
+    polyline(&mut img, &pts, colour(20.0), 2);
+    let mut canvas = gray(600, 500, 255);
+    sigs(&mut canvas, &img, &sig_cells(), &SigOptions { reach: Reach::margin(50.0, 200.0), ..none() });
+    let (gi, c) = (img_of(&img), img_of(&canvas));
+    let ink: Vec<bool> = (0..600 * 500).map(|i| gi.d[i] < 120 && (X + 4..X + W - 4).contains(&((i % 500) as i32)) && !(0..=ROWS).any(|r| ((i / 500) as i32 - (Y + r * ROW_H)).abs() < 3)).collect();
+    let near = crate::util::dilate(&from_mask(&ink, 600, 500), &crate::util::ones_kernel(33, 33).unwrap()).unwrap();
+    let near = img_of(&near);
+    let (mut black, mut far) = (0, 0);
+    for i in 0..600 * 500 {
+        if c.d[i] == 0 {
+            black += 1;
+            far += (near.d[i] == 0) as usize;
+        }
+    }
+    assert!(black > 0 && far == 0, "{far} of {black} black px more than 16px from the ink");
+    let hidden = (0..600 * 500).filter(|&i| ink[i] && c.d[i] == 0).count();
+    assert!(hidden as f64 >= 0.98 * ink.iter().filter(|&&v| v).count() as f64, "{hidden} hidden");
+}
+
 /// A ruled column under its printed header, `dx` px across and `k` times as
 /// wide as at x = 300..500.
 fn headed_column(dx: i32, k: f64) -> Mat {

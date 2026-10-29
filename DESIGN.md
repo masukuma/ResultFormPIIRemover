@@ -145,8 +145,16 @@ locked onto them, so it isn't used.
 template's, and down a column of eleven the writing can drift most of a row
 off them; cut at those rows, a signature is banded in the wrong place. On
 one Form 34A the last agent's signature hung below where the search stopped
-and only the top of it was hidden. In such a table each signature is hidden
-whole. Two signature lines a line apart (the officers') keep their bands.
+and only the top of it was hidden. In such a table all of each signature's
+ink is hidden, in slices 8 px wide, each from the top to the bottom of the
+ink in it (ink more than 10 px apart in a slice is covered piece by piece),
+with pieces of a stroke either side of a printed rule joined. The paper
+beside and between the strokes stays visible: the space after a phone
+number, the gap to the next signature, the date beside it. A box round each
+signature merged a column of touching signatures and the phone numbers
+before them into one blot (72% of that form's Signature column black,
+against 44% along the ink). Two signature lines a line apart (the
+officers') keep their bands.
 
 **Finding a table again by its headers.** The bottom of a curled page can
 put the agents table 100–250 px from where the page alignment expects it,
