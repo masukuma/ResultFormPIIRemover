@@ -126,6 +126,28 @@ looked for a little above its row, and a header's print taken for its ink
 blacked the header out on many pages. A snapped table's cells are never cut
 by a fence, only what lies outside them.
 
+**Each column on its own rows.** A sheet is folded and bent, and the
+reference photo is no exception: its rows run 1.6% downhill to the right.
+Each column's zones are drawn on the rows printed over that column (the
+agents' Signature rows lie 12 px below their ID rows). The snapped grid
+holds rows at their height at the table's centre, so a point drawn on the
+reference is first carried along the reference's slope onto it (and along
+its column rules' lean). A label to one side bounds a column at the label's
+level carried across the same way: "Reasons for Refusal", at the far left,
+is level with the table's bottom rule at the Signature column, where the
+last agent's signature hangs below it. A widened search may also run on
+past it by 5% of the distance across, for a page tilted against the
+alignment. Finding each column's rows on the page from its own faint printed
+rules was tried: rows of handwriting make the same faint dips, and the fits
+locked onto them, so it isn't used.
+
+**Signatures in a table that didn't snap.** Its rows are then the
+template's, and down a column of eleven the writing can drift most of a row
+off them; cut at those rows, a signature is banded in the wrong place. On
+one Form 34A the last agent's signature hung below where the search stopped
+and only the top of it was hidden. In such a table each signature is hidden
+whole. Two signature lines a line apart (the officers') keep their bands.
+
 **Finding a table again by its headers.** The bottom of a curled page can
 put the agents table 100–250 px from where the page alignment expects it,
 at a slightly different scale; then the rules are searched for in the wrong

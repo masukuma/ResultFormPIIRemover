@@ -414,6 +414,13 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
     // found leaves that side wide: the search then errs on hiding more.
     // A placed table's searches stop at them too: the overrun a signature is
     // looked for in mustn't take the header's print for its ink.
+    // A label to one side of a column bounds it at the label's level carried
+    // across to the column: along the reference's rows, which may slope (the
+    // "Reasons for Refusal" label lies 1,100px left of the Form 34A agents'
+    // signatures, which hang below the table's last rule); and for a widened
+    // search `FENCE_SLOPE` of the distance either way, for a page tilted or
+    // curled against the fit.
+    const FENCE_SLOPE: f64 = 0.05;
     let mut reaches: Vec<(String, Reach)> = Vec::new();
     for (key, cells) in columns.iter().chain(&signatures) {
         let (up, down) = margin(cells);
@@ -424,17 +431,21 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
             let top = cells.iter().map(|z| z.rect[1]).fold(f64::INFINITY, f64::min);
             let bottom = cells.iter().map(|z| z.rect[1] + z.rect[3]).fold(f64::NEG_INFINITY, f64::max);
             let half_row = 0.5 * util::median(&cells.iter().map(|z| z.rect[3]).collect::<Vec<_>>());
+            let mid = cells.iter().map(|z| z.rect[0] + z.rect[2] / 2.0).sum::<f64>() / cells.len() as f64;
+            let slope = t.regions.iter().find(|(n, _)| *n == cells[0].region).map(|(_, r)| r.hslope).unwrap_or(0.0);
             for (side, label) in cells[0].fence.iter().enumerate() {
                 let Some(label) = label else { continue };
                 let (d, ncc) = masking::find_anchor(&gray, &f, &t.image, *label)?;
                 let place = if side == 0 { "above" } else { "below" };
+                let across = mid - (label[0] + label[2] / 2.0);
+                let (level, tilt) = (slope * across, if wide { FENCE_SLOPE * across.abs() } else { 0.0 });
                 // up to half a row into the cells as placed; deeper, it can't
                 // be the label outside the table
-                match d.map(|d| if side == 0 { label[1] + label[3] + d[1] } else { label[1] + d[1] }) {
+                match d.map(|d| level + if side == 0 { label[1] + label[3] + d[1] } else { label[1] + d[1] }) {
                     // a snapped table's cells are where they are: a label
                     // only bounds what lies outside them
-                    Some(y) if side == 0 && y <= top + half_row => r.top = Some(if wide { y } else { y.min(top) }),
-                    Some(y) if side == 1 && y >= bottom - half_row => r.bottom = Some(if wide { y } else { y.max(bottom) }),
+                    Some(y) if side == 0 && y <= top + half_row => r.top = Some(if wide { y - tilt } else { y.min(top) }),
+                    Some(y) if side == 1 && y >= bottom - half_row => r.bottom = Some(if wide { y + tilt } else { y.max(bottom) }),
                     Some(_) if wide => notes.push(format!("{}: printed label {} the table found inside it; search left wide", key, place)),
                     None if wide => notes.push(format!("{}: printed label {} the table not found (best match {:.2}); search left wide", key, place, ncc)),
                     _ => {}

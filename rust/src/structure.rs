@@ -258,6 +258,13 @@ pub struct Snap {
     pub xs: Vec<f64>,
     pub ys: Vec<f64>,
     pub p: Vec<Vec<[f64; 2]>>, // scan coords of every intersection [row][col]
+    /// The reference's rows run at `slope` (dy/dx) about x = `c[0]`, and its
+    /// column rules at `vslope` (dx/dy) about y = `c[1]`, while the grid
+    /// holds them where they cross there: zones drawn on the reference are
+    /// levelled onto the grid first.
+    pub slope: f64,
+    pub vslope: f64,
+    pub c: [f64; 2],
 }
 
 impl Snap {
@@ -275,7 +282,8 @@ impl Snap {
         let pn0 = p[ny - 1][0];
         let pnn = p[ny - 1][nx - 1];
         pts.iter()
-            .map(|&[px, py]| {
+            .map(|&[px, py]| [px - self.vslope * (py - self.c[1]), py - self.slope * (px - self.c[0])])
+            .map(|[px, py]| {
                 let x = px.clamp(xs[0], xs[nx - 1]);
                 let y = py.clamp(ys[0], ys[ny - 1]);
                 let j = (util::searchsorted(xs, x) as i64 - 1).clamp(0, nx as i64 - 2) as usize;
@@ -466,6 +474,9 @@ pub fn snap(gray: &Mat, h: &[[f64; 3]; 3], region: &Region) -> Result<Snap> {
         xs: xs_t,
         ys: ys_t,
         p: p_scan,
+        slope: region.hslope,
+        vslope: region.vslope,
+        c: [x + w / 2.0, y + hh / 2.0],
     })
 }
 
