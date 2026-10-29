@@ -507,11 +507,21 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
             notes.push(format!("{}: {} line(s) drawn through the table left unmasked", n, v.len()));
         }
     }
-    // strikes in the frame of a column placed again
+    // a column placed again finds them over its table again, as placed:
+    // where the table first stood can be rows off, and a line's part there
+    // is not where the column's rows now are
+    let mut own: Vec<(String, Vec<Strike>)> = Vec::new();
+    for (key, _, _) in &moved {
+        let Some((_, cells)) = columns.iter().chain(&signatures).find(|(k, _)| k == key) else { continue };
+        let Some((_, rect)) = t.structure.iter().find(|(n, _)| *n == cells[0].region) else { continue };
+        let row_h = util::median(&cells.iter().map(|z| z.rect[3]).collect::<Vec<_>>());
+        own.push((key.clone(), masking::find_strikes(&gray, &mapper(cells)?, *rect, row_h)?));
+    }
     let struck = |cells: &[Zone]| -> Vec<Strike> {
-        let [a, b, dy] = moved.iter().find(|(k, _, _)| k == cells[0].key()).map(|m| m.2).unwrap_or([1.0, 0.0, 0.0]);
-        let v = strikes.iter().find(|(n, _)| *n == cells[0].region).map(|(_, v)| v.clone()).unwrap_or_default();
-        v.into_iter().map(|(x1, y1, x2, y2, w)| ((x1 - b) / a, y1 - dy, (x2 - b) / a, y2 - dy, w)).collect()
+        match own.iter().find(|(k, _)| k == cells[0].key()) {
+            Some((_, v)) => v.clone(),
+            None => strikes.iter().find(|(n, _)| *n == cells[0].region).map(|(_, v)| v.clone()).unwrap_or_default(),
+        }
     };
 
     // Stamps: found before masking; never masked (below).
