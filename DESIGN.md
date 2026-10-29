@@ -219,11 +219,11 @@ not the signature itself:
      as dashes the rule removal leaves, and where a row's line meets the
      column's edge they cross in small "+"s tall enough to pass for
      writing: on one photo every empty row of the agents' Signature column
-     was masked. Vertical runs within 4 px of the column's edges, and
-     horizontal runs within 4 px of its rows' lines, are dropped; a stroke
-     crossing a rule loses only what runs along it. The rows' lines are
-     known only where the table's rules were matched, so a widened search
-     drops only what lies along the edges;
+     was masked. Vertical runs within 4 px of the column's edges are
+     dropped; what is left of a "+" is flat, and goes with the flat strokes
+     below. A stroke crossing an edge loses only what runs along it. Flat
+     runs along the rows' lines are left alone: a signature written as a
+     short dash on its row's line is as flat as they are;
    - the stamps found on the page (see [Stamps](#stamps-are-never-masked-stampspy)),
      ring and lettering. A stamp's ring once joined the writing around it
      into one "signature", whose mask then framed the stamp with black

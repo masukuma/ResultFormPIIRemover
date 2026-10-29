@@ -1217,18 +1217,17 @@ pub struct SigBlob {
     pub band: Vec<(i64, i64, i64, i64)>,
 }
 
-/// Ink lying along printed rules at known places: short vertical runs within
-/// `RULE_TOL` px of an `xs` (column edges), short horizontal runs within it of
-/// a `ys` (row lines). A stroke crossing a rule loses only what runs along it.
-fn remove_rules(ink: &mut Img, xs: &[f64], ys: &[f64]) -> Result<()> {
-    const RULE_TOL: f64 = 4.0;
+/// Ink running down a column's edges at `xs`: vertical runs within
+/// `EDGE_TOL` px of one. A stroke crossing an edge loses only what runs along it.
+fn remove_edges(ink: &mut Img, xs: &[f64]) -> Result<()> {
+    const EDGE_TOL: f64 = 4.0;
     let v = Img::from_mat(&util::morph(&ink.to_mat()?, imgproc::MORPH_OPEN, &util::rect_kernel(1, 5)?)?)?;
-    let h = Img::from_mat(&util::morph(&ink.to_mat()?, imgproc::MORPH_OPEN, &util::rect_kernel(7, 1)?)?)?;
-    for yy in 0..ink.h {
-        let on_row = ys.iter().any(|&y| (yy as f64 - y).abs() <= RULE_TOL);
-        for xx in 0..ink.w {
-            let on_edge = xs.iter().any(|&x| (xx as f64 - x).abs() <= RULE_TOL);
-            if (on_edge && v.at(xx, yy) > 0) || (on_row && h.at(xx, yy) > 0) {
+    for xx in 0..ink.w {
+        if !xs.iter().any(|&x| (xx as f64 - x).abs() <= EDGE_TOL) {
+            continue;
+        }
+        for yy in 0..ink.h {
+            if v.at(xx, yy) > 0 {
                 ink.set(xx, yy, 0);
             }
         }
@@ -1419,15 +1418,13 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
     }
     let stamps = remove_stamp_rings(&mut ink)?;
     if !cs.cells[0].region.is_empty() && cs.cells.len() > 2 {
-        // a table column: what is left of its own printed rules (faint ones
-        // break into dashes the rule removal leaves, crossing in small "+"s
-        // at its edges) is not writing. Its edges are where the column was
-        // placed; its rows' lines only where its table's rules were matched.
+        // a table column: a faint rule breaks into dashes the rule removal
+        // leaves, and where a row's line meets the column's edge they cross
+        // in small "+"s, tall enough for writing. Their upright strokes go;
+        // what is left is flat, and dropped as rule when signatures are
+        // grouped.
         let w = cs.cells[0].rect[2];
-        let mut rows: Vec<f64> = cs.bands.iter().map(|b| b.0).collect();
-        rows.push(cs.bands[cs.bands.len() - 1].1);
-        let snapped = o.reach.margin == (0.0, 0.0);
-        remove_rules(&mut ink, &[SIG_OVERRUN, SIG_OVERRUN + w], if snapped { &rows } else { &[] })?;
+        remove_edges(&mut ink, &[SIG_OVERRUN, SIG_OVERRUN + w])?;
     }
     let lo = cs.bands[0].0 as i64;
     let hi = cs.bands.last().unwrap().1.ceil() as i64;

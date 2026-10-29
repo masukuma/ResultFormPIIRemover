@@ -775,8 +775,9 @@ fn a_signature_line_keeps_its_printed_label_and_the_line_above() {
 fn faint_broken_rules_of_a_column_are_not_signatures() {
     // A photo where the table's printed rules are faint breaks them into
     // dashes the rule removal leaves; at the column's edges they cross in
-    // small "+"s, tall enough to pass for writing. Along the column's edges
-    // and its rows' lines they are set aside: only the signatures are masked.
+    // small "+"s, tall enough to pass for writing. Their upright strokes
+    // along the column's edges are set aside, the flat rest is taken for
+    // rule: only the signatures are masked.
     let mut img = gray(600, 500, 235);
     let dashed = |img: &mut Mat, a: (i32, i32), b: (i32, i32)| {
         let n = ((b.0 - a.0).abs().max((b.1 - a.1).abs()) / 12).max(1);
