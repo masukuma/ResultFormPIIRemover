@@ -26,7 +26,11 @@ use std::time::Duration;
 use crate::util;
 
 pub const CLOUD_HOST: &str = "https://ollama.com";
-pub const DEFAULT_CLOUD_MODEL: &str = "qwen3-vl:235b";
+pub const DEFAULT_CLOUD_MODEL: &str = "gemma4:31b";
+/// The model that confirms each spot the first one finds (`find`). On 88
+/// spots gemma4 flagged on redacted Forms 34A it kept 26 of 31 real misses
+/// and dropped 53 of 56 false alarms; minimax-m3.1-flash did worse at both.
+pub const DEFAULT_CLOUD_CHECKER: &str = "gemma4:31b";
 pub const DEFAULT_LOCAL_MODEL: &str = "qwen3.8:27b";
 pub const LABELS: &[&str] = &["signature", "id_number", "phone_number"];
 const LOCAL_HOSTS: &[&str] = &["localhost", "127.0.0.1", "::1"];
@@ -56,6 +60,186 @@ Find every handwritten signature, every national ID or passport number, and ever
 phone number (in tables or anywhere else, e.g. comments or margins).
 Return one item per occurrence with a tight bounding box [x1, y1, x2, y2] in pixel
 coordinates of this image. Do not return names, vote counts, dates or printed text.";
+
+
+/// Handwriting must stay legible to the model: the area is sent at most
+/// this many px on its long side.
+const FIND_MAX_SIDE: f64 = 1800.0;
+
+/// Asked of a *redacted* page: what still shows that the rules hide.
+pub const FIND_PROMPT: &str = "This is part of a Kenyan election results form, {w}x{h} pixels, after redaction.
+Black rectangles are intentional redactions. The rules are:
+- every national ID / passport number must have at least 3 of its characters hidden under black;
+- every phone number must have 3 of its last 6 digits hidden under black (the first 4 digits may show);
+- every handwritten signature must have a black band across its middle (the tops and bottoms of its strokes may show).
+Names, party names, dates, vote counts, printed text and writing inside the round official stamp are allowed to show.
+Find every place on the image that breaks these rules: an ID or phone number whose digits are all readable,
+or a handwritten signature (in tables, next to names, in the comments, anywhere) with no black band across it.
+Return one item per problem with its label (id_number, phone_number or signature) and a tight bounding box
+[x1, y1, x2, y2] in pixels of this image. Return an empty list if nothing breaks the rules.";
+
+/// Asked of a zoomed crop around each spot `FIND_PROMPT` returned.
+pub const CHECK_PROMPT: &str = "This crop is from a Kenyan election results form that has been redacted: black rectangles are redactions.
+Look only at the writing inside the red box.
+- unmasked_signature: true only if the red box contains a handwritten signature (a scribble or stylised initials,
+  not a name written in capital letters, not a date, not printed text, not a stamp) that has NO black rectangle over its middle.
+  A signature with a black bar or black blocks across it is masked: answer false.
+- complete_number: true only if the red box contains a handwritten ID/passport number or phone number with ALL of its digits
+  readable and no black box over any of them. A phone number showing only its first 4 digits followed by black is masked: false.
+  Dates (e.g. 09-08-2022) and vote counts are not ID or phone numbers: false.
+Answer with JSON: {\"unmasked_signature\": bool, \"complete_number\": bool, \"what\": \"a few words\"}";
+
+fn find_schema() -> Value {
+    json!({"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {
+        "label": {"type": "string", "enum": LABELS},
+        "bbox": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4}}, "required": ["label", "bbox"]}}},
+        "required": ["items"]})
+}
+
+fn check_schema() -> Value {
+    json!({"type": "object", "properties": {"unmasked_signature": {"type": "boolean"}, "complete_number": {"type": "boolean"}, "what": {"type": "string"}},
+        "required": ["unmasked_signature", "complete_number", "what"]})
+}
+
+/// The JSON in a reply: many models wrap it in a markdown fence or prose
+/// whatever `format` asks for.
+pub fn loose_json(content: &str) -> Option<Value> {
+    let s = content.trim();
+    let s = match (s.find("```"), s.rfind("```")) {
+        (Some(a), Some(b)) if b > a => {
+            let inner = &s[a + 3..b];
+            inner.strip_prefix("json").unwrap_or(inner)
+        }
+        _ => s,
+    };
+    if let Ok(v) = serde_json::from_str::<Value>(s.trim()) {
+        return Some(v);
+    }
+    // the outermost value: whichever bracket opens first
+    let mut pairs = [('[', ']'), ('{', '}')];
+    pairs.sort_by_key(|(o, _)| s.find(*o).unwrap_or(usize::MAX));
+    for (o, c) in pairs {
+        if let (Some(a), Some(b)) = (s.find(o), s.rfind(c)) {
+            if b > a {
+                if let Ok(v) = serde_json::from_str::<Value>(&s[a..=b]) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// What a label names, whatever the model's words for it.
+fn label_kind(label: &str) -> Option<&'static str> {
+    let l = label.to_lowercase();
+    if l.contains("sign") {
+        Some("signature")
+    } else if l.contains("phone") || l.contains("tel") {
+        Some("phone_number")
+    } else if l.contains("id") || l.contains("passport") || l.contains("national") {
+        Some("id_number")
+    } else {
+        None
+    }
+}
+
+/// Boxes in a reply, as image px of a `w` x `h` image. Gemini-style models
+/// answer `box_2d` as [y1, x1, y2, x2] on a 0-1000 grid; others `bbox` in
+/// the convention `coords` names.
+pub fn reply_boxes(v: &Value, w: f64, h: f64, coords: &str) -> Vec<crate::pipeline::Found> {
+    let items: Vec<Value> = match v {
+        Value::Array(a) => a.clone(),
+        Value::Object(o) => o.get("items").and_then(|x| x.as_array()).cloned().unwrap_or_default(),
+        _ => vec![],
+    };
+    let mut out = Vec::new();
+    for it in items {
+        let Some(kind) = label_kind(it.get("label").and_then(|l| l.as_str()).unwrap_or("")) else { continue };
+        let Some((key, b)) = ["box_2d", "bbox", "box", "bounding_box"].iter().find_map(|k| {
+            let b: Vec<f64> = it.get(*k)?.as_array()?.iter().filter_map(|x| x.as_f64()).collect();
+            (b.len() == 4).then_some((*k, b))
+        }) else {
+            continue;
+        };
+        let (x0, y0, x1, y1) = if key == "box_2d" {
+            (b[1] * w / 1000.0, b[0] * h / 1000.0, b[3] * w / 1000.0, b[2] * h / 1000.0)
+        } else if coords == "norm1000" {
+            (b[0] * w / 1000.0, b[1] * h / 1000.0, b[2] * w / 1000.0, b[3] * h / 1000.0)
+        } else {
+            (b[0], b[1], b[2], b[3])
+        };
+        let (x0, x1, y0, y1) = (x0.min(x1).max(0.0), x0.max(x1).min(w), y0.min(y1).max(0.0), y0.max(y1).min(h));
+        if x1 - x0 >= 2.0 && y1 - y0 >= 2.0 {
+            out.push(crate::pipeline::Found { label: kind.into(), rect: [x0, y0, x1, y1] });
+        }
+    }
+    out
+}
+
+// Requests in flight to the model host, across all workers: Ollama Cloud
+// answers 429 to an account that sends too many at once.
+static LIMIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(4);
+static INFLIGHT: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+static FREED: std::sync::Condvar = std::sync::Condvar::new();
+
+pub fn set_concurrency(n: usize) {
+    LIMIT.store(n.max(1), std::sync::atomic::Ordering::SeqCst);
+}
+
+struct Permit;
+
+impl Permit {
+    fn take() -> Permit {
+        let mut n = INFLIGHT.lock().unwrap();
+        while *n >= LIMIT.load(std::sync::atomic::Ordering::SeqCst) {
+            n = FREED.wait(n).unwrap();
+        }
+        *n += 1;
+        Permit
+    }
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        *INFLIGHT.lock().unwrap() -= 1;
+        FREED.notify_one();
+    }
+}
+
+/// Reviews redacted pages: `finder` looks for what still shows, `checker`
+/// confirms each spot on a zoomed crop.
+pub struct Reviewer {
+    pub finder: Ollama,
+    pub checker: Ollama,
+}
+
+pub struct FindResult {
+    pub found: Vec<crate::pipeline::Found>,
+    pub record: Value, // for the manifest
+}
+
+/// Share of pure black (redacted) pixels in `r` (image px x0, y0, x1, y1).
+fn black_share(gray: &Mat, r: [f64; 4]) -> Result<f64> {
+    let (w, h) = (gray.cols(), gray.rows());
+    let (x0, y0) = ((r[0].max(0.0) as i32).min(w), (r[1].max(0.0) as i32).min(h));
+    let (x1, y1) = ((r[2].max(0.0) as i32).min(w), (r[3].max(0.0) as i32).min(h));
+    if x1 <= x0 || y1 <= y0 {
+        return Ok(0.0);
+    }
+    let c = Mat::roi(gray, opencv::core::Rect::new(x0, y0, x1 - x0, y1 - y0))?.try_clone()?;
+    let v = util::bytes(&c)?;
+    Ok(v.iter().filter(|&&p| p <= 12).count() as f64 / v.len() as f64)
+}
+
+fn jpeg(img: &Mat) -> Result<Vec<u8>> {
+    let mut buf = Vector::<u8>::new();
+    let params: Vector<i32> = vec![imgcodecs::IMWRITE_JPEG_QUALITY, 90].into_iter().collect();
+    if !imgcodecs::imencode(".jpg", img, &mut buf, &params)? {
+        bail!("encode failed");
+    }
+    Ok(buf.to_vec())
+}
 
 fn audit_schema() -> Value {
     json!({
@@ -218,6 +402,123 @@ impl Ollama {
         let reply: Value = resp.body_mut().read_json().map_err(|e| anyhow!("Ollama reply: {e}"))?;
         let content = reply["message"]["content"].as_str().ok_or_else(|| anyhow!("Ollama reply has no message"))?;
         Ok((serde_json::from_str(content)?, hex::encode(Sha256::digest(&sent))))
+    }
+
+    /// One chat request, retried when the host is busy (429, 5xx) or the
+    /// connection drops; the reply's text.
+    fn post(&self, body: &Value) -> Result<String> {
+        let _permit = Permit::take();
+        let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs_f64(self.s.timeout))).http_status_as_error(false).build().into();
+        let mut last = String::new();
+        for attempt in 0..6u32 {
+            let mut req = agent.post(self.chat_url()).header("Content-Type", "application/json");
+            if let Some(a) = self.authorization() {
+                req = req.header("Authorization", a);
+            }
+            match req.send_json(body) {
+                Ok(mut resp) => {
+                    let status = resp.status().as_u16();
+                    if status == 200 {
+                        let reply: Value = resp.body_mut().read_json().map_err(|e| anyhow!("Ollama reply: {e}"))?;
+                        return reply["message"]["content"].as_str().map(String::from).ok_or_else(|| anyhow!("Ollama reply has no message"));
+                    }
+                    last = format!("HTTP {}", status);
+                    if !(status == 429 || status >= 500) {
+                        bail!("Ollama at {}: {}", self.s.host, last);
+                    }
+                }
+                Err(e) => last = e.to_string(),
+            }
+            std::thread::sleep(Duration::from_secs((15u64 << attempt).min(240)));
+        }
+        bail!("Ollama at {}: gave up after retries ({})", self.s.host, last)
+    }
+
+    fn chat(&self, prompt: &str, sent: &[u8], schema: Value) -> Result<String> {
+        self.post(&json!({
+            "model": self.s.model,
+            "messages": [{"role": "user", "content": prompt, "images": [base64::engine::general_purpose::STANDARD.encode(sent)]}],
+            "format": schema,
+            "stream": false,
+            "options": {"temperature": 0},
+        }))
+    }
+
+    /// What still shows on a *redacted* page inside `area` (image px x, y,
+    /// w, h) that the rules hide: spots this model finds, each confirmed by
+    /// `checker` on a zoomed crop (the spot boxed in red). Boxes in image px.
+    /// A reply that can't be read confirms the spot: masking more is the
+    /// safe side.
+    pub fn find(&self, redacted: &Mat, area: [i32; 4], checker: &Ollama) -> Result<FindResult> {
+        let [ax, ay, aw, ah] = area;
+        let crop = Mat::roi(redacted, opencv::core::Rect::new(ax, ay, aw, ah))?.try_clone()?;
+        let f = (FIND_MAX_SIDE / aw.max(ah) as f64).min(1.0);
+        let small = if f < 1.0 { util::resize_by(&crop, f, imgproc::INTER_AREA)? } else { crop.clone() };
+        let (w, h) = (small.cols() as f64, small.rows() as f64);
+        let sent = jpeg(&small)?;
+        let prompt = FIND_PROMPT.replace("{w}", &format!("{}", w as i64)).replace("{h}", &format!("{}", h as i64));
+        let reply = self.chat(&prompt, &sent, find_schema())?;
+        let spots = match loose_json(&reply) {
+            Some(v) => reply_boxes(&v, w, h, &self.s.coords),
+            None => bail!("{} answered something that isn't JSON: {:.120}", self.s.model, reply),
+        };
+        let mut found = Vec::new();
+        let mut cands = Vec::new();
+        let gray = util::gray(redacted)?;
+        for sp in spots {
+            // whole px: what is masked is exactly what the manifest records
+            let r = [sp.rect[0] / f + ax as f64, sp.rect[1] / f + ay as f64, sp.rect[2] / f + ax as f64, sp.rect[3] / f + ay as f64].map(f64::round);
+            // a spot that is largely black already is something masked (a
+            // banded signature, a number with digits hidden): not asked about
+            let black = black_share(&gray, r)?;
+            // the checker must see what the finder named: a name taken for
+            // a number, or a header for a phone, is confirmed as neither
+            let (keep, what) = if black >= 0.08 {
+                (false, format!("{:.0}% already black", black * 100.0))
+            } else {
+                let (sig, num, what) = checker.check(redacted, r)?;
+                (if sp.label == "signature" { sig } else { num }, what)
+            };
+            cands.push(json!({"label": sp.label, "box": r.iter().map(|&v| crate::pyjson::round_n(v, 1)).collect::<Vec<_>>(), "kept": keep, "what": what}));
+            if keep {
+                found.push(crate::pipeline::Found { label: sp.label, rect: r });
+            }
+        }
+        let record = json!({"model": self.s.model, "checker": checker.s.model, "host": hostname(&self.s.host),
+                            "find_prompt_sha256": hex::encode(Sha256::digest(FIND_PROMPT.as_bytes())),
+                            "check_prompt_sha256": hex::encode(Sha256::digest(CHECK_PROMPT.as_bytes())),
+                            "area": area, "image_sent_sha256": hex::encode(Sha256::digest(&sent)), "spots": cands});
+        Ok(FindResult { found, record })
+    }
+
+    /// Is something the rules hide still showing in `r` (image px x0, y0,
+    /// x1, y1) of a *redacted* page: (an unmasked signature, a complete
+    /// number, what it is). Asked of a crop 80 px wider all round, zoomed
+    /// 2x, with `r` boxed in red; a reply that can't be read says yes.
+    pub fn check(&self, redacted: &Mat, r: [f64; 4]) -> Result<(bool, bool, String)> {
+        let (iw, ih) = (redacted.cols(), redacted.rows());
+        let x0 = ((r[0] - 80.0).max(0.0) as i32).min(iw - 1);
+        let y0 = ((r[1] - 80.0).max(0.0) as i32).min(ih - 1);
+        let x1 = ((r[2] + 80.0) as i32).clamp(x0 + 1, iw);
+        let y1 = ((r[3] + 80.0) as i32).clamp(y0 + 1, ih);
+        let crop = Mat::roi(redacted, opencv::core::Rect::new(x0, y0, x1 - x0, y1 - y0))?.try_clone()?;
+        let mut z = util::resize_by(&crop, 2.0, imgproc::INTER_CUBIC)?;
+        if z.channels() == 1 {
+            let mut c = Mat::default();
+            imgproc::cvt_color_def(&z, &mut c, imgproc::COLOR_GRAY2BGR)?;
+            z = c;
+        }
+        let p = |x: f64, o: i32| ((x - o as f64) * 2.0) as i32;
+        imgproc::rectangle_points(&mut z, opencv::core::Point::new(p(r[0], x0), p(r[1], y0)), opencv::core::Point::new(p(r[2], x0), p(r[3], y0)), opencv::core::Scalar::new(0.0, 0.0, 255.0, 0.0), 3, imgproc::LINE_8, 0)?;
+        let reply = self.chat(CHECK_PROMPT, &jpeg(&z)?, check_schema())?;
+        Ok(match loose_json(&reply) {
+            Some(v) => (
+                v.get("unmasked_signature").and_then(|b| b.as_bool()).unwrap_or(true),
+                v.get("complete_number").and_then(|b| b.as_bool()).unwrap_or(true),
+                v.get("what").and_then(|w| w.as_str()).unwrap_or("").to_string(),
+            ),
+            None => (true, true, "unreadable reply".to_string()),
+        })
     }
 
     /// Audit a *redacted* page (safe to send anywhere).

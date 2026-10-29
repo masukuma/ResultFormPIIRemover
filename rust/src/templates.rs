@@ -45,6 +45,7 @@
 //! signatures written there are masked; the comments themselves stay.
 //!
 //! ```yaml
+//! review_area: [x, y, w, h]  # what a vision review of the redacted page reads
 //! text_h: 34.6           # printed text height in the reference (OCR box, px)
 //! free_text:
 //!   - name: comments
@@ -143,6 +144,9 @@ pub struct Template {
     /// Height of printed text in the reference (OCR box, px): the scale the
     /// free-text areas are read at.
     pub text_h: Option<f64>,
+    /// What a vision review of the redacted page looks at (where officers
+    /// and agents write), [x, y, w, h]; the whole page if unset.
+    pub review_area: Option<[f64; 4]>,
     // filled in by align::prepare
     pub regions: Vec<(String, crate::structure::Region)>,
     pub mask: Mat,
@@ -324,6 +328,10 @@ pub fn load_template(dir: &Path) -> Result<Template> {
         min_glyph_h: getf("min_glyph_h"),
         free_text,
         text_h: getf("text_h"),
+        review_area: match spec.get("review_area") {
+            Some(v) => Some(rect4(v, "review_area")?),
+            None => None,
+        },
         regions: Vec::new(),
         mask: crate::util::zeros_u8(image_rows, image_cols)?,
         keypoints: Vec::new(),

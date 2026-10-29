@@ -1335,6 +1335,7 @@ fn fail(t0: Instant, prefix: &str, reason: String, report: Vec<Value>, notes: Ve
         protected: vec![],
         h: None,
         layout,
+        unsure: vec![],
     }
 }
 
@@ -1461,7 +1462,8 @@ pub fn read_free_text(img: &Mat, h: &[[f64; 3]; 3], rect: [f64; 4], text_h: f64,
 
 /// A page no template matched: read its layout, then mask and check exactly
 /// as for a template.
-pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: bool, why: &str) -> Result<PageResult> {
+/// `extra`: what a vision review found still showing on an earlier pass.
+pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: bool, why: &str, extra: &[crate::pipeline::Found]) -> Result<PageResult> {
     let t0 = Instant::now();
     let gray = util::gray(img)?;
     let prefix = if why.is_empty() { String::new() } else { format!("no template matched ({}); ", why) };
@@ -1524,6 +1526,7 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
             report.extend(masking::partial_column(&mut canvas, &gray, &f, &fl.zones, &field_settings(fl), rng, masking::Reach::default(), Some(&print_ref), struck(fl), stamp_ink.as_ref())?);
         }
     }
+    let found_zones = crate::pipeline::mask_found(&mut canvas, &gray, extra, ms, rng, stamp_ink.as_ref(), &mut report)?;
     let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &on_page, r_range, None)?;
     notes.extend(stamp_notes);
     let (blocks, out) = apply(img, &canvas, Some(&keep))?;
@@ -1554,6 +1557,7 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
                 leaks.push(r);
             }
         }
+        leaks.extend(crate::pipeline::verify_found(&out, &found_zones, ms, stamp_ink.as_ref())?);
     }
     if !leaks.is_empty() {
         return Ok(fail(t0, &prefix, format!("leak check: {}", leaks.join("; ")), report, notes, Some(layout)));
@@ -1572,6 +1576,7 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
         protected,
         h: Some(to_image),
         layout: Some(layout),
+        unsure: vec![],
     })
 }
 

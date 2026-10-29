@@ -27,9 +27,11 @@ and each page passes geometric, protected-region and leak checks before it is
 published. Forms with no template (2017 Forms 34A, 2021 by-election Forms
 35A/36A/38A and other printings) are read without one: OCR finds the labels,
 the printed rules give the columns, and everything above the declaration is
-protected. Anything uncertain goes to a review folder. An optional vision
-model on Ollama Cloud or a local Ollama audits pages. See
-[DESIGN.md](DESIGN.md).
+protected. Anything uncertain goes to a review folder. For runs too large for
+people to look at the review folder, vision models on Ollama Cloud (or a local
+Ollama) review every redacted page and mask what the rules missed, and pages
+whose table columns can't be placed are published with those columns hidden
+whole once the review passes them. See [DESIGN.md](DESIGN.md).
 
 ## Install
 
@@ -64,10 +66,12 @@ rfpii certgen --name "Returning Officer, Kibwezi West" --org "..." --country KE
 rfpii redact Forms/34A/*.zip --templates templates --out public --review review \
     --sign-key keys/signing_key.pem
 
-# With a Qwen vision model on Ollama Cloud auditing every redacted page
+# Unattended, at scale: vision models on Ollama Cloud review every redacted
+# page (only redacted pages are sent) and mask what the rules missed; pages
+# whose columns can't be placed get them hidden whole if the review passes
 export OLLAMA_API_KEY=...            # from ollama.com/settings/keys
 rfpii redact Forms/ --templates templates --out public --review review \
-    --sign-key keys/signing_key.pem --vlm-audit          # default: qwen3-vl:235b
+    --sign-key keys/signing_key.pem --vlm-audit --vlm-rescue   # default: gemma4:31b
 # ...or on a local Ollama: --vlm-host localhost:11434 (default qwen3.8:27b)
 
 # Anyone, later: prove a published form against its original
@@ -102,11 +106,23 @@ Useful flags:
 - `--hide`: characters hidden per ID or phone number (default 3).
 - `--phone-tail`: phone numbers are masked only within their last N digits
   (default 6).
+- `--vlm-audit`: review every redacted page with vision models before
+  publishing; what they find still showing is masked and the page reviewed
+  again (`--vlm-rounds`, default 2). `--vlm-model` finds, `--vlm-checker`
+  confirms each spot on a zoomed crop (both default to `gemma4:31b` on Ollama
+  Cloud). What was found is recorded in the manifest and replayed by
+  `verify --rerun`.
+- `--vlm-rescue`: with `--vlm-audit`, publish pages whose ID/phone columns
+  can't be placed, with those columns hidden whole, once the review passes.
+- `--vlm-concurrency`: requests to the model host at once across all workers
+  (default 10; Ollama Cloud answers 429 above an account's limit).
 - `--allow-remote-unredacted`: needed before `--vlm-fallback` or `propose` may
   send unredacted forms to a cloud model.
 - `--strict-structure`: withhold pages whose table rules can't be matched,
   instead of masking them with widened zones.
-- `--workers`: number of documents processed at once.
+- `--workers`: number of documents processed at once. With `--vlm-audit`,
+  use about three per core: most of a document's time is spent waiting for
+  the models.
 - `--no-generic`: send forms with no template to review instead of reading
   them without one.
 

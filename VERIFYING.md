@@ -119,7 +119,10 @@ no red block should touch one.
   template, and Forms 34A (whose comments are read with OCR), the manifest
   also records the OCR models' hashes; the re-run
   checks that the same models are installed (`setup-deps.sh` puts them in
-  `/opt/rfpii/models`).
+  `/opt/rfpii/models`). Where a vision review masked more (`vlm_found` in the
+  manifest) or hid a column whole (`whole_columns`), the re-run masks the
+  same from the manifest: it needs no access to any model, and the review's
+  own record (`vlm_review`) shows what each model was shown and answered.
 
 Try a tampered file. Change one number in the votes table of the published
 image (even one coefficient of one block), re-save it, and run `rfpii verify`.

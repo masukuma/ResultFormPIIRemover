@@ -13,7 +13,7 @@ use crate::align::AlignSettings;
 use crate::io::{self, PageImage, SourcePage};
 use crate::kiems;
 use crate::masking::MaskSettings;
-use crate::pipeline::{redact_pages, PageOptions, PageResult};
+use crate::pipeline::{redact_pages, Found, PageOptions, PageResult};
 use crate::proof;
 use crate::pyjson::{np_round, round_n};
 use crate::pyrand::PyRandom;
@@ -32,8 +32,16 @@ pub struct Config {
     pub mask: MaskSettings,
     pub strict_structure: bool,
     pub generic: bool, // read pages no template matches
+    /// review every redacted page with `reviewer` before publishing
     pub vlm_audit: bool,
     pub vlm_fallback: bool,
+    pub reviewer: Option<std::sync::Arc<crate::vlm::Reviewer>>,
+    /// a page whose columns couldn't be placed: those columns hidden whole,
+    /// published only if the review then finds nothing
+    pub vlm_rescue: bool,
+    /// what the review finds is masked and the page reviewed again, this
+    /// many times at most
+    pub vlm_rounds: usize,
     /// digitally sign the published PDFs with this certificate
     pub pdf_signer: Option<std::sync::Arc<crate::pdfsign::Signer>>,
 }
@@ -123,7 +131,50 @@ fn page_report(p: &PageResult) -> Value {
     v
 }
 
-pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Config, vlm: Option<&crate::vlm::Ollama>, seed: Option<u64>, data: Option<Vec<u8>>) -> Result<Outcome> {
+/// The part of a page the review looks at: the template's `review_area`
+/// where it has one, else the whole page. Image px x, y, w, h.
+fn review_area(p: &PageResult, templates: &[Template], w: i32, h: i32) -> [i32; 4] {
+    let t = templates.iter().find(|t| t.name == p.template);
+    if let (Some([x, y, rw, rh]), Some(hh)) = (t.and_then(|t| t.review_area), p.h) {
+        let c: Vec<[f64; 2]> = [[x, y], [x + rw, y], [x + rw, y + rh], [x, y + rh]].iter().map(|&q| util::project(&hh, q)).collect();
+        let x0 = c.iter().map(|q| q[0]).fold(f64::INFINITY, f64::min).max(0.0) as i32;
+        let y0 = c.iter().map(|q| q[1]).fold(f64::INFINITY, f64::min).max(0.0) as i32;
+        let x1 = (c.iter().map(|q| q[0]).fold(f64::NEG_INFINITY, f64::max).ceil() as i32).min(w);
+        let y1 = (c.iter().map(|q| q[1]).fold(f64::NEG_INFINITY, f64::max).ceil() as i32).min(h);
+        if x1 - x0 > 32 && y1 - y0 > 32 {
+            return [x0, y0, x1 - x0, y1 - y0];
+        }
+    }
+    [0, 0, w, h]
+}
+
+/// Share of `f`'s box inside the page's protected stamps.
+fn on_stamps(f: &Found, protected: &[Value]) -> f64 {
+    let circles: Vec<[f64; 3]> = protected
+        .iter()
+        .filter(|p| p.get("kind").and_then(|k| k.as_str()) == Some("stamp"))
+        .filter_map(|p| {
+            let c: Vec<f64> = p.get("circle")?.as_array()?.iter().filter_map(|v| v.as_f64()).collect();
+            (c.len() == 3).then(|| [c[0], c[1], c[2]])
+        })
+        .collect();
+    let [x0, y0, x1, y1] = f.rect;
+    let mut inside = 0;
+    for i in 0..10 {
+        for j in 0..10 {
+            let (x, y) = (x0 + (x1 - x0) * (i as f64 + 0.5) / 10.0, y0 + (y1 - y0) * (j as f64 + 0.5) / 10.0);
+            if circles.iter().any(|c| (x - c[0]).hypot(y - c[1]) <= c[2]) {
+                inside += 1;
+            }
+        }
+    }
+    inside as f64 / 100.0
+}
+
+/// `replay`: the manifest of an earlier run of this document, whose review
+/// findings and columns hidden whole are applied again instead of asking
+/// any model (a re-run must give the same output).
+pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Config, seed: Option<u64>, data: Option<Vec<u8>>, replay: Option<&Value>) -> Result<Outcome> {
     let data = match data {
         Some(d) => d,
         None => io::read_bytes(src)?,
@@ -142,7 +193,6 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
         Some(s) => s,
         None => new_seed()?,
     };
-    let mut rng = PyRandom::new(seed);
     opencv::core::set_rng_seed((seed % (1u64 << 31)) as i32)?;
 
     let stem = Path::new(rel).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -158,33 +208,100 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
     }
 
     let pixels: Vec<Mat> = pages.iter().map(|p| p.pixels.clone()).collect();
-    let po = PageOptions { form: form.clone(), strict: cfg.strict_structure, generic: cfg.generic, ..Default::default() };
-    let doc = redact_pages(&pixels, templates, &cfg.align, &cfg.mask, &mut rng, &po)?;
+    let n = pixels.len();
+    let mut found: Vec<Vec<Found>> = vec![vec![]; n];
+    let mut whole: Vec<Vec<String>> = vec![vec![]; n];
+    if let Some(m) = replay {
+        for (i, p) in m["pages"].as_array().into_iter().flatten().enumerate().take(n) {
+            found[i] = p["vlm_found"].as_array().map(|a| a.iter().filter_map(Found::from_value).collect()).unwrap_or_default();
+            whole[i] = p["whole_columns"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+        }
+    }
+    // Every pass starts from the seed: the output depends only on the seed
+    // and what is masked, however many passes the review took.
+    let run = |found: &[Vec<Found>], whole: &[Vec<String>]| -> Result<Vec<PageResult>> {
+        let mut rng = PyRandom::new(seed);
+        opencv::core::set_rng_seed((seed % (1u64 << 31)) as i32)?;
+        let po = PageOptions { form: form.clone(), strict: cfg.strict_structure, generic: cfg.generic, found: found.to_vec(), whole: whole.to_vec(), ..Default::default() };
+        redact_pages(&pixels, templates, &cfg.align, &cfg.mask, &mut rng, &po)
+    };
+    let mut doc = run(&found, &whole)?;
+
+    // The review sees only redacted pages. What it finds still showing is
+    // masked (signatures whole, numbers as any number) and the pages are
+    // reviewed again; a page is published once a review finds nothing.
+    let mut reviews: Vec<Value> = Vec::new();
+    let mut unresolved: Vec<String> = Vec::new();
+    if let (Some(rv), true, None) = (cfg.reviewer.as_deref(), cfg.vlm_audit, replay) {
+        // Pages held only because a column's place or masking couldn't be
+        // confirmed: those columns (and their table's signatures) hidden
+        // whole, then reviewed like any other.
+        if cfg.vlm_rescue && doc.iter().any(|p| !p.ok) && doc.iter().all(|p| p.ok || !p.unsure.is_empty()) {
+            for (i, p) in doc.iter().enumerate() {
+                if !p.ok {
+                    whole[i] = p.unsure.clone();
+                }
+            }
+            doc = run(&found, &whole)?;
+        }
+        if doc.iter().all(|p| p.ok) {
+            let mut clean = false;
+            for round in 0..=cfg.vlm_rounds {
+                let mut fresh = false;
+                for (i, p) in doc.iter().enumerate() {
+                    let img = p.image.as_ref().unwrap();
+                    let r = rv.finder.find(img, review_area(p, templates, img.cols(), img.rows()), &rv.checker)?;
+                    let mut rec = json!({"page": i + 1, "round": round + 1});
+                    for (k, x) in r.record.as_object().unwrap() {
+                        rec[k] = x.clone();
+                    }
+                    // writing on a stamp stays visible (the stamp rule lifts
+                    // any mask there): not the review's to mask
+                    let (stamped, found_now): (Vec<Found>, Vec<Found>) = r.found.into_iter().partition(|f| on_stamps(f, &p.protected) >= 0.5);
+                    if !stamped.is_empty() {
+                        rec["on_stamps"] = json!(stamped.iter().map(|f| f.to_value()).collect::<Vec<_>>());
+                    }
+                    reviews.push(rec);
+                    for f in found_now {
+                        let (cx, cy) = ((f.rect[0] + f.rect[2]) / 2.0, (f.rect[1] + f.rect[3]) / 2.0);
+                        if !found[i].iter().any(|g| g.rect[0] - 4.0 <= cx && cx <= g.rect[2] + 4.0 && g.rect[1] - 4.0 <= cy && cy <= g.rect[3] + 4.0) {
+                            found[i].push(f);
+                            fresh = true;
+                        }
+                    }
+                }
+                if !fresh {
+                    clean = true;
+                    break;
+                }
+                if round == cfg.vlm_rounds {
+                    break;
+                }
+                doc = run(&found, &whole)?;
+                if !doc.iter().all(|p| p.ok) {
+                    break;
+                }
+            }
+            if !clean && doc.iter().all(|p| p.ok) {
+                unresolved.push(format!("the vision review still finds PII after {} round(s) of masking it", cfg.vlm_rounds));
+            }
+        }
+    }
+
     let mut problems: Vec<String> = doc.iter().enumerate().filter(|(_, p)| !p.ok).map(|(i, p)| format!("page {}: {}", i + 1, p.reason)).collect();
     let mismatch = kiems::check(name.as_ref(), &qr);
     if !mismatch.is_empty() {
         problems.push(mismatch);
     }
     problems.extend(document_rules(&doc, templates));
-
-    let mut audits: Vec<Value> = Vec::new();
-    if let (Some(v), true, true) = (vlm, cfg.vlm_audit, problems.is_empty()) {
-        for (i, p) in doc.iter().enumerate() {
-            let a = v.audit(p.image.as_ref().unwrap())?; // only ever the *redacted* page
-            let mut rec = json!({"page": i + 1});
-            for (k, x) in a.record.as_object().unwrap() {
-                rec[k] = x.clone();
-            }
-            audits.push(rec);
-            if !a.ok {
-                problems.push(format!("page {}: VLM audit flagged: {}", i + 1, a.findings.get("details").and_then(|d| d.as_str()).unwrap_or("")));
-            }
-        }
-    }
+    problems.extend(unresolved);
 
     report["pages"] = Value::Array(doc.iter().map(page_report).collect());
     if !problems.is_empty() {
         report["reason"] = json!(problems.join("; "));
+        if !reviews.is_empty() {
+            report["vlm_review"] = Value::Array(reviews);
+        }
         let redacted = doc.iter().filter_map(|p| p.image.clone()).collect();
         return Ok(Outcome { ok: false, report, manifest: None, pdf: None, redacted_pages: redacted, source_pages: pages });
     }
@@ -234,6 +351,12 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
         });
         if let Some(l) = &p.layout {
             mp["layout"] = l.clone();
+        }
+        if !found[i].is_empty() {
+            mp["vlm_found"] = json!(found[i].iter().map(|f| f.to_value()).collect::<Vec<_>>());
+        }
+        if !whole[i].is_empty() {
+            mp["whole_columns"] = json!(whole[i]);
         }
         mpages.push(mp);
         reds.push(red);
@@ -288,7 +411,7 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
                      "strict_structure": cfg.strict_structure, "generic": cfg.generic},
         "templates": tmap,
         "pages": mpages,
-        "vlm_audit": if audits.is_empty() { Value::Null } else { Value::Array(audits) },
+        "vlm_review": if reviews.is_empty() { Value::Null } else { Value::Array(reviews) },
     });
     let mut manifest = manifest;
     // OCR read the page (no template), or a template's free-text areas
@@ -306,6 +429,17 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spots_on_a_stamp_are_measured_by_their_area_inside_it() {
+        let stamp = [json!({"kind": "stamp", "circle": [100.0, 100.0, 50.0]}), json!({"kind": "results", "rect": [0, 0, 400, 400]})];
+        let spot = |x0: f64, x1: f64| Found { label: "signature".into(), rect: [x0, 90.0, x1, 110.0] };
+        assert_eq!(on_stamps(&spot(80.0, 120.0), &stamp), 1.0);
+        assert_eq!(on_stamps(&spot(160.0, 200.0), &stamp), 0.0);
+        let half = on_stamps(&spot(100.0, 200.0), &stamp);
+        assert!(0.4 < half && half < 0.6, "{half}");
+        assert_eq!(on_stamps(&spot(80.0, 120.0), &stamp[1..]), 0.0); // only stamps count
+    }
 
     #[test]
     fn paths_and_time() {

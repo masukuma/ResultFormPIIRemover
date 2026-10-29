@@ -236,3 +236,85 @@ fn batch_withholds_failed_document() {
     assert!(root.join("out/good.pdf").exists() && !root.join("out/bad.pdf").exists());
     assert!(root.join("review/bad.json").exists());
 }
+
+/// A local stand-in for Ollama answering /api/chat with `replies` in turn;
+/// returns its URL and how many requests it has had.
+fn ollama_stub(replies: Vec<String>) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = count.clone();
+    std::thread::spawn(move || {
+        let mut replies = replies.into_iter();
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { break };
+            let mut r = BufReader::new(conn.try_clone().unwrap());
+            let (mut line, mut len) = (String::new(), 0usize);
+            r.read_line(&mut line).unwrap();
+            loop {
+                let mut h = String::new();
+                r.read_line(&mut h).unwrap();
+                if h.trim().is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = h.split_once(':') {
+                    if k.eq_ignore_ascii_case("content-length") {
+                        len = v.trim().parse().unwrap();
+                    }
+                }
+            }
+            let mut body = vec![0u8; len];
+            r.read_exact(&mut body).unwrap();
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let data = serde_json::to_vec(&serde_json::json!({"message": {"role": "assistant", "content": replies.next().unwrap_or_else(|| "[]".into())}})).unwrap();
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", data.len());
+            conn.write_all(head.as_bytes()).unwrap();
+            conn.write_all(&data).unwrap();
+        }
+    });
+    (url, count)
+}
+
+#[test]
+fn what_the_review_finds_is_masked_and_replayed() {
+    let root = tmpdir("review");
+    write_template(&root.join("templates").join("sample_rs1")).unwrap();
+    let (scan, _) = simulate_scan(&filled_form(2).unwrap(), 2, 2.0, 1.3).unwrap();
+    std::fs::create_dir_all(root.join("in")).unwrap();
+    std::fs::write(root.join("in/form.jpg"), io::encode(&scan, "jpg", 90).unwrap()).unwrap();
+    // round 1: a "signature" in the bottom margin, confirmed; round 2: nothing
+    let spot = "```json\n[{\"box_2d\": [940, 100, 960, 300], \"label\": \"signature\"}]\n```";
+    let (url, asked) = ollama_stub(vec![spot.into(), r#"{"unmasked_signature": true, "complete_number": false, "what": "scribble"}"#.into(), "[]".into()]);
+    let rc = rfpii(&[
+        "redact", s(&root.join("in")), "--templates", s(&root.join("templates")), "--out", s(&root.join("out")),
+        "--review", s(&root.join("review")), "--workers", "1", "--no-pdf-signature", "--vlm-audit", "--vlm-host", &url, "--vlm-model", "gemma4:31b",
+    ]);
+    assert_eq!(rc, 0, "{}", std::fs::read_to_string(root.join("review/report.jsonl")).unwrap_or_default());
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 3);
+    let m: Value = serde_json::from_str(&std::fs::read_to_string(root.join("out/form.manifest.json")).unwrap()).unwrap();
+    let found = m["pages"][0]["vlm_found"].as_array().unwrap();
+    assert!(found.len() == 1 && found[0]["label"] == "signature");
+    assert_eq!(m["vlm_review"].as_array().unwrap().len(), 2);
+    // the spot is black in the published image
+    let pdf = std::fs::read(root.join("out/form.pdf")).unwrap();
+    let img = io::decode_bytes(&io::pdf_images(&pdf).unwrap().remove(0).0).unwrap();
+    let b: Vec<f64> = found[0]["box"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    let (cx, cy) = (((b[0] + b[2]) / 2.0) as i32, ((b[1] + b[3]) / 2.0) as i32);
+    let px = img.at_2d::<opencv::core::Vec3b>(cy, cx).unwrap();
+    assert!(px[0] < 20 && px[1] < 20 && px[2] < 20, "{:?}", px);
+    // a re-run applies what the review found without asking anything
+    let r = verify(&VerifyArgs {
+        redacted: &root.join("out/form.pdf"),
+        manifest: None,
+        original: Some(&root.join("in/form.jpg")),
+        pubkey: None,
+        ledger: None,
+        overlay_dir: None,
+        rerun_templates: Some(&root.join("templates")),
+        trust: &[],
+    })
+    .unwrap();
+    assert!(r.ok(), "{}", r.text());
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
