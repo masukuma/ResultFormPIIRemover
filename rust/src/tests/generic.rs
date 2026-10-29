@@ -234,3 +234,13 @@ fn in_comments_a_signature_needs_a_joined_stroke() {
     assert!(strict.iter().any(|s| s.0 < 210.0 && s.1 > 320.0), "{:?}", strict); // the scribble
     assert_eq!(strict.len(), 2, "{:?}", strict); // and the piece above it, too short alone
 }
+
+#[test]
+fn a_letter_read_doubtfully_off_a_name_is_left_to_the_signature_beside_it() {
+    // "OMAR", then the signature's first loop read as a "U"
+    let mut l = comments_area();
+    l.lines.push(OLine::new([[40.0, 90.0], [250.0, 90.0], [250.0, 180.0], [40.0, 180.0]], "OMARU".into(), 0.8, (0..5).map(|i| (i as f64 + 0.5) / 5.0).collect(), vec![0.95, 0.9, 0.95, 0.95, 0.25]));
+    free_signatures(&mut l, 0.0, &[0, 1], true).unwrap();
+    let found = signature_spans(&l);
+    assert!(found.iter().any(|s| s.0 < 225.0 && s.1 > 320.0), "the whole scribble, from where the name ends: {:?}", found);
+}

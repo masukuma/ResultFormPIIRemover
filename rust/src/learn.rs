@@ -259,9 +259,9 @@ fn ridge(p: &[f64], half: usize) -> Vec<f64> {
 /// height or width, so averaged along its length it is a clear ridge: down
 /// the table between each two headings for the columns, across it for the
 /// rows. The table ends where its outer rules do; its rows are equal.
-/// Returns its ID, phone and signature columns, or None if no heading row
-/// with at least two of them is found.
-fn profile_table(l: &Layout, gray: &Mat) -> Result<Option<Vec<Field>>> {
+/// Returns its ID, phone and signature columns and its rules, or None if no
+/// heading row with at least two of them is found.
+fn profile_table(l: &Layout, gray: &Mat) -> Result<Option<ProfileTable>> {
     let h = TEXT_H;
     let results_bottom = l
         .protected
@@ -400,7 +400,65 @@ fn profile_table(l: &Layout, gray: &Mat) -> Result<Option<Vec<Field>>> {
             .collect();
         fields.push(Field { kind: k.to_string(), zones, source: "table".into(), label: o.text.clone(), label_box: o.bbox() });
     }
-    Ok(Some(fields))
+    // every rule, followed along its length (a photo is seldom quite
+    // square): down from the table's top border, across from side to side
+    let ridge_at = |x: i32, y: i32, down: bool| -> f64 {
+        let d = |a: i32, b: i32| if down { dark(a, b) } else { dark(b, a) };
+        let (u, v) = if down { (x, y) } else { (y, x) };
+        (v - 4..=v + 4).map(|t| (u - 1..=u + 1).map(|c| d(c, t)).sum::<f64>() / 3.0 - ((u - 7..=u - 5).chain(u + 5..=u + 7)).map(|c| d(c, t)).sum::<f64>() / 6.0).sum::<f64>() / 9.0
+    };
+    // its offset from straight, window by window along it: paper bends
+    // slowly, and print it passes (labels, writing) shouldn't pull it
+    let trace = |at: f64, from: f64, to: f64, down: bool| -> Vec<[f64; 2]> {
+        const WIN: i32 = 40;
+        let (a, b) = (from as i32, to as i32);
+        let centres: Vec<i32> = (a..=b).step_by(WIN as usize).map(|c| (c + WIN / 2).min(b)).collect();
+        let u0 = at.round() as i32;
+        let raw: Vec<i32> = centres
+            .iter()
+            .map(|&c| (-6..=6).max_by(|&d, &e| {
+                let sum = |d: i32| (c - WIN / 2..c + WIN / 2).map(|v| ridge_at(u0 + d, v, down)).sum::<f64>();
+                sum(d).partial_cmp(&sum(e)).unwrap()
+            }).unwrap())
+            .collect();
+        let mut off: Vec<i32> = (0..raw.len())
+            .map(|i| {
+                let mut w: Vec<i32> = raw[i.saturating_sub(1)..(i + 2).min(raw.len())].to_vec();
+                w.sort();
+                w[w.len() / 2]
+            })
+            .collect();
+        for i in 1..off.len() {
+            off[i] = off[i].clamp(off[i - 1] - 2, off[i - 1] + 2);
+        }
+        let mut pts: Vec<[f64; 2]> = Vec::new();
+        let at_v = |v: f64, o: f64| if down { [u0 as f64 + o, v] } else { [v, u0 as f64 + o] };
+        pts.push(at_v(a as f64, *off.first().unwrap_or(&0) as f64));
+        for (c, o) in centres.iter().zip(&off) {
+            pts.push(at_v(*c as f64, *o as f64));
+        }
+        pts.push(at_v(b as f64, *off.last().unwrap_or(&0) as f64));
+        pts
+    };
+    let ht = peak_y(top - 1.2 * h, top + 0.1 * h);
+    let mut rules: Vec<Vec<[f64; 2]>> = xs.iter().flatten().map(|&x| trace(x, ht, tb, true)).collect();
+    rules.push(trace(ht, xl, xr, false));
+    for r in 0..=n {
+        rules.push(trace(hb + r as f64 * pitch, xl, xr, false));
+    }
+    Ok(Some(ProfileTable { fields, rules, rect: [xl, ht, xr - xl, tb - ht], rows: (0..=n).map(|r| hb + r as f64 * pitch).collect() }))
+}
+
+/// An agents' table read from the darkness of its rules (`profile_table`).
+struct ProfileTable {
+    /// Its ID, phone and signature columns.
+    fields: Vec<Field>,
+    /// Its rules as polylines (x, y), each followed along its length.
+    rules: Vec<Vec<[f64; 2]>>,
+    /// Its outer border, [x, y, w, h].
+    rect: [f64; 4],
+    /// Its row rules, top (the heading's) to bottom.
+    rows: Vec<f64>,
 }
 
 /// How much of an A-series form's structure a reading found: the kinds of
@@ -424,7 +482,7 @@ fn with_profile_table(l: &mut Layout, median: &Mat) -> Result<()> {
     let mut bgr = Mat::default();
     imgproc::cvt_color_def(median, &mut bgr, imgproc::COLOR_GRAY2BGR)?;
     let gray = util::gray(&generic::warp(&bgr, &l.frame)?)?;
-    let Some(cols) = profile_table(l, &gray)? else { return Ok(()) };
+    let Some(ProfileTable { fields: cols, .. }) = profile_table(l, &gray)? else { return Ok(()) };
     let kinds: BTreeSet<String> = cols.iter().map(|f| f.kind.clone()).collect();
     if kinds.len() <= found.len() {
         return Ok(());
@@ -826,6 +884,11 @@ pub fn learn(sources: &[String], form: &str, name: &str, out: &Path, opts: &Lear
         }
     }
     let (hs, vs) = generic::rules(&l.gray, &[])?;
+    // the agents' table from its rules on the blank form: its border and
+    // rows, where the reader's thresholds lose its light grey rules
+    let mut bgr = Mat::default();
+    imgproc::cvt_color_def(&median, &mut bgr, imgproc::COLOR_GRAY2BGR)?;
+    let profiled = profile_table(&l, &util::gray(&generic::warp(&bgr, &l.frame)?)?)?;
     let mut structure = String::new();
     let mut zones = String::new();
     let mut lowest = results_bottom;
@@ -842,7 +905,10 @@ pub fn learn(sources: &[String], form: &str, name: &str, out: &Path, opts: &Lear
         let span: Vec<f64> = vs.iter().filter(|v| v.lo <= top + 2.0 * TEXT_H && v.hi >= bot - 2.0 * TEXT_H).map(|v| v.at((top + bot) / 2.0)).collect();
         let fx0 = t.iter().map(|f| f.zones[0].rect[0]).fold(f64::INFINITY, f64::min);
         let fx1 = t.iter().map(|f| f.zones[0].rect[0] + f.zones[0].rect[2]).fold(f64::NEG_INFINITY, f64::max);
-        let (x0, x1) = if span.len() >= 2 {
+        let pt = profiled.as_ref().filter(|p| p.rect[1] < bot && p.rect[1] + p.rect[3] > top);
+        let (x0, x1) = if let Some(p) = pt {
+            (p.rect[0] - 0.3 * TEXT_H, p.rect[0] + p.rect[2] + 0.3 * TEXT_H)
+        } else if span.len() >= 2 {
             (span.iter().cloned().fold(f64::INFINITY, f64::min) - 0.3 * TEXT_H, span.iter().cloned().fold(f64::NEG_INFINITY, f64::max) + 0.3 * TEXT_H)
         } else {
             (fx0 - 8.0 * TEXT_H, fx1 + 3.0 * TEXT_H)
@@ -864,7 +930,10 @@ pub fn learn(sources: &[String], form: &str, name: &str, out: &Path, opts: &Lear
             }
             lines_y.push(y);
         }
-        let mut bands: Vec<(f64, f64)> = lines_y.windows(2).map(|p| (p[0], p[1])).collect();
+        let mut bands: Vec<(f64, f64)> = match pt {
+            Some(p) => p.rows.windows(2).map(|r| (r[0], r[1])).collect(),
+            None => lines_y.windows(2).map(|p| (p[0], p[1])).collect(),
+        };
         if !bands.is_empty() {
             let pitch = util::median(&bands.iter().map(|b| b.1 - b.0).collect::<Vec<_>>());
             bands.retain(|b| b.1 - b.0 >= 0.6 * pitch && b.1 - b.0 <= 1.6 * pitch);
@@ -1035,6 +1104,24 @@ pub fn learn(sources: &[String], form: &str, name: &str, out: &Path, opts: &Lear
         notes.push(format!("{} area(s) people write in that no field explains (see writing.png)", unexplained.len()));
     }
 
+    // The table's rules, light grey on the blank form, drawn where they are
+    // printed: pages are matched to the table by its rules
+    let mut reference = reference;
+    if let Some(t) = &profiled {
+        let mut lines = Mat::new_rows_cols_with_default(h, w, core::CV_8U, Scalar::all(0.0))?;
+        for r in &t.rules {
+            let pts: Vector<core::Point> = r.iter().map(|&p| { let q = util::project(&m, p); core::Point::new(q[0].round() as i32, q[1].round() as i32) }).collect();
+            imgproc::polylines(&mut lines, &Vector::<Vector<core::Point>>::from_iter([pts]), false, Scalar::all(255.0), 2, imgproc::LINE_8, 0)?;
+        }
+        let lb = util::bytes(&lines)?;
+        let mut px = util::bytes(&reference)?;
+        for i in 0..px.len() {
+            if lb[i] != 0 {
+                px[i] = px[i].min(70);
+            }
+        }
+        reference = util::from_bytes(h, w, &px)?;
+    }
     let reference = clean(&reference, &erase, &keep)?;
     imgcodecs::imwrite(&dir.join("reference.png"), &reference, &Vector::new())?;
     std::fs::write(dir.join("template.yaml"), &yaml)?;

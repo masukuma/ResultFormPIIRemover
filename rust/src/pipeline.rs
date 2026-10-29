@@ -426,9 +426,27 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
                 continue;
             }
             let f = placed(cells)?;
-            let off = header_off(&f, cells)?;
+            let mut off = header_off(&f, cells)?;
             if off.is_none() && !tables.contains(&cells[0].region) {
                 continue;
+            }
+            // the columns of its table moved together: a signature column's
+            // own header (often printed lighter) found elsewhere is a false
+            // match, and the column moves with them
+            let table_dy: Vec<f64> = moved
+                .iter()
+                .filter(|(k, _, _)| columns.iter().any(|(ck, c)| ck == k && c[0].region == cells[0].region))
+                .map(|(_, _, ab)| ab[2])
+                .collect();
+            if !table_dy.is_empty() {
+                let dy = util::median(&table_dy);
+                let row_h = util::median(&cells.iter().map(|z| z.rect[3]).collect::<Vec<_>>());
+                if off.map_or(true, |d| (d[1] - dy).abs() > 0.5 * row_h) {
+                    if let Some(d) = off {
+                        notes.push(format!("{}: printed header found {:+.0}px down, but its table's columns moved {:+.0}px: moved with them", key, d[1], dy));
+                    }
+                    off = Some([0.0, dy]);
+                }
             }
             match again(&f, cells, false, off.map(|d| d[1]).unwrap_or(0.0))? {
                 Some((g, ab)) => {

@@ -1068,6 +1068,17 @@ fn free_signatures(l: &mut Layout, top: f64, passes: &[usize], strict: bool) -> 
             if util::np_mean(&probs) < 0.7 {
                 continue;
             }
+            // letters read doubtfully at its ends may be the writing beside
+            // the name (a signature's first loop read as a "U")
+            let (mut a, mut b) = (a, b);
+            if ln.probs.len() == ln.chars.len() {
+                while b > a + 1 && ln.probs[b - 1] < 0.7 {
+                    b -= 1;
+                }
+                while a + 1 < b && ln.probs[a] < 0.7 {
+                    a += 1;
+                }
+            }
             let (x0, x1) = ln.span(a, b);
             vetoed.push((x0, lb.1, x1, lb.3));
         }
