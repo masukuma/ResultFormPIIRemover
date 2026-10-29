@@ -554,6 +554,33 @@ ignore the requested JSON format, so replies are read leniently (fenced or
 wrapped JSON, `bbox`/`box`/`box_2d`, free-form labels), and Gemini-style
 `box_2d` boxes ([y1, x1, y2, x2] on a 0–1000 grid) are recognised.
 
+**Clef as the checker (`--vlm-checker clef`).** Clef is a decision model:
+it doesn't write a reply but scores every option of a typed question in
+one pass, through Ollama's `/v1/systemone`. It can't draw boxes, so it can
+only check. Each spot is asked one multiple-choice question (an unmasked
+or masked signature, a name, a date, a complete or partly hidden number,
+printed text); a spot is masked when the options for what the finder named
+reach `--vlm-check-threshold` (0.5). Both signature options count: spots
+asked about are under 8% black, so a "masked" one is crossed by its
+writer's own stroke. A plain yes/no question read names as signatures.
+Measured on the same 215 Forms 34A (October 2026):
+- The same crop gets the same score every time, to 4 decimals; the score
+  and threshold are recorded per spot.
+- On its own a check takes 0.5–1 s against about 3 s for `gemma4:31b`. But
+  it shares the account's limit with the finder (12 of 24 requests to both
+  at once were refused), and the account served at most about 2.6 Clef
+  requests a second however many were sent at once.
+- The full run took 404 s against 380 s, and published the same 210. It
+  masked 59 spots on 46 pages against 45 on 38: by eye 40 real, 8 unclear
+  and 11 not (printed "Signature" labels, empty boxes beside them, names,
+  digits the rules had already masked), against 38, 5 and 2. The extra
+  masks also sent more pages to a second round of review.
+- All 210 verify and the 51 pages it changed replay bit for bit.
+
+So it is not faster here and masks more that isn't personal data; the
+default checker stays `gemma4:31b`. Its use is a checker whose verdicts are
+repeatable and come with a probability to set a threshold on.
+
 **At scale.** Ollama Cloud refused (HTTP 429) more than 12 requests at once
 from the account this was tested with, so requests are capped across all
 workers (`--vlm-concurrency`, 10) and retried with backoff on 429, 5xx and
