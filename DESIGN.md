@@ -215,6 +215,15 @@ not the signature itself:
    pages drift downward.
 2. **Remove what isn't a signature:**
    - printed rules;
+   - in a table column, what is left of its own rules. A faint rule scans
+     as dashes the rule removal leaves, and where a row's line meets the
+     column's edge they cross in small "+"s tall enough to pass for
+     writing: on one photo every empty row of the agents' Signature column
+     was masked. Vertical runs within 4 px of the column's edges are
+     dropped; what is left of a "+" is flat, and goes with the flat strokes
+     below. A stroke crossing an edge loses only what runs along it. Flat
+     runs along the rows' lines are left alone: a signature written as a
+     short dash on its row's line is as flat as they are;
    - the stamps found on the page (see [Stamps](#stamps-are-never-masked-stampspy)),
      ring and lettering. A stamp's ring once joined the writing around it
      into one "signature", whose mask then framed the stamp with black

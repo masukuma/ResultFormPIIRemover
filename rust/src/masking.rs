@@ -1217,6 +1217,24 @@ pub struct SigBlob {
     pub band: Vec<(i64, i64, i64, i64)>,
 }
 
+/// Ink running down a column's edges at `xs`: vertical runs within
+/// `EDGE_TOL` px of one. A stroke crossing an edge loses only what runs along it.
+fn remove_edges(ink: &mut Img, xs: &[f64]) -> Result<()> {
+    const EDGE_TOL: f64 = 4.0;
+    let v = Img::from_mat(&util::morph(&ink.to_mat()?, imgproc::MORPH_OPEN, &util::rect_kernel(1, 5)?)?)?;
+    for xx in 0..ink.w {
+        if !xs.iter().any(|&x| (xx as f64 - x).abs() <= EDGE_TOL) {
+            continue;
+        }
+        for yy in 0..ink.h {
+            if v.at(xx, yy) > 0 {
+                ink.set(xx, yy, 0);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Separate signatures: strokes joined mostly sideways; a blob spanning
 /// several rows is cut at the row boundaries. `whole`: the rows are only
 /// the template's (their table's rules weren't matched), so a blob is
@@ -1399,6 +1417,15 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
         }
     }
     let stamps = remove_stamp_rings(&mut ink)?;
+    if !cs.cells[0].region.is_empty() && cs.cells.len() > 2 {
+        // a table column: a faint rule breaks into dashes the rule removal
+        // leaves, and where a row's line meets the column's edge they cross
+        // in small "+"s, tall enough for writing. Their upright strokes go;
+        // what is left is flat, and dropped as rule when signatures are
+        // grouped.
+        let w = cs.cells[0].rect[2];
+        remove_edges(&mut ink, &[SIG_OVERRUN, SIG_OVERRUN + w])?;
+    }
     let lo = cs.bands[0].0 as i64;
     let hi = cs.bands.last().unwrap().1.ceil() as i64;
     let mut bridge: Option<Img> = None;
