@@ -78,6 +78,18 @@ or a handwritten signature (in tables, next to names, in the comments, anywhere)
 Return one item per problem with its label (id_number, phone_number or signature) and a tight bounding box
 [x1, y1, x2, y2] in pixels of this image. Return an empty list if nothing breaks the rules.";
 
+/// `FIND_PROMPT` when stamps are masked over (`--mask-stamps`): writing
+/// inside a stamp follows the rules like any other.
+pub fn find_prompt(stamps_masked: bool) -> String {
+    if !stamps_masked {
+        return FIND_PROMPT.to_string();
+    }
+    FIND_PROMPT.replace(
+        "Names, party names, dates, vote counts, printed text and writing inside the round official stamp are allowed to show.",
+        "Names, party names, dates, vote counts and printed text are allowed to show. Writing inside the round official stamp follows the same rules, and black boxes over part of a stamp are intended.",
+    )
+}
+
 /// Asked of a zoomed crop around each spot `FIND_PROMPT` returned.
 pub const CHECK_PROMPT: &str = "This crop is from a Kenyan election results form that has been redacted: black rectangles are redactions.
 Look only at the writing inside the red box.
@@ -500,15 +512,16 @@ impl Ollama {
     /// w, h) that the rules hide: spots this model finds, each confirmed by
     /// `checker` on a zoomed crop (the spot boxed in red). Boxes in image px.
     /// A reply that can't be read confirms the spot: masking more is the
-    /// safe side.
-    pub fn find(&self, redacted: &Mat, area: [i32; 4], checker: &Ollama) -> Result<FindResult> {
+    /// safe side. `stamps_masked`: writing on a stamp is to be hidden too.
+    pub fn find(&self, redacted: &Mat, area: [i32; 4], checker: &Ollama, stamps_masked: bool) -> Result<FindResult> {
         let [ax, ay, aw, ah] = area;
         let crop = Mat::roi(redacted, opencv::core::Rect::new(ax, ay, aw, ah))?.try_clone()?;
         let f = (FIND_MAX_SIDE / aw.max(ah) as f64).min(1.0);
         let small = if f < 1.0 { util::resize_by(&crop, f, imgproc::INTER_AREA)? } else { crop.clone() };
         let (w, h) = (small.cols() as f64, small.rows() as f64);
         let sent = jpeg(&small)?;
-        let prompt = FIND_PROMPT.replace("{w}", &format!("{}", w as i64)).replace("{h}", &format!("{}", h as i64));
+        let rules = find_prompt(stamps_masked);
+        let prompt = rules.replace("{w}", &format!("{}", w as i64)).replace("{h}", &format!("{}", h as i64));
         let reply = self.chat(&prompt, &sent, find_schema())?;
         let spots = match loose_json(&reply) {
             Some(v) => reply_boxes(&v, w, h, &self.s.coords),
@@ -546,7 +559,7 @@ impl Ollama {
             }
         }
         let mut record = json!({"model": self.s.model, "checker": checker.s.model, "host": hostname(&self.s.host),
-                                "find_prompt_sha256": hex::encode(Sha256::digest(FIND_PROMPT.as_bytes())),
+                                "find_prompt_sha256": hex::encode(Sha256::digest(rules.as_bytes())),
                                 "check_prompt_sha256": hex::encode(Sha256::digest(checker.check_prompt().as_bytes())),
                                 "area": area, "image_sent_sha256": hex::encode(Sha256::digest(&sent)), "spots": cands});
         if checker.decision {

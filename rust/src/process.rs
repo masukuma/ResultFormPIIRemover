@@ -272,13 +272,15 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
                 let mut fresh = false;
                 for (i, p) in doc.iter().enumerate() {
                     let img = p.image.as_ref().unwrap();
-                    let r = rv.finder.find(img, review_area(p, templates, img.cols(), img.rows()), &rv.checker)?;
+                    let r = rv.finder.find(img, review_area(p, templates, img.cols(), img.rows()), &rv.checker, cfg.mask.mask_stamps)?;
                     let mut rec = json!({"page": i + 1, "round": round + 1});
                     for (k, x) in r.record.as_object().unwrap() {
                         rec[k] = x.clone();
                     }
                     // writing on a stamp stays visible (the stamp rule lifts
-                    // any mask there): not the review's to mask
+                    // any mask there): not the review's to mask. With
+                    // stamps masked over, no stamp is protected and every
+                    // spot found is masked.
                     let (stamped, found_now): (Vec<Found>, Vec<Found>) = r.found.into_iter().partition(|f| on_stamps(f, &p.protected) >= 0.5);
                     if !stamped.is_empty() {
                         rec["on_stamps"] = json!(stamped.iter().map(|f| f.to_value()).collect::<Vec<_>>());
@@ -434,7 +436,7 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
         "source": source,
         "output": {"file": out_rel.to_string_lossy(), "pdf_sha256": proof::sha256(&pdf)},
         "seed": format!("{:x}", seed),
-        "settings": {"hide": cfg.mask.hide, "phone_tail": cfg.mask.phone_tail,
+        "settings": {"hide": cfg.mask.hide, "phone_tail": cfg.mask.phone_tail, "mask_stamps": cfg.mask.mask_stamps,
                      "strict_structure": cfg.strict_structure, "generic": cfg.generic,
                      "align": cfg.align.to_json()},
         "templates": tmap,

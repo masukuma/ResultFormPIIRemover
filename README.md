@@ -134,6 +134,11 @@ Useful flags:
   send unredacted forms to a cloud model.
 - `--strict-structure`: withhold pages whose table rules can't be matched,
   instead of masking them with widened zones.
+- `--mask-stamps`: the stamp isn't sacred. An ID, phone number or signature
+  a stamp lies over is hidden: each field's band across the stamp is
+  blacked whole, covering that part of the stamp. By default stamps are
+  never masked and writing under one stays visible. Recorded in the
+  manifest, and repeated by `verify --rerun`.
 - `--workers`: number of documents processed at once. With `--vlm-audit`,
   use about three per core: most of a document's time is spent waiting for
   the models.

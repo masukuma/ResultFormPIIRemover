@@ -334,6 +334,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
         let mut ms = MaskSettings::default();
         ms.hide = st["hide"].as_u64().unwrap_or(3) as usize;
         ms.phone_tail = st["phone_tail"].as_u64().unwrap_or(6) as usize;
+        ms.mask_stamps = st["mask_stamps"].as_bool().unwrap_or(false);
         let cfg = Config {
             templates: tdir.to_string_lossy().into_owned(),
             out: work.join("out").to_string_lossy().into_owned(),

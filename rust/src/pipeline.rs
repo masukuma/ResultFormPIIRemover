@@ -111,9 +111,16 @@ pub fn apply(img: &Mat, canvas: &Mat, keep: Option<&Mat>) -> Result<(Grid, Mat)>
 pub const STAMP_MARGIN: f64 = 6.0; // px kept clear around a stamp, plus 4% of its radius
 
 /// Add stamps found around the masks, and lift the masks off every stamp.
-/// Returns (stamps, keep mask, notes).
-pub fn protect_stamps(img: &Mat, canvas: &mut Mat, found: &[Stamp], r_range: (f64, f64), maps: Option<&stamps::Maps>) -> Result<(Vec<Stamp>, Mat, Vec<String>)> {
+/// Returns (stamps, keep mask, notes). With `ms.mask_stamps` no stamp is
+/// protected: the masks stay where they are, stamp or not.
+pub fn protect_stamps(img: &Mat, canvas: &mut Mat, found: &[Stamp], r_range: (f64, f64), maps: Option<&stamps::Maps>, ms: &MaskSettings) -> Result<(Vec<Stamp>, Mat, Vec<String>)> {
     let cv = util::bytes(canvas)?;
+    if ms.mask_stamps {
+        let disc = util::bytes(&stamps::protect_mask(canvas.rows(), canvas.cols(), found, STAMP_MARGIN)?)?;
+        let over = cv.iter().zip(&disc).filter(|&(&c, &d)| c == 0 && d > 0).count();
+        let notes = if over > 0 { vec![format!("masks over {} px inside stamps: stamps are masked over (--mask-stamps)", over)] } else { vec![] };
+        return Ok((vec![], util::zeros_u8(canvas.rows(), canvas.cols())?, notes));
+    }
     let hide: Vec<u8> = cv.iter().map(|&v| if v == 0 { 255 } else { 0 }).collect();
     let mut all = found.to_vec();
     if hide.iter().any(|&v| v > 0) {
@@ -142,6 +149,26 @@ pub fn protect_stamps(img: &Mat, canvas: &mut Mat, found: &[Stamp], r_range: (f6
         }
     }
     Ok((all, keep, notes))
+}
+
+/// With stamps masked over: each field's band across a stamp is hidden
+/// whole. What is written under a stamp can't be told from the stamp's own
+/// lettering (blue pen on a violet stamp is the same colour), so it isn't
+/// read there; the rest of the stamp stays visible. `bands`: the fields'
+/// bands, 0 on a canvas of their own (`masking::band`). Returns the px
+/// hidden that weren't already.
+pub fn hide_under_stamps(canvas: &mut Mat, bands: &Mat, found: &[Stamp]) -> Result<usize> {
+    let disc = util::bytes(&stamps::protect_mask(canvas.rows(), canvas.cols(), found, STAMP_MARGIN)?)?;
+    let b = util::bytes(bands)?;
+    let c = canvas.data_bytes_mut()?;
+    let mut n = 0;
+    for i in 0..c.len() {
+        if b[i] == 0 && disc[i] > 0 && c[i] != 0 {
+            c[i] = 0;
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// Local scale (image px per template px) of a homography at `pt`.
@@ -718,7 +745,30 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
             }
         }
     }
-    let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &known, r_range, Some(&maps))?;
+    if ms.mask_stamps && !known.is_empty() {
+        let mut bands = util::full_u8(gray.rows(), gray.cols(), 255)?;
+        for (_, cells) in columns.iter().chain(&signatures) {
+            let f = mapper(cells)?;
+            for z in cells {
+                masking::fill(&mut bands, &f, &masking::band(z))?;
+            }
+        }
+        for (_, ft) in &free {
+            let f = ft.mapper();
+            for z in ft.layout.fields.iter().flat_map(|fl| fl.zones.iter()) {
+                masking::fill(&mut bands, &f, &masking::band(z))?;
+            }
+        }
+        let ident = masking::homography(util::IDENTITY);
+        for z in &found_zones {
+            masking::fill(&mut bands, &ident, &masking::band(z))?;
+        }
+        let n = hide_under_stamps(&mut canvas, &bands, &known)?;
+        if n > 0 {
+            notes.push(format!("fields' bands across stamps hidden whole: {} px", n));
+        }
+    }
+    let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &known, r_range, Some(&maps), ms)?;
     notes.extend(stamp_notes);
     let (blocks, out) = apply(img, &canvas, Some(&keep))?;
 

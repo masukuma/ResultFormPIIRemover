@@ -1756,7 +1756,21 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
         }
     }
     let found_zones = crate::pipeline::mask_found(&mut canvas, &gray, extra, ms, rng, stamp_ink.as_ref(), &mut report)?;
-    let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &on_page, r_range, None)?;
+    if ms.mask_stamps && !on_page.is_empty() {
+        let mut bands = util::full_u8(gray.rows(), gray.cols(), 255)?;
+        for z in l.fields.iter().flat_map(|fl| fl.zones.iter()) {
+            masking::fill(&mut bands, &f, &masking::band(z))?;
+        }
+        let ident = masking::homography(util::IDENTITY);
+        for z in &found_zones {
+            masking::fill(&mut bands, &ident, &masking::band(z))?;
+        }
+        let n = crate::pipeline::hide_under_stamps(&mut canvas, &bands, &on_page)?;
+        if n > 0 {
+            notes.push(format!("fields' bands across stamps hidden whole: {} px", n));
+        }
+    }
+    let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &on_page, r_range, None, ms)?;
     notes.extend(stamp_notes);
     let (blocks, out) = apply(img, &canvas, Some(&keep))?;
     let mut protected: Vec<Value> = found.iter().map(|s| s.record()).collect();

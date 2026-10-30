@@ -180,6 +180,12 @@ struct RedactArgs {
     /// Phone numbers: hide only within the last N digits
     #[arg(long, default_value_t = 6)]
     phone_tail: usize,
+    /// Mask writing under stamps too: an ID, phone number or signature a
+    /// stamp lies over is hidden, and the masks cover that part of the stamp
+    /// (its field's band across the stamp is blacked whole). By default
+    /// stamps are never masked, and writing under one stays visible.
+    #[arg(long)]
+    mask_stamps: bool,
     #[arg(long, default_value_t = 0.35)]
     min_score: f64,
     #[arg(long, default_value_t = 40)]
@@ -431,6 +437,7 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
     let mut mask = MaskSettings::default();
     mask.hide = a.hide;
     mask.phone_tail = a.phone_tail;
+    mask.mask_stamps = a.mask_stamps;
     let cfg = Config {
         templates: a.templates.clone().unwrap_or_default(),
         out: a.out.clone(),

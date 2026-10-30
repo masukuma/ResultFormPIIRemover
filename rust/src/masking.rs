@@ -42,12 +42,22 @@ pub struct MaskSettings {
     pub min_glyph_h: f64,
     pub min_glyph_h_out: f64,
     pub empty_ink: f64,
+    /// Stamps are not protected: writing under one is hidden, and the
+    /// masks cover that part of the stamp (`--mask-stamps`)
+    pub mask_stamps: bool,
 }
 
 impl Default for MaskSettings {
     fn default() -> Self {
-        MaskSettings { hide: 3, phone_tail: 6, vpad: 60.0, mask_vpad: 3.0, min_glyph_h: 0.4, min_glyph_h_out: 0.4, empty_ink: 0.01 }
+        MaskSettings { hide: 3, phone_tail: 6, vpad: 60.0, mask_vpad: 3.0, min_glyph_h: 0.4, min_glyph_h_out: 0.4, empty_ink: 0.01, mask_stamps: false }
     }
+}
+
+/// The band a field's writing runs along: its zone, without the search
+/// above and below it, which reaches the next line's writing (a name).
+pub fn band(z: &Zone) -> [[f64; 2]; 4] {
+    let [x, y, w, h] = z.rect;
+    [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
 }
 
 /// How far a column's search window may reach beyond its cells: its usual

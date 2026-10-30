@@ -15,7 +15,7 @@ personal data gets a different treatment:
 | Phone numbers | **First digits kept, 3 of the last 6 hidden**: `0734471897` keeps `0734` and hides 3 of `471897` |
 | Names | Left visible |
 | QR code, station codes, votes | Left visible: these are what make the form verifiable |
-| Stamps | **Never masked**, even where a stamp lies over a signature, an ID or a phone number |
+| Stamps | **Never masked**, even where a stamp lies over a signature, an ID or a phone number (unless `--mask-stamps`, see "Stamps") |
 
 The hidden characters are random, but never more than two neighbouring
 characters are left visible together.
@@ -481,6 +481,25 @@ part of a signature or a number visible under it.
   found). `rfpii verify` checks that no blacked block touches one and that its
   pixels decode identically in the original and the redacted form, as for the
   results. The overlay outlines stamps in magenta.
+- **`--mask-stamps`: the stamp isn't sacred.** Off by default. Officers often
+  stamp over their own details: in the 2013 Forms 34, about 250 of 2,968
+  published pages had half or more of an officer's ID line inside a stamp,
+  and on some the whole ID was readable there. With the flag, no stamp is
+  protected and no mask is lifted off one, and each field's band across a
+  stamp (its zone: an ID's or phone number's line, a signature's line, a
+  table cell) is blacked whole. What is written under a stamp can't be told
+  from the stamp's own lettering: on Isiolo North-2 p17 the blue pen lies
+  10–20° of hue from the violet stamp, inside the stamp's own spread, and
+  the lettering is as dark as the pen. So it isn't read there, and the
+  three-characters rule gives way to hiding the part of the number under the
+  stamp. Outside stamps, masking is unchanged; the rest of each stamp (its
+  ring, the lettering off the fields' lines) stays visible. Stamps are then
+  not listed as protected regions, so `verify` doesn't require them
+  untouched and the overlay doesn't outline them; the page notes say how
+  much of the stamps the masks cover. The setting is recorded in the
+  manifest (`settings.mask_stamps`) and `verify --rerun` repeats it. The VLM
+  review is told that writing inside a stamp follows the rules, and what it
+  finds there is masked.
 
 ## Verifiability
 
@@ -604,7 +623,8 @@ non-local host unless `--allow-remote-unredacted` is given.)
    yes.
 4. **On a stamp?** A spot at least half inside a protected stamp is left
    visible: the stamp rule would lift a mask there anyway. It is recorded
-   (`on_stamps`) but not masked.
+   (`on_stamps`) but not masked. With `--mask-stamps` no stamp is protected,
+   and every spot is masked.
 5. **Mask and repeat.** What is confirmed is masked through the same block
    masking and proof as everything else: signatures hidden whole, numbers
    with 3 digits hidden. The page is redacted again from its seed and
@@ -1167,6 +1187,7 @@ results don't depend on how the work is split.
 - **Writing under a stamp stays visible.** A signature, ID or phone number
   that a stamp lies across is masked only outside the stamp. This is the
   stamp rule working as intended, and the page notes record it.
+  `--mask-stamps` hides it instead, blacking that band of the stamp.
 - **A stamp the finder misses is not protected.** Rings that are very faint,
   mostly hidden, or far from circular can be missed. The second search near
   masks and the VLM audit's `stamp_covered` check reduce this; the overlay
