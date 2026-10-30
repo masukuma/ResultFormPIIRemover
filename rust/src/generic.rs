@@ -1373,8 +1373,15 @@ fn x_fill(text: &str) -> bool {
 /// What OCR shows to be print where a field could reach it: (mask, reference).
 pub fn printed(l: &Layout) -> Result<(Mat, Mat)> {
     let mut mask = util::zeros_u8(l.gray.rows(), l.gray.cols())?;
+    // nothing is printed on an officer's line between 'Signature' and
+    // 'Date': a word read there was written ("No", for a signature)
+    let written: Vec<[f64; 4]> = l.fields.iter().filter(|fl| fl.source == "declaration").map(|fl| fl.zones[0].rect).collect();
     for ln in &l.lines {
         let lb = ln.bbox();
+        let (cx, cy) = (0.5 * (lb.0 + lb.2), ln.cy());
+        if written.iter().any(|&[x, y, w, h]| cx > x && cx < x + w && cy > y && cy < y + h) {
+            continue;
+        }
         if x_fill(&ln.text) || has(&PRINTED_LINE, &ln.text) {
             // the characters read, not the whole box: OCR may box a label
             // with the signature written after it and read the label alone

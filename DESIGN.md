@@ -446,7 +446,12 @@ part of a signature or a number visible under it.
   30–60 and must stay masked), or 1.6–4.2 × the printed text height on a form
   read without a template. A line OCR reads as stamp
   lettering ("PRESIDING OFFICER", "I.E.B.C.") starts a second, more permissive
-  search around it.
+  search around it. Where no ring is found round it, a circle is guessed
+  from the line, as wide as it is; but not for a line reaching into a ring
+  found. That line is the ring's own lettering read with the writing next
+  to it: "LUJMOFFICER", the officer's name written through the stamp and
+  then its "OFFICER", made a circle twice the stamp's size that took in
+  the name, the ID and the signature, and left them visible.
 - **A second look where masks are about to go.** A faint stamp under a
   signature is the most likely miss and the costliest. So, before masks are
   applied, the area around them is searched again with lower thresholds, and
@@ -963,6 +968,9 @@ It is on by default (`--no-generic` turns it off) and needs the OCR models
    box for print hid those signatures from the finder, which judged the line
    empty and left them visible: many of the 276 officers' lines judged
    empty in the first run over the 2013 Forms 34 were such signatures.
+   And nothing is printed on an officer's line between "Signature" and
+   "Date": a word OCR reads there was written, even one that reads as a
+   label (a signature read as "No", the agents' table's heading).
 
 The manifest records what was read (the page frame, each field, the notes)
 and the OCR engine with its models' hashes, so `rfpii verify --rerun` can

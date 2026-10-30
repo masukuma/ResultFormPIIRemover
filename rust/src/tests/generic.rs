@@ -433,3 +433,15 @@ fn printed_text_is_masked_where_its_characters_are() {
     let (mask, _) = printed(&page(vec![label])).unwrap();
     assert_eq!((*mask.at_2d::<u8>(1943, 330).unwrap(), *mask.at_2d::<u8>(1943, 520).unwrap()), (255, 0));
 }
+
+#[test]
+fn a_word_read_on_an_officers_signature_line_was_written() {
+    // Githunguri p140: the deputy's signature read as "No", the printed
+    // heading of the agents' table
+    let mut l = page(vec![at("Signature:", 287.0, 208.0, 407.0, 240.0), at("No", 491.0, 196.0, 637.0, 232.0), at("No.", 100.0, 448.0, 140.0, 475.0), at("Date:", 870.0, 207.0, 944.0, 237.0)]);
+    l.fields.push(Field { kind: "signature".into(), zones: vec![Zone::new("signature@403,222", [403.0, 196.5, 462.0, 44.2], "signature")], source: "declaration".into(), label: "'Signature' label".into(), label_box: (403.0, 205.0, 865.0, 239.0) });
+    let (mask, _) = printed(&l).unwrap();
+    let px = |x: i32, y: i32| *mask.at_2d::<u8>(y, x).unwrap();
+    assert_eq!(px(560, 214), 0, "the signature is no print");
+    assert_eq!((px(300, 224), px(120, 461), px(900, 222)), (255, 255, 255));
+}
