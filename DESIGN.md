@@ -940,7 +940,14 @@ It is on by default (`--no-generic` turns it off) and needs the OCR models
    officer. The printed label, in small letters, still does under a stamp.
 6. **Numbers written anywhere else.** An ID (7–9 digits that aren't a date,
    or digits after "ID") or a phone number written below the results gets the
-   same partial masking as in the table.
+   same partial masking as in the table. A label ("ID No. / Passport:",
+   "Tel.", "Mobile No.") names the field after it. "Mobile" heads a label
+   only at the start of a line or before "No." or a colon: it also ends the
+   names of mobile polling stations ("LOMUKE MOBILE (039)"), and the station
+   code after it was masked as a phone number on 37 pages of the 2013 run.
+   A field is no higher than a printed line, whatever box OCR drew: OCR boxes
+   a label with the ID written after it, and a field that high reached the
+   "Date:" on the line below and masked it.
 7. **Signatures outside any field**, typically an officer signing off under
    the comments ("name, ID, signature, date"). OCR tells writing from
    signatures: names, numbers and words are read, either confidently or the
@@ -975,7 +982,9 @@ It is on by default (`--no-generic` turns it off) and needs the OCR models
    empty in the first run over the 2013 Forms 34 were such signatures.
    And nothing is printed on an officer's line between "Signature" and
    "Date": a word OCR reads there was written, even one that reads as a
-   label (a signature read as "No", the agents' table's heading).
+   label (a signature read as "No", the agents' table's heading). 2013's
+   "ID No. / Passport:" is print as well: a signature's search reaches up
+   into it, and "assport" was masked as part of the signature.
 
 The manifest records what was read (the page frame, each field, the notes)
 and the OCR engine with its models' hashes, so `rfpii verify --rerun` can

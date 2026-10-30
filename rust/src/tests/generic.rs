@@ -90,6 +90,21 @@ fn printed_fill_is_recognised() {
     assert!(!x_fill("XAVIER"));
     assert!(has(&PRINTED_LINE, "Tel. Contact"));
     assert!(!has(&PRINTED_LINE, "Signature: Jutiq"));
+    // 2013's officer label, which a signature's search reaches from below
+    assert!(has(&PRINTED_LINE, "ID No. / Passport:") && has(&PRINTED_LINE, "ID No./ Passport:"));
+    assert!(!has(&PRINTED_LINE, "ID No. / Passport: 28' @rs0&n?"));
+}
+
+#[test]
+fn a_mobile_polling_station_is_no_phone_label() {
+    // Tiaty and Isiolo: the code after a mobile station's name was masked as
+    // a phone number
+    for t in ["LOMUKEMOBILE(039)", "KWOLOYOYMOBILE.(04O)", "KULA(MOBILE) (054)", "SITOT MOBILE (081)"] {
+        assert!(!has(&TEL_RE, t), "{}", t);
+    }
+    for t in ["Mobile No.", "MOBILE NO:", "Mobile:", "Mobile Number", "Tel/Mobile", "Tel. Contact"] {
+        assert!(has(&TEL_RE, t), "{}", t);
+    }
 }
 
 #[test]
@@ -283,6 +298,17 @@ fn a_label_of_several_words_is_read_to_its_end() {
         assert_eq!(ids.len(), 1, "{}", t);
         assert!(ids[0] > 480.0, "{}: the field starts after the whole label, not at {}", t, ids[0]);
     }
+}
+
+#[test]
+fn a_label_read_with_the_writing_after_it_reaches_no_further_than_print() {
+    // Baringo North_B p29: OCR boxed the ID with its label, 50 px high; a
+    // field that high reached the "Date:" below and masked it
+    let mut l = page(vec![at("ID No. / Passport: 28' @rs0&n?", 303.0, 1956.0, 737.0, 2006.0), at("Date:", 924.0, 2008.0, 1000.0, 2039.0)]);
+    labels(&mut l, &BTreeSet::new(), 0.0);
+    let z = &l.fields.iter().find(|f| f.kind == "id").unwrap().zones[0];
+    let reach = z.rect[1] + z.rect[3] + z.search.unwrap()[1];
+    assert!(reach < 2016.0, "reaches to y = {}, into 'Date:'", reach);
 }
 
 #[test]

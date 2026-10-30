@@ -61,7 +61,10 @@ fn re(p: &str) -> Regex {
 }
 
 pub(crate) static ID_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)passp[a-z]{0,4}|(?<![a-z])[I1l]\s?\.?\s?D\s*\.?\s*(?:/|no\b|no\.|num|number)|national\s*id"));
-pub(crate) static TEL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)(?<![a-z])tel(?![a-z])|telephone|contact|phone|mobile"));
+// "Mobile" heads a label ("Mobile No.:") but also ends polling stations'
+// names ("LOMUKE MOBILE (039)", read "LOMUKEMOBILE(039)"): there the code
+// after it is the station's
+pub(crate) static TEL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)(?<![a-z])tel(?![a-z])|telephone|contact|phone|^\W*mobile|mobile\s*(?:no\b|no\.|num|:)"));
 pub(crate) static SIG_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)signature|(?<![a-z])sign(?![a-z])"));
 static DATE_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)(?<!di)date"));
 pub(crate) static REFUSAL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)refus"));
@@ -75,7 +78,7 @@ static FREE_ID_RE: Lazy<Regex> = Lazy::new(|| re(r"(?<![\d/-])((?:\d\s?){6,8}\d)
 static ID_PREFIX_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)(?<![a-z])(?:[I1l|]\s?\.?\s?D|ID\s*no|ID\s*number)\s*\.?\s*[:.,;#-]?\s*(\S.{4,15})"));
 static FREE_PHONE_RE: Lazy<Regex> = Lazy::new(|| re(r"(?<!\d)((?:\+\s?254|0)\s?[17](?:\s?\d){8})(?!\d)"));
 static PRINTED_LINE: Lazy<Regex> = Lazy::new(|| {
-    re(r"(?i)^[\s.:,/()_-]*(?:no|name\s*of\s*candidate(?:\s*or\s*agent)?|or\s*agent|agent|id\s*/?\s*passport(?:\s*no)?|passport|party\s*name|independent(?:\s*candidate)?|candidate|tel\.?(?:\s*contact)?|contact|signature|date)[\s.:,/()_-]*$")
+    re(r"(?i)^[\s.:,/()_-]*(?:no|name\s*of\s*candidate(?:\s*or\s*agent)?|or\s*agent|agent|id\s*/?\s*passport(?:\s*no)?|i\.?\s*d\.?\s*no\.?\s*/?\s*passp[a-z]{0,4}|passport|party\s*name|independent(?:\s*candidate)?|candidate|tel\.?(?:\s*contact)?|contact|signature|date)[\s.:,/()_-]*$")
 });
 static FREE_LABEL: Lazy<Regex> = Lazy::new(|| {
     re(r"(?i)presiding\s*officer'?s?\s*comments?\s*:?|reasons?\s*for\s*refus[ae]l\s*to\s*sign(?:\s*\(?\s*if\s*any\s*\)?)?")
@@ -925,7 +928,10 @@ fn labels(l: &mut Layout, used: &BTreeSet<usize>, top: f64) {
                 continue;
             }
             let (_, x1) = ln.span(char_index(&ln.text, m.start()), char_index(&ln.text, end));
-            let h = ln.height();
+            // a line taller than print has the writing after the label in its
+            // box ("ID No. / Passport: 28' @rs0&n?"): a field that tall would
+            // reach the next line's "Date:"
+            let h = ln.height().min(TEXT_H);
             let end = next_label_x(l, &ln, x1);
             let fx0 = x1 + 0.15 * h;
             let fx1 = match end {
