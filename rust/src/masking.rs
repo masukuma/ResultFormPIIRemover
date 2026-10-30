@@ -1488,8 +1488,9 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
         let mut lab2 = Mat::default();
         let n = imgproc::connected_components_def(&util::from_bytes(ink.h as i32, ink.w as i32, &both)?, &mut lab2)? as usize;
         let lab2 = util::labels_vec(&lab2)?;
-        let (mut inside, mut total) = (vec![0usize; n], vec![0usize; n]);
+        let (mut inside, mut total, mut crossing) = (vec![0usize; n], vec![0usize; n], vec![false; n]);
         for (k, &l) in lab2.iter().enumerate() {
+            crossing[l as usize] |= br.d[k] > 0;
             if ink.d[k] > 0 {
                 total[l as usize] += 1;
                 let yy = (k / ink.w) as i64;
@@ -1500,7 +1501,7 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
         }
         for (k, &l) in lab2.iter().enumerate() {
             let l = l as usize;
-            if l > 0 && (inside[l] as f64) < 0.3 * (total[l].max(1)) as f64 {
+            if l > 0 && !on_line(inside[l], total[l], crossing[l]) {
                 ink.d[k] = 0;
             }
         }
@@ -1515,10 +1516,12 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
     let (end, sh) = (cs.bands.last().unwrap().1, ink.h as i64);
     blobs.retain(|b| !(b.y1 >= sh - 1 && b.y0 as f64 > end + 0.5 * (sh as f64 - end)));
     if o.centered {
+        let br = bridge.as_ref().unwrap();
         let share = |b: &SigBlob| {
-            let (mut inside, mut total) = (0usize, 0usize);
+            let (mut inside, mut total, mut crossing) = (0usize, 0usize, false);
             for yy in b.y0..b.y1 {
                 for xx in b.x0..b.x1 {
+                    crossing |= br.at(xx as usize, yy as usize) > 0;
                     if ink.at(xx as usize, yy as usize) > 0 {
                         total += 1;
                         if yy >= lo && yy < hi {
@@ -1527,9 +1530,9 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
                     }
                 }
             }
-            inside as f64 / total.max(1) as f64
+            on_line(inside, total, crossing)
         };
-        blobs.retain(|b| share(b) >= 0.3 && !(b.y0 <= 1 && (b.y1 as f64) < (lo + hi) as f64 / 2.0));
+        blobs.retain(|b| share(b) && !(b.y0 <= 1 && (b.y1 as f64) < (lo + hi) as f64 / 2.0));
     } else if cs.cells.len() <= 2 {
         // signature lines, not a table's rows: writing reaching in from the
         // top of the search and stopping above the first line's middle is
@@ -1538,6 +1541,14 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
         blobs.retain(|b| !(b.y0 <= 1 && (b.y1 as f64) < mid));
     }
     Ok((blobs, cs.origin, cs.bands, cs.cells, ink))
+}
+
+/// Writing is a line's when most of it is on the line: 30% of its ink
+/// (strokes mostly on the next line belong to it), or, crossing the line,
+/// a signature's worth of it, however far the rest hangs below: writing
+/// from the next line doesn't cross this one.
+fn on_line(inside: usize, total: usize, crossing: bool) -> bool {
+    inside as f64 >= 0.3 * total.max(1) as f64 || (crossing && inside >= 3 * SIG_MIN_INK)
 }
 
 /// Mask each signature by a band through its middle (whole, down a table

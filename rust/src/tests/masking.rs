@@ -355,6 +355,38 @@ fn the_date_below_an_underlined_signature_stays_visible() {
     }
 }
 
+#[test]
+fn a_signature_hanging_below_its_line_is_still_its_lines() {
+    // Kiambaa p29: a short scrawl on the line and loops hanging well below
+    // it, most of the ink under the line. Writing from the next line doesn't
+    // cross this one: crossing it, with a signature's worth of ink above,
+    // it is this line's signature.
+    let mut img = gray(320, 900, 235);
+    line(&mut img, (60, 200), (780, 200), colour(60.0), 2);
+    let above: Vec<(i32, i32)> = linspace(150.0, 260.0, 60).iter().map(|&x| (x as i32, (188.0 + 7.0 * ((x - 150.0) / 4.0).sin()) as i32)).collect();
+    polyline(&mut img, &above, colour(20.0), 2);
+    for x in (160..340).step_by(30) {
+        polyline(&mut img, &[(x, 190), (x + 6, 244), (x + 14, 246), (x + 18, 192)], colour(20.0), 2);
+    }
+    polyline(&mut img, &[(150, 236), (250, 240), (360, 234)], colour(20.0), 2); // a flourish under it all
+    let field = [Zone { search: Some([0.0, 10.0]), ..zone("ro_signature", [100, 150, 600, 55], "signature") }];
+    let gi = crate::testutil::img(&img);
+    let own: Vec<bool> = (0..320 * 900).map(|i| { let (x, y) = (i % 900, i / 900); gi.at(x, y) < 120 && (140..370).contains(&x) && y > 150 && !(198..203).contains(&y) }).collect();
+    let mut canvas = gray(320, 900, 255);
+    let rep = sigs(&mut canvas, &img, &field, &centered());
+    assert_eq!(modes(&rep), ["signature"]);
+    assert!(covered(&canvas, &own) > 0.3, "{}", covered(&canvas, &own));
+    assert_eq!(verify_sig(&img, &apply(&canvas, &img), &field, &centered()), "");
+    // the same loops alone under the line, crossing nothing: the next line's
+    let mut img = gray(320, 900, 235);
+    line(&mut img, (60, 200), (780, 200), colour(60.0), 2);
+    for x in (160..340).step_by(30) {
+        polyline(&mut img, &[(x, 208), (x + 6, 244), (x + 14, 246), (x + 18, 208)], colour(20.0), 2);
+    }
+    let mut canvas = gray(320, 900, 255);
+    assert_eq!(modes(&sigs(&mut canvas, &img, &field, &centered())), ["empty"]);
+}
+
 /// A signature on its line, 150-400 px; `draw` draws the line. Returns the
 /// image, the signature's own ink and the field.
 fn underlined_signature(draw: impl Fn(&mut Mat)) -> (Mat, Vec<bool>, Vec<Zone>) {

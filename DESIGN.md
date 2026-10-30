@@ -254,7 +254,12 @@ writing on their own line. The date is written on the next line, often so
 close that the strokes of both were joined into one "signature", and the
 date was masked with it:
 - a group of strokes counts only if at least 30% of its ink is on the
-  field's line (tails and flourishes reach far above or below);
+  field's line (tails and flourishes reach far above or below), or if it
+  crosses the line with a signature's worth of ink (120 px) above it,
+  however far the rest hangs below: writing from the next line doesn't
+  cross this one. Some 2013 officers wrote a short scrawl on the line and
+  loops well below it, most of the ink under the line, and their
+  signatures were left visible;
 - strokes lying mostly on the line below or above (the date, the ID) are
   left out even where they run close to the signature;
 - the field's printed underline joins the strokes crossing it (ink just
