@@ -209,13 +209,27 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
         return Ok(r);
     }
 
+    // one page of the source published on its own: it is compared with that
+    // page of the original
+    let one_page = m["source"]["page"].as_u64();
+    let label = |n: u64| one_page.unwrap_or(n);
     let mut src_pages = None;
     if let Some(orig) = a.original {
         let data = std::fs::read(orig)?;
         let want = m["source"]["sha256"].as_str().unwrap_or("");
         r.add(proof::sha256(&data) == want, format!("original matches the manifest's source SHA-256 {}...", &want[..want.len().min(16)]));
-        let sp = io::source_pages(&orig.to_string_lossy(), Some(&data))?;
-        r.add(sp.len() == mpages.len(), "original has the same number of pages");
+        let sp = match one_page {
+            None => {
+                let sp = io::source_pages(&orig.to_string_lossy(), Some(&data))?;
+                r.add(sp.len() == mpages.len(), "original has the same number of pages");
+                sp
+            }
+            Some(k) => {
+                let (p, n) = io::source_page(&orig.to_string_lossy(), &data, k as usize)?;
+                r.add(Some(n as u64) == m["source"]["pages"].as_u64() && mpages.len() == 1, format!("original has {} pages, as recorded; this is page {}", n, k));
+                vec![p]
+            }
+        };
         // shown as transmitted: turned or mirrored the same way (EXIF
         // orientation, PDF placement and rotation), on the same page
         let out = io::source_pages("redacted.pdf", Some(&pdf))?;
@@ -223,7 +237,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
             let ((size_o, place_o, rot_o), (size_p, place_p, rot_p)) = (io::shown(o), io::shown(p));
             let near = |x: &[f64], y: &[f64]| x.iter().zip(y).all(|(a, b)| (a - b).abs() < 0.01);
             let same = rot_o == rot_p && near(&[size_o.0, size_o.1], &[size_p.0, size_p.1]) && near(&place_o, &place_p);
-            r.add(same, format!("page {}: shown as the original is (page size, placement and rotation)", k + 1));
+            r.add(same, format!("page {}: shown as the original is (page size, placement and rotation)", label(k as u64 + 1)));
         }
         src_pages = Some(sp);
     } else {
@@ -234,10 +248,11 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
 
     for (pm, (img_bytes, _)) in mpages.iter().zip(&images) {
         let n = pm["index"].as_u64().unwrap_or(0);
+        let shown = label(n);
         let declared = proof::unpack(&pm["blocks"])?;
         let is_jpeg = pm["proof"].as_str() == Some("jpeg-dct");
         let kind = if is_jpeg { "jpeg" } else { "pixels" };
-        r.add(proof::image_digest(kind, img_bytes)? == pm["output_image_sha256"].as_str().unwrap_or(""), format!("page {}: image matches the manifest", n));
+        r.add(proof::image_digest(kind, img_bytes)? == pm["output_image_sha256"].as_str().unwrap_or(""), format!("page {}: image matches the manifest", shown));
         let red_px = io::decode_bytes(img_bytes)?;
         // blacked blocks must not touch results regions
         let protected = pm["protected"].as_array().cloned().unwrap_or_default();
@@ -251,14 +266,14 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
         let what = format!("{} protected results region(s) and {} stamp(s)", protected.len() - n_stamps, n_stamps);
         r.add(
             hits == 0,
-            if hits == 0 { format!("page {}: no blacked block touches the {}", n, what) } else { format!("page {}: {} blacked blocks inside protected results regions or stamps", n, hits) },
+            if hits == 0 { format!("page {}: no blacked block touches the {}", shown, what) } else { format!("page {}: {} blacked blocks inside protected results regions or stamps", shown, hits) },
         );
         let Some(sps) = &src_pages else {
             let mask = util::bytes(&proof::to_pixels(&declared, red_px.rows(), red_px.cols())?)?;
             let px = util::bytes(&red_px)?;
             let ch = red_px.channels() as usize;
             let dark = mask.iter().enumerate().filter(|&(_, &v)| v != 0).all(|(i, _)| px[i * ch..(i + 1) * ch].iter().all(|&c| c <= 8));
-            r.add(dark, format!("page {}: all {} listed blocks are black", n, declared.count()));
+            r.add(dark, format!("page {}: all {} listed blocks are black", shown, declared.count()));
             if let Some(d) = a.overlay_dir {
                 save(d, a.redacted, n, &overlay(&red_px, &declared, &protected)?)?;
             }
@@ -266,13 +281,13 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
         };
         let Some(sp) = sps.get(n as usize - 1) else { continue };
         let (cmp, what) = if is_jpeg {
-            if !r.add(sp.kind == "jpeg", format!("page {}: original page is a JPEG, as recorded", n)) {
+            if !r.add(sp.kind == "jpeg", format!("page {}: original page is a JPEG, as recorded", shown)) {
                 continue;
             }
             (proof::compare_jpeg(sp.data.as_ref().unwrap(), img_bytes, Some(&declared))?, "DCT coefficients")
         } else {
             if pm["source_ref"].as_str().unwrap_or("").contains("rendered") {
-                r.notes.push(format!("page {}: original was rendered ({}); comparison depends on the same renderer version", n, pm["source_ref"].as_str().unwrap_or("")));
+                r.notes.push(format!("page {}: original was rendered ({}); comparison depends on the same renderer version", shown, pm["source_ref"].as_str().unwrap_or("")));
             }
             (proof::compare_pixels(&sp.pixels, &red_px, Some(&declared))?, "pixels")
         };
@@ -281,14 +296,14 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
             if cmp.ok {
                 format!(
                     "page {}: {} of {} blocks identical to the original ({}); {} changed, all listed and solid black",
-                    n,
+                    shown,
                     cmp.identical_blocks,
                     cmp.total_blocks,
                     what,
                     cmp.changed_blocks.count()
                 )
             } else {
-                format!("page {}: {}", n, cmp.problems.join("; "))
+                format!("page {}: {}", shown, cmp.problems.join("; "))
             },
         );
         // Results regions: same decoded pixels in both files, inside each
@@ -304,7 +319,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
         }
         r.add(
             same,
-            format!("page {}: results regions and stamps decode to identical pixels in original and redacted{}", n, if is_jpeg { " (luminance)" } else { "" }),
+            format!("page {}: results regions and stamps decode to identical pixels in original and redacted{}", shown, if is_jpeg { " (luminance)" } else { "" }),
         );
         if let Some(d) = a.overlay_dir {
             save(d, a.redacted, n, &overlay(&sp.pixels, &cmp.changed_blocks, &protected)?)?;
@@ -323,7 +338,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
             templates: tdir.to_string_lossy().into_owned(),
             out: work.join("out").to_string_lossy().into_owned(),
             review: work.join("review").to_string_lossy().into_owned(),
-            align: AlignSettings::default(),
+            align: AlignSettings::from_json(&st["align"]),
             mask: ms,
             strict_structure: st["strict_structure"].as_bool().unwrap_or(false),
             generic: st["generic"].as_bool().unwrap_or(false),
@@ -345,7 +360,8 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
         let fp_ok = m["templates"].as_object().map(|o| o.iter().all(|(k, v)| templates.iter().any(|t| &t.name == k && Some(t.fingerprint.as_str()) == v.as_str()))).unwrap_or(true);
         r.add(fp_ok, "templates are the versions recorded");
         let seed = u64::from_str_radix(m["seed"].as_str().unwrap_or("0"), 16)?;
-        let o = process_document(&orig.to_string_lossy(), m["source"]["path"].as_str().unwrap_or(""), &templates, &cfg, Some(seed), None, Some(&m));
+        let page = m["source"]["page"].as_u64().map(|k| k as usize);
+        let o = process_document(&orig.to_string_lossy(), m["source"]["path"].as_str().unwrap_or(""), page, &templates, &cfg, Some(seed), None, Some(&m));
         let _ = std::fs::remove_dir_all(&work);
         let o = o?;
         let digests = |pages: &Value| -> Vec<String> { pages.as_array().map(|a| a.iter().map(|p| p["output_image_sha256"].as_str().unwrap_or("").to_string()).collect()).unwrap_or_default() };

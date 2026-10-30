@@ -103,6 +103,15 @@ pub fn utc_now() -> String {
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}+00:00", y, m, d, rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
+/// Where a document's output goes, under the output folder: its source's
+/// path with `ext`; for one page of a source, with ".p012" before it.
+pub fn output_rel(rel: &str, page: Option<usize>, ext: &str) -> PathBuf {
+    match page {
+        None => with_suffix(rel, ext),
+        Some(k) => with_suffix(rel, &format!(".p{:03}{}", k, ext)),
+    }
+}
+
 /// `Path(rel).with_suffix(ext)`.
 pub fn with_suffix(rel: &str, ext: &str) -> PathBuf {
     let p = Path::new(rel);
@@ -171,17 +180,30 @@ fn on_stamps(f: &Found, protected: &[Value]) -> f64 {
     inside as f64 / 100.0
 }
 
+/// `page`: only that page of the source (from 1) is the document (a
+/// scanned batch of many forms, each page published on its own).
+///
 /// `replay`: the manifest of an earlier run of this document, whose review
 /// findings and columns hidden whole are applied again instead of asking
 /// any model (a re-run must give the same output).
-pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Config, seed: Option<u64>, data: Option<Vec<u8>>, replay: Option<&Value>) -> Result<Outcome> {
+#[allow(clippy::too_many_arguments)]
+pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[Template], cfg: &Config, seed: Option<u64>, data: Option<Vec<u8>>, replay: Option<&Value>) -> Result<Outcome> {
     let data = match data {
         Some(d) => d,
         None => io::read_bytes(src)?,
     };
     let source_sha = proof::sha256(&data);
     let mut report = json!({"file": src, "ok": false, "sha256": source_sha});
-    let pages = io::source_pages(src, Some(&data))?;
+    let (pages, of) = match page {
+        None => (io::source_pages(src, Some(&data))?, None),
+        Some(k) => {
+            report["page"] = json!(k);
+            let (p, n) = io::source_page(src, &data, k)?;
+            (vec![p], Some(n))
+        }
+    };
+    // pages as the source numbers them
+    let number = |i: usize| page.unwrap_or(i + 1);
     if pages.is_empty() {
         report["reason"] = json!("no pages");
         return Ok(Outcome { ok: false, report, manifest: None, pdf: None, redacted_pages: vec![], source_pages: vec![] });
@@ -288,7 +310,7 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
         }
     }
 
-    let mut problems: Vec<String> = doc.iter().enumerate().filter(|(_, p)| !p.ok).map(|(i, p)| format!("page {}: {}", i + 1, p.reason)).collect();
+    let mut problems: Vec<String> = doc.iter().enumerate().filter(|(_, p)| !p.ok).map(|(i, p)| format!("page {}: {}", number(i), p.reason)).collect();
     let mismatch = kiems::check(name.as_ref(), &qr);
     if !mismatch.is_empty() {
         problems.push(mismatch);
@@ -324,7 +346,7 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
             (red, cmp)
         };
         if !cmp.ok {
-            report["reason"] = json!(format!("page {}: self-check failed: {}", i + 1, cmp.problems.join("; ")));
+            report["reason"] = json!(format!("page {}: self-check failed: {}", number(i), cmp.problems.join("; ")));
             return Ok(Outcome { ok: false, report, manifest: None, pdf: None, redacted_pages: vec![], source_pages: vec![] });
         }
         let (h, w) = (sp.pixels.rows(), sp.pixels.cols());
@@ -361,7 +383,7 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
         mpages.push(mp);
         reds.push(red);
     }
-    let out_rel = with_suffix(rel, ".pdf");
+    let out_rel = output_rel(rel, page, ".pdf");
     let out_path = Path::new(&cfg.out).join(&out_rel);
     if let Some(par) = out_path.parent() {
         std::fs::create_dir_all(par)?;
@@ -400,6 +422,11 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
     for (k, v) in meta.as_object().unwrap() {
         source[k] = v.clone();
     }
+    // one page of the source published on its own: which, of how many
+    if let (Some(k), Some(n)) = (page, of) {
+        source["page"] = json!(k);
+        source["pages"] = json!(n);
+    }
     let manifest = json!({
         "schema": SCHEMA,
         "tool": tool_info(),
@@ -408,7 +435,8 @@ pub fn process_document(src: &str, rel: &str, templates: &[Template], cfg: &Conf
         "output": {"file": out_rel.to_string_lossy(), "pdf_sha256": proof::sha256(&pdf)},
         "seed": format!("{:x}", seed),
         "settings": {"hide": cfg.mask.hide, "phone_tail": cfg.mask.phone_tail,
-                     "strict_structure": cfg.strict_structure, "generic": cfg.generic},
+                     "strict_structure": cfg.strict_structure, "generic": cfg.generic,
+                     "align": cfg.align.to_json()},
         "templates": tmap,
         "pages": mpages,
         "vlm_review": if reviews.is_empty() { Value::Null } else { Value::Array(reviews) },

@@ -22,7 +22,7 @@ use rfpii::align::{prepare, AlignSettings};
 use rfpii::io;
 use rfpii::manifest as mf;
 use rfpii::masking::MaskSettings;
-use rfpii::process::{process_document, utc_now, with_suffix, Config};
+use rfpii::process::{output_rel, process_document, utc_now, with_suffix, Config};
 use rfpii::pyjson;
 use rfpii::templates::{load_templates, Template};
 use rfpii::util;
@@ -57,12 +57,36 @@ enum Cmd {
     },
     /// Draft a template's zones from a reference image with a VLM
     Propose(ProposeArgs),
+    /// Learn each printing's layout from its forms and write it as a template
+    Learn(LearnArgs),
     /// Generate a sample template and synthetic scans
     Demo {
         directory: PathBuf,
         #[arg(long, default_value_t = 20)]
         count: u64,
     },
+}
+
+#[derive(Args)]
+struct LearnArgs {
+    /// Files, directories or zip archives of forms (KIEMS-named files are
+    /// grouped by printing; others are taken as one printing)
+    #[arg(required = true)]
+    inputs: Vec<String>,
+    /// Directory to write the learned templates to
+    #[arg(long)]
+    out: PathBuf,
+    /// The form of files whose name doesn't say (e.g. 34A)
+    #[arg(long)]
+    form: Option<String>,
+    /// Pages used per printing, at most
+    #[arg(long, default_value_t = 40)]
+    max_pages: usize,
+    /// Pages a printing needs to be learned
+    #[arg(long, default_value_t = 5)]
+    min_pages: usize,
+    #[arg(long, default_value_t = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))]
+    workers: usize,
 }
 
 #[derive(Args, Clone)]
@@ -114,8 +138,16 @@ struct RedactArgs {
     #[arg(required = true)]
     inputs: Vec<String>,
     /// Template dir, or dir of template dirs
+    #[arg(long, required_unless_present = "learn")]
+    templates: Option<String>,
+    /// Learn the layout of each printing among the inputs that has no
+    /// template in this directory yet, write it there, then redact with
+    /// those templates (and --templates, if given)
     #[arg(long)]
-    templates: String,
+    learn: Option<PathBuf>,
+    /// With --learn: the form of files whose name doesn't say (e.g. 34A)
+    #[arg(long, requires = "learn")]
+    form: Option<String>,
     /// Publishable output (redacted PDFs, manifests, ledger)
     #[arg(long)]
     out: String,
@@ -191,6 +223,11 @@ struct RedactArgs {
     vlm: VlmArgs,
     #[arg(long)]
     overwrite: bool,
+    /// Each page of a file of several pages is a document of its own,
+    /// published (as NAME.p012.pdf) or sent to review by itself: for scanned
+    /// batches of many forms. Its manifest names the whole file and the page.
+    #[arg(long)]
+    per_page: bool,
     /// Seed (hex) for every document instead of a fresh random one: for
     /// reproducing a run, never for publishing
     #[arg(long, hide = true)]
@@ -247,8 +284,8 @@ struct VerifyCli {
     trust: Vec<PathBuf>,
 }
 
-fn out_path(root: &str, rel: &str, ext: &str) -> Result<PathBuf> {
-    let p = Path::new(root).join(with_suffix(rel, ext));
+fn out_path(root: &str, rel: &str, page: Option<usize>, ext: &str) -> Result<PathBuf> {
+    let p = Path::new(root).join(output_rel(rel, page, ext));
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d)?;
     }
@@ -278,40 +315,80 @@ fn jobs(inputs: &[String]) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
+/// A document: a file (`rel` its path under the output folder), or one page
+/// of it with --per-page.
+#[derive(Clone)]
+struct Job {
+    src: String,
+    rel: String,
+    page: Option<usize>,
+}
+
+impl Job {
+    /// What the ledger and batch call it.
+    fn name(&self) -> String {
+        match self.page {
+            None => self.rel.clone(),
+            Some(_) => output_rel(&self.rel, self.page, "").to_string_lossy().into_owned(),
+        }
+    }
+}
+
+/// With `per_page`, a job for each page of the files of several pages.
+fn page_jobs(jobs: Vec<(String, String)>, per_page: bool) -> Result<Vec<Job>> {
+    let mut out = Vec::new();
+    for (src, rel) in jobs {
+        let n = if per_page { io::page_count(&src, &io::read_bytes(&src)?)? } else { 1 };
+        if n > 1 {
+            out.extend((1..=n).map(|k| Job { src: src.clone(), rel: rel.clone(), page: Some(k) }));
+        } else {
+            out.push(Job { src, rel, page: None });
+        }
+    }
+    Ok(out)
+}
+
 struct Done {
     report: Value,
     manifest: Option<Value>,
-    rel: String,
+    job: Job,
 }
 
-fn run_one(src: &str, rel: &str, templates: &[Template], cfg: &Config, vlm: Option<&Ollama>, seed: Option<u64>) -> Done {
+fn run_one(j: &Job, templates: &[Template], cfg: &Config, vlm: Option<&Ollama>, seed: Option<u64>) -> Done {
     let t0 = Instant::now();
     let ms = |t0: Instant| pyjson::round_n(t0.elapsed().as_secs_f64() * 1000.0, 1);
-    match process_document(src, rel, templates, cfg, seed, None, None) {
-        Err(e) => Done { report: json!({"file": src, "ok": false, "reason": format!("Error: {:#}", e), "ms": ms(t0)}), manifest: None, rel: rel.into() },
+    let (src, rel) = (j.src.as_str(), j.rel.as_str());
+    match process_document(src, rel, j.page, templates, cfg, seed, None, None) {
+        Err(e) => {
+            let mut report = json!({"file": src, "ok": false, "reason": format!("Error: {:#}", e), "ms": ms(t0)});
+            if let Some(k) = j.page {
+                report["page"] = json!(k);
+            }
+            Done { report, manifest: None, job: j.clone() }
+        }
         Ok(o) => {
             let mut report = o.report;
             if !o.ok {
-                if let Ok(p) = out_path(&cfg.review, rel, ".json") {
+                if let Ok(p) = out_path(&cfg.review, rel, j.page, ".json") {
                     let _ = std::fs::write(p, pyjson::pretty(&report, 2, false));
                 }
                 if let (Some(v), true, false) = (vlm, cfg.vlm_fallback, o.source_pages.is_empty()) {
                     // Unrecognised layout: let the VLM find the PII, apply the
                     // same masking, and park the result for a person to approve.
-                    match vlm_proposal(v, &o.source_pages, cfg, rel) {
+                    match vlm_proposal(v, &o.source_pages, cfg, rel, j.page) {
                         Ok(p) => report["vlm_proposal"] = json!(p.to_string_lossy()),
                         Err(e) => report["vlm_error"] = json!(format!("Error: {:#}", e)),
                     }
                 }
             }
             report["ms"] = json!(ms(t0));
-            Done { report, manifest: o.manifest, rel: rel.into() }
+            Done { report, manifest: o.manifest, job: j.clone() }
         }
     }
 }
 
 /// A VLM-redacted copy of a document, for review (never published).
-fn vlm_proposal(v: &Ollama, pages: &[io::SourcePage], cfg: &Config, rel: &str) -> Result<PathBuf> {
+fn vlm_proposal(v: &Ollama, pages: &[io::SourcePage], cfg: &Config, rel: &str, page: Option<usize>) -> Result<PathBuf> {
     let mut seed = [0u8; 8];
     mf::getrandom_fill(&mut seed)?;
     let mut rng = PyRandom::new(u64::from_le_bytes(seed) >> 1);
@@ -320,7 +397,7 @@ fn vlm_proposal(v: &Ollama, pages: &[io::SourcePage], cfg: &Config, rel: &str) -
         let boxes: Vec<(f64, f64, f64, f64, String)> = v.locate(&sp.pixels)?.into_iter().map(|b| (b.x0, b.y0, b.x1, b.y1, b.label)).collect();
         images.push(redact_boxes(&sp.pixels, &boxes, &cfg.mask, &mut rng, 10.0)?.image.unwrap());
     }
-    let out = out_path(&Path::new(&cfg.review).join("vlm").to_string_lossy(), rel, ".pdf")?;
+    let out = out_path(&Path::new(&cfg.review).join("vlm").to_string_lossy(), rel, page, ".pdf")?;
     io::write_pdf(&images, &out, 200.0, 85)?;
     Ok(out)
 }
@@ -355,7 +432,7 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
     mask.hide = a.hide;
     mask.phone_tail = a.phone_tail;
     let cfg = Config {
-        templates: a.templates.clone(),
+        templates: a.templates.clone().unwrap_or_default(),
         out: a.out.clone(),
         review: a.review.clone(),
         align,
@@ -387,13 +464,38 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
     std::fs::create_dir_all(&a.review)?;
     let ledger = a.ledger.clone().unwrap_or_else(|| Path::new(&a.out).join("ledger.jsonl"));
     let all = jobs(&a.inputs)?;
-    let mut todo = Vec::new();
-    for j in all {
-        if a.overwrite || !Path::new(&a.out).join(with_suffix(&j.1, ".pdf")).exists() {
-            todo.push(j);
+    let todo: Vec<Job> = page_jobs(all.clone(), a.per_page)?
+        .into_iter()
+        .filter(|j| a.overwrite || !Path::new(&a.out).join(output_rel(&j.rel, j.page, ".pdf")).exists())
+        .collect();
+    let mut templates = match &a.templates {
+        Some(t) => load_templates(Path::new(t))?,
+        None => Vec::new(),
+    };
+    if let Some(dir) = &a.learn {
+        if !rfpii::ocr::available() {
+            anyhow::bail!("--learn needs OCR: {}", rfpii::ocr::check().err().map(|e| e.to_string()).unwrap_or_default());
+        }
+        let sources: Vec<String> = all.iter().map(|j| j.0.clone()).collect();
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(a.workers.max(1)).build()?;
+        let opts = rfpii::learn::LearnOptions::default();
+        let results = match pool.install(|| rfpii::learn::learn_all(&sources, a.form.as_deref(), dir, &opts, true)) {
+            Ok(r) => r,
+            Err(e) => {
+                println!("nothing to learn: {}", e);
+                Vec::new()
+            }
+        };
+        report_learned(&results, dir)?;
+        if dir.exists() {
+            if let Ok(l) = load_templates(dir) {
+                templates.extend(l);
+            }
         }
     }
-    let mut templates = load_templates(Path::new(&cfg.templates))?;
+    if templates.is_empty() {
+        anyhow::bail!("no templates: none given, and none could be learned");
+    }
     for t in templates.iter_mut() {
         prepare(t, &cfg.align)?;
     }
@@ -406,7 +508,7 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
     let (mut n_ok, mut batch) = (0usize, Vec::new());
     let mut log = std::fs::OpenOptions::new().create(true).append(true).open(Path::new(&a.review).join("report.jsonl"))?;
     for chunk in todo.chunks(4 * a.workers.max(1)) {
-        let done: Vec<Done> = pool.install(|| chunk.par_iter().map(|(src, rel)| run_one(src, rel, &templates, &cfg, vlm.as_ref(), seed)).collect());
+        let done: Vec<Done> = pool.install(|| chunk.par_iter().map(|j| run_one(j, &templates, &cfg, vlm.as_ref(), seed)).collect());
         for d in done {
             let r = &d.report;
             if r["ok"].as_bool() == Some(true) {
@@ -415,15 +517,17 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
                     Some(k) => mf::sign(&m, k),
                     None => m,
                 };
-                std::fs::write(out_path(&a.out, &d.rel, ".manifest.json")?, pyjson::pretty(&m, 1, true))?;
+                std::fs::write(out_path(&a.out, &d.job.rel, d.job.page, ".manifest.json")?, pyjson::pretty(&m, 1, true))?;
                 let h = mf::digest(&m);
-                mf::ledger_append(&ledger, &h, m["source"]["sha256"].as_str().unwrap_or(""), m["output"]["pdf_sha256"].as_str().unwrap_or(""), &d.rel)?;
-                batch.push(json!({"name": d.rel, "manifest_sha256": h}));
+                let name = d.job.name();
+                mf::ledger_append(&ledger, &h, m["source"]["sha256"].as_str().unwrap_or(""), m["output"]["pdf_sha256"].as_str().unwrap_or(""), &name)?;
+                batch.push(json!({"name": name, "manifest_sha256": h}));
                 n_ok += 1;
             }
             writeln!(log, "{}", pyjson::dumps(r))?;
             if r["ok"].as_bool() != Some(true) {
-                eprintln!("REVIEW  {}: {}", r["file"].as_str().unwrap_or(""), r.get("reason").and_then(|v| v.as_str()).unwrap_or(""));
+                let at = d.job.page.map(|k| format!(" (page {} alone)", k)).unwrap_or_default();
+                eprintln!("REVIEW  {}{}: {}", r["file"].as_str().unwrap_or(""), at, r.get("reason").and_then(|v| v.as_str()).unwrap_or(""));
             }
         }
     }
@@ -679,6 +783,46 @@ fn cmd_propose(a: ProposeArgs) -> Result<i32> {
     Ok(0)
 }
 
+fn cmd_learn(a: LearnArgs) -> Result<i32> {
+    if !rfpii::ocr::available() {
+        anyhow::bail!("learning needs OCR: {}", rfpii::ocr::check().err().map(|e| e.to_string()).unwrap_or_default());
+    }
+    let sources = io::list_inputs(&a.inputs)?;
+    let opts = rfpii::learn::LearnOptions { max_pages: a.max_pages, min_pages: a.min_pages, ..Default::default() };
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(a.workers.max(1)).build()?;
+    let results = pool.install(|| rfpii::learn::learn_all(&sources, a.form.as_deref(), &a.out, &opts, false))?;
+    let learned = report_learned(&results, &a.out)?;
+    Ok(if learned == results.len() { 0 } else { 2 })
+}
+
+/// Print what was learned and append it to `<out>/learn_report.jsonl`;
+/// returns how many printings were learned.
+fn report_learned(results: &[Result<rfpii::learn::Learned>], out: &Path) -> Result<usize> {
+    std::fs::create_dir_all(out)?;
+    let mut report = std::fs::OpenOptions::new().create(true).append(true).open(out.join("learn_report.jsonl"))?;
+    let mut learned = 0;
+    for r in results {
+        match r {
+            Ok(l) => {
+                learned += 1;
+                let used = l.record["pages_used"].as_array().map(|v| v.len()).unwrap_or(0);
+                let fields = l.record["fields"].as_array().map(|v| v.len()).unwrap_or(0);
+                println!("LEARNED {}: {} pages, {} fields -> {}", l.name, used, fields, l.dir.display());
+                for n in l.record["notes"].as_array().into_iter().flatten() {
+                    println!("  note: {}", n.as_str().unwrap_or(""));
+                }
+                writeln!(report, "{}", serde_json::to_string(&l.record)?)?;
+            }
+            Err(e) => {
+                println!("NOT LEARNED {}", e);
+                writeln!(report, "{}", serde_json::json!({"error": e.to_string()}))?;
+            }
+        }
+    }
+    println!("{}/{} printing(s) learned", learned, results.len());
+    Ok(learned)
+}
+
 fn cmd_demo(dir: &Path, count: u64) -> Result<i32> {
     use rfpii::synthetic;
     synthetic::write_template(&dir.join("templates").join("sample_rs1"))?;
@@ -709,6 +853,7 @@ fn main() {
         Cmd::Certgen(a) => cmd_certgen(a),
         Cmd::Preview { template, output } => cmd_preview(&template, &output),
         Cmd::Propose(a) => cmd_propose(a),
+        Cmd::Learn(a) => cmd_learn(a),
         Cmd::Demo { directory, count } => cmd_demo(&directory, count),
     };
     match r {

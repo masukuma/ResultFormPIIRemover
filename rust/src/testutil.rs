@@ -160,6 +160,7 @@ pub fn bare_template(name: &str, form: &str, once: bool, priority: i64) -> crate
         free_text: vec![],
         text_h: None,
         review_area: None,
+        learned: false,
         regions: vec![],
         mask: Mat::default(),
         keypoints: vec![],

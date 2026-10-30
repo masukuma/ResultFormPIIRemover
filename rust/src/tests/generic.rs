@@ -154,6 +154,10 @@ fn results_end_only_at_the_declaration() {
         ("Declaration", true),
         ("We, the undersigned, being present when the results of the count were announced", true),
         ("COLLATION OF PRESIDENTIAL ELECTION RESULTS AT THE CONSTITUENCY TALLYING CENTRE", false),
+        // 2013's Form 34: the title, read with and without its spaces, then the section
+        ("DECLARATION OF PRESIDENTIAL ELECTION RESULTS AT A POLLING STATION", false),
+        ("DECLARATIONOFPRESIDENTIALELECTIONRESULTSATAPOLLINGSTATION", false),
+        ("8. Declaration", true),
         ("Total valid votes cast", false),
     ] {
         assert_eq!(has(&DECL_RE, t), found, "{}", t);
@@ -233,4 +237,142 @@ fn in_comments_a_signature_needs_a_joined_stroke() {
     assert!(strict.iter().all(|s| s.1 < 400.0), "{:?}", strict); // the digits are left alone
     assert!(strict.iter().any(|s| s.0 < 210.0 && s.1 > 320.0), "{:?}", strict); // the scribble
     assert_eq!(strict.len(), 2, "{:?}", strict); // and the piece above it, too short alone
+}
+
+#[test]
+fn a_letter_read_doubtfully_off_a_name_is_left_to_the_signature_beside_it() {
+    // "OMAR", then the signature's first loop read as a "U"
+    let mut l = comments_area();
+    l.lines.push(OLine::new([[40.0, 90.0], [250.0, 90.0], [250.0, 180.0], [40.0, 180.0]], "OMARU".into(), 0.8, (0..5).map(|i| (i as f64 + 0.5) / 5.0).collect(), vec![0.95, 0.9, 0.95, 0.95, 0.25]));
+    free_signatures(&mut l, 0.0, &[0, 1], true).unwrap();
+    let found = signature_spans(&l);
+    assert!(found.iter().any(|s| s.0 < 225.0 && s.1 > 320.0), "the whole scribble, from where the name ends: {:?}", found);
+}
+
+/// Printed text at (x0, y0)-(x1, y1), its characters evenly spaced.
+fn at(t: &str, x0: f32, y0: f32, x1: f32, y1: f32) -> OLine {
+    let n = t.chars().count();
+    OLine::new([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], t.into(), 0.95, (0..n).map(|i| (i as f64 + 0.5) / n as f64).collect(), vec![0.95; n])
+}
+
+fn page(lines: Vec<OLine>) -> Layout {
+    let g = gray(2100, 1500, 255);
+    Layout {
+        frame: Frame { k: 0, skew: 0.0, scale: 1.0, m: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], size: (1500, 2100), text_h: TEXT_H },
+        image: crate::testutil::to_bgr(&g),
+        gray: g,
+        lines,
+        fields: vec![],
+        protected: vec![],
+        stamps: vec![],
+        problems: vec![],
+        notes: vec![],
+        officer_names: BTreeSet::new(),
+    }
+}
+
+#[test]
+fn a_label_of_several_words_is_read_to_its_end() {
+    // "ID No. / Passport:", and the same with "Passport" misread
+    for t in ["ID No. / Passport:", "ID No. / Passpdrt:"] {
+        // the page's print runs on to the right, on the line above
+        let mut l = page(vec![at(t, 300.0, 1955.0, 510.0, 1990.0), at("Polling Station,", 1135.0, 1795.0, 1313.0, 1827.0)]);
+        labels(&mut l, &BTreeSet::new(), 0.0);
+        assert!(l.problems.is_empty(), "{}: {:?}", t, l.problems);
+        let ids: Vec<f64> = l.fields.iter().filter(|f| f.kind == "id").map(|f| f.zones[0].rect[0]).collect();
+        assert_eq!(ids.len(), 1, "{}", t);
+        assert!(ids[0] > 480.0, "{}: the field starts after the whole label, not at {}", t, ids[0]);
+    }
+}
+
+#[test]
+fn an_officers_stacked_lines_are_all_the_declarations() {
+    // 2013's Form 34: the role, then name, ID, signature and date one under another
+    let lines = vec![
+        at("Presiding Officer:", 303.0, 1886.0, 506.0, 1912.0),
+        at("Name:", 305.0, 1924.0, 397.0, 1948.0),
+        at("ID No. / Passport:", 302.0, 1955.0, 512.0, 1992.0),
+        at("Signature:", 303.0, 1998.0, 434.0, 2028.0),
+        at("Date:", 909.0, 1982.0, 1085.0, 2033.0),
+    ];
+    // nine lines below the 'Declaration' label falls short of the signature
+    let end = officer_lines_end(&lines, 1680.0 + 9.0 * TEXT_H);
+    assert!(end > 2028.0, "the signature line is in: ends at {}", end);
+    // and the run stops at a gap
+    let mut far = lines.clone();
+    far.push(at("Date:", 300.0, 2300.0, 400.0, 2330.0));
+    assert!(officer_lines_end(&far, 1680.0 + 9.0 * TEXT_H) < 2100.0);
+}
+
+#[test]
+fn a_page_opening_with_an_officers_lines_goes_on_with_the_declaration() {
+    let top = at("Deputy Presiding Officer:", 283.0, 89.0, 573.0, 117.0);
+    assert!(goes_on_with_declaration(&[top.clone()], 2040.0));
+    // an officer named only lower down (a declaration on the page) doesn't
+    assert!(!goes_on_with_declaration(&[at("Presiding Officer:", 303.0, 1886.0, 506.0, 1912.0)], 2125.0));
+    // nor a stamp's lettering
+    assert!(!goes_on_with_declaration(&[at("OFFICER", 283.0, 89.0, 400.0, 117.0)], 2040.0));
+    // nor a blurred front page, its 'Declaration' and counts misread: the title
+    // is no officer, and its results are still words of results
+    let front = [
+        at("PRESIDENTIALELECTION RESULTSAT THEPOLLINGSTATION", 463.0, 270.0, 1300.0, 295.0),
+        at("Totan Nunb Ke ted BallotPapes", 314.0, 1025.0, 740.0, 1050.0),
+        at("Declaatloa", 281.0, 1197.0, 420.0, 1222.0),
+    ];
+    assert!(!goes_on_with_declaration(&front, 2411.0));
+    let mut back = vec![top, at("Totan Nunb Ke ted BallotPapes", 314.0, 1025.0, 740.0, 1050.0)];
+    assert!(!goes_on_with_declaration(&back, 2040.0));
+    // comments at the foot of a back page may speak of votes
+    back[1] = at("There were no disputed votes", 230.0, 1700.0, 900.0, 1730.0);
+    assert!(goes_on_with_declaration(&back, 2040.0));
+}
+
+/// The 2013 Form 34's agents' table, its heading row at y = 465: number,
+/// name, signature, reasons for refusal; a scanner's streak through the
+/// last heading and the page's edge as vertical "rules".
+fn agents_2013(reasons: &str) -> (Layout, Vec<Line>, Vec<Line>) {
+    let mut lines = vec![at("Name", 217.0, 451.0, 293.0, 479.0), at("Signature", 581.0, 452.0, 692.0, 479.0)];
+    if !reasons.is_empty() {
+        lines.push(at(reasons, 855.0, 450.0, 1153.0, 478.0));
+    }
+    lines.push(at("1.", 135.0, 490.0, 160.0, 515.0));
+    let v = |x: f64, lo: f64, hi: f64| Line { pos: x, slope: 0.0, lo, hi };
+    let hs = vec![Line { pos: 442.0, slope: 0.0, lo: 126.0, hi: 1317.0 }, Line { pos: 484.0, slope: 0.0, lo: 126.0, hi: 1317.0 }];
+    let vs = vec![v(1.0, 0.0, 2000.0), v(126.0, 440.0, 1600.0), v(209.0, 440.0, 1600.0), v(571.0, 440.0, 1600.0), v(839.0, 440.0, 1600.0), v(1105.0, 300.0, 1700.0), v(1312.0, 440.0, 1600.0)];
+    (page(lines), hs, vs)
+}
+
+#[test]
+fn a_table_without_id_or_phone_columns_has_every_other_heading_read() {
+    let sig: BTreeSet<String> = ["signature".to_string()].into();
+    for reasons in ["Reasons for refusal to sign", "Reasonsforrefusaltoign"] {
+        let (l, hs, vs) = agents_2013(reasons);
+        assert!(headings_read(&l, &hs, &vs, 465.0, &sig), "{}", reasons);
+    }
+    // a column whose heading wasn't read may be the ID's or the phone's
+    let (l, hs, vs) = agents_2013("");
+    assert!(!headings_read(&l, &hs, &vs, 465.0, &sig));
+    // a phone column's heading read, but no phone column found
+    let (l, hs, vs) = agents_2013("Tel. Contact");
+    assert!(!headings_read(&l, &hs, &vs, 465.0, &sig));
+    // a heading of unknown words
+    let (l, hs, vs) = agents_2013("Tei. Contaci");
+    assert!(!headings_read(&l, &hs, &vs, 465.0, &sig));
+    // a stamp over the headings may hide one (and the rule beside it)
+    let (mut l, hs, vs) = agents_2013("Reasons for refusal to sign");
+    l.stamps.push(crate::stamps::Stamp { cx: 900.0, cy: 480.0, r: 70.0, coverage: 0.8, how: "ring".into() });
+    assert!(!headings_read(&l, &hs, &vs, 465.0, &sig));
+    // a party column: the agents' table since 2017, which has ID and phone columns
+    let (l, hs, vs) = agents_2013("Party Name/Independent Candidate");
+    assert!(!headings_read(&l, &hs, &vs, 465.0, &sig));
+}
+
+#[test]
+fn an_agents_section_is_found_below_the_results() {
+    let lines = [at("Agents or Candidates (if present)", 280.0, 1360.0, 700.0, 1385.0)];
+    assert!(agents_section(&lines, 1200.0));
+    // 2013's back page heads it the other way round
+    assert!(agents_section(&[at("Candidates or Candidates' Agents", 177.0, 352.0, 558.0, 381.0)], 0.0));
+    // above the declaration it is someone else's
+    assert!(!agents_section(&lines, 1500.0));
 }

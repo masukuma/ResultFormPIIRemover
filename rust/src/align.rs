@@ -45,6 +45,45 @@ impl Default for AlignSettings {
     }
 }
 
+impl AlignSettings {
+    /// As a manifest records them: all of them, since any can change which
+    /// pages pass and where their zones land, and `verify --rerun` must
+    /// repeat the redaction exactly.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "max_dim": self.max_dim,
+            "n_features": self.n_features,
+            "ratio": self.ratio,
+            "ransac_thresh": self.ransac_thresh,
+            "min_inliers": self.min_inliers,
+            "min_inlier_ratio": self.min_inlier_ratio,
+            "min_area_frac": self.min_area_frac,
+            "max_side_ratio": self.max_side_ratio,
+            "min_score": self.min_score,
+        })
+    }
+
+    /// From a manifest's record. What it doesn't record is the default:
+    /// manifests written before alignment settings were recorded were
+    /// redacted with the defaults.
+    pub fn from_json(v: &serde_json::Value) -> Self {
+        let d = AlignSettings::default();
+        let int = |k: &str, x: i64| v.get(k).and_then(|y| y.as_i64()).unwrap_or(x);
+        let num = |k: &str, x: f64| v.get(k).and_then(|y| y.as_f64()).unwrap_or(x);
+        AlignSettings {
+            max_dim: int("max_dim", d.max_dim),
+            n_features: int("n_features", d.n_features),
+            ratio: num("ratio", d.ratio),
+            ransac_thresh: num("ransac_thresh", d.ransac_thresh),
+            min_inliers: int("min_inliers", d.min_inliers),
+            min_inlier_ratio: num("min_inlier_ratio", d.min_inlier_ratio),
+            min_area_frac: num("min_area_frac", d.min_area_frac),
+            max_side_ratio: num("max_side_ratio", d.max_side_ratio),
+            min_score: num("min_score", d.min_score),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Alignment {
     pub template: Option<usize>, // index into the template list
@@ -172,9 +211,23 @@ fn score(h: &[[f64; 3]; 3], t: &Template, scan: &Mat) -> Result<f64> {
     let sm = [[f, 0.0, 0.0], [0.0, f, 0.0], [0.0, 0.0, 1.0]];
     let m = util::mul3(&sm, &util::inv3(h)?);
     let mut warped = Mat::default();
-    imgproc::warp_perspective(scan, &mut warped, &util::mat3(&m)?, Size::new(sw, sh), imgproc::INTER_AREA, core::BORDER_CONSTANT, core::Scalar::default(), core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+    // A learned reference's frame is the first page's: other photos may not
+    // reach its edges. Beyond the photo is no evidence either way, so it is
+    // left out (rather than black, which no reference matches).
+    let border = if t.learned { core::BORDER_REPLICATE } else { core::BORDER_CONSTANT };
+    imgproc::warp_perspective(scan, &mut warped, &util::mat3(&m)?, Size::new(sw, sh), imgproc::INTER_AREA, border, core::Scalar::default(), core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+    // a learned reference has its lighting flattened: so has the page, or
+    // its shadows outweigh its print
+    let warped = if t.learned { util::flatten_light(&warped)? } else { warped };
     let reference = util::resize(&t.image, sw, sh, imgproc::INTER_AREA)?;
-    let keep = util::resize(&t.mask, sw, sh, imgproc::INTER_NEAREST)?;
+    let mut keep = util::resize(&t.mask, sw, sh, imgproc::INTER_NEAREST)?;
+    if t.learned {
+        let mut inside = Mat::default();
+        let ones = util::full_u8(scan.rows(), scan.cols(), 255)?;
+        imgproc::warp_perspective(&ones, &mut inside, &util::mat3(&m)?, Size::new(sw, sh), imgproc::INTER_NEAREST, core::BORDER_CONSTANT, core::Scalar::default(), core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+        let outside = util::bitnot(&util::morph(&inside, imgproc::MORPH_ERODE, &util::ones_kernel(5, 5)?)?)?;
+        keep = util::bitor(&keep, &outside)?;
+    }
     let (a, b, k) = (util::bytes(&util::gaussian(&reference, 5)?)?, util::bytes(&util::gaussian(&warped, 5)?)?, util::bytes(&keep)?);
     let mut av: Vec<f32> = a.iter().zip(&k).filter(|p| *p.1 == 0).map(|p| *p.0 as f32).collect();
     let mut bv: Vec<f32> = b.iter().zip(&k).filter(|p| *p.1 == 0).map(|p| *p.0 as f32).collect();

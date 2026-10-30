@@ -373,3 +373,91 @@ fn a_photo_turned_by_its_exif_tag_is_published_as_it_was_shown() {
     let sp = io::source_pages("plain.jpg", Some(&plain)).unwrap();
     assert_ne!(io::shown(&sp[0]).1, place);
 }
+
+/// The re-run check of `verify` on `m` (the manifest at `manifest_path`).
+fn rerun_check(root: &Path, manifest_path: &Path, original: &Path, redacted: &Path) -> bool {
+    let r = check(root, redacted, Some(manifest_path), original, &[], None, Some(&root.join("templates")));
+    r.checks.iter().find(|(_, msg)| msg.contains("re-running")).map(|(ok, _)| *ok).expect("a re-run check")
+}
+
+#[test]
+fn alignment_settings_are_recorded_and_the_rerun_uses_them() {
+    // redacted with alignment settings of its own
+    let root = tmpdir("align-settings");
+    write_template(&root.join("templates").join("sample_rs1")).unwrap();
+    let (scan, _) = simulate_scan(&filled_form(4).unwrap(), 5, 2.0, 1.3).unwrap();
+    std::fs::create_dir_all(root.join("in")).unwrap();
+    std::fs::write(root.join("in").join(NAME), image_pdf(PageImage::Jpeg(&io::encode(&scan, "jpg", 80).unwrap()), 1612.0, 2280.0)).unwrap();
+    assert_eq!(rfpii(&["keygen", s(&root.join("keys"))]), 0);
+    let rc = rfpii(&[
+        "redact", s(&root.join("in")), "--templates", s(&root.join("templates")), "--out", s(&root.join("out")),
+        "--review", s(&root.join("review")), "--workers", "1", "--sign-key", s(&root.join("keys/signing_key.pem")),
+        "--no-pdf-signature", "--min-inliers", "20", "--min-score", "0.2",
+    ]);
+    assert_eq!(rc, 0, "{}", std::fs::read_to_string(root.join("review/report.jsonl")).unwrap_or_default());
+    let m = manifest(&root);
+    assert_eq!(m["settings"]["align"]["min_inliers"], 20);
+    assert_eq!(m["settings"]["align"]["min_score"], 0.2);
+    assert_eq!(m["settings"]["align"]["max_dim"], 1200);
+    let mpath = root.join("out").join(NAME.replace(".PDF", ".manifest.json"));
+    let (orig, red) = (root.join("in").join(NAME), published(&root));
+    assert!(rerun_check(&root, &mpath, &orig, &red), "the recorded settings reproduce the output");
+    // a recorded threshold the page doesn't meet: the re-run, which uses it, fails
+    let mut bad = m.clone();
+    bad["settings"]["align"]["min_score"] = serde_json::json!(0.999);
+    let bpath = root.join("bad.manifest.json");
+    std::fs::write(&bpath, serde_json::to_string(&bad).unwrap()).unwrap();
+    assert!(!rerun_check(&root, &bpath, &orig, &red), "the re-run must use the recorded alignment settings");
+}
+
+#[test]
+fn manifests_without_alignment_settings_rerun_with_the_defaults() {
+    let d = rfpii::align::AlignSettings::default();
+    let a = rfpii::align::AlignSettings::from_json(&Value::Null);
+    assert_eq!((a.min_inliers, a.min_score, a.max_dim, a.ratio), (d.min_inliers, d.min_score, d.max_dim, d.ratio));
+    let b = rfpii::align::AlignSettings::from_json(&serde_json::json!({"min_inliers": 20}));
+    assert_eq!((b.min_inliers, b.min_score), (20, d.min_score));
+    let c = rfpii::align::AlignSettings::from_json(&d.to_json());
+    assert_eq!(c.to_json(), d.to_json());
+}
+
+#[test]
+fn a_scanned_batch_is_published_page_by_page() {
+    // one file of three pages: a form, a page nothing can be read on, the
+    // form again (encoded anew: other coefficients)
+    let root = tmpdir("per-page");
+    write_template(&root.join("templates").join("sample_rs1")).unwrap();
+    let (scan, _) = simulate_scan(&filled_form(4).unwrap(), 4, 2.0, 1.3).unwrap();
+    let blank = opencv::core::Mat::new_rows_cols_with_default(scan.rows(), scan.cols(), opencv::core::CV_8UC3, opencv::core::Scalar::all(255.0)).unwrap();
+    let (a, b, c) = (io::encode(&scan, "jpg", 80).unwrap(), io::encode(&blank, "jpg", 80).unwrap(), io::encode(&scan, "jpg", 90).unwrap());
+    let size = Some((1612.0, 2280.0));
+    let pdf = io::build_pdf(&[(PageImage::Jpeg(&a), size, None, 0), (PageImage::Jpeg(&b), size, None, 0), (PageImage::Jpeg(&c), size, None, 0)]).unwrap();
+    std::fs::create_dir_all(root.join("in")).unwrap();
+    let orig = root.join("in").join("batch.pdf");
+    std::fs::write(&orig, pdf).unwrap();
+    assert_eq!(rfpii(&["keygen", s(&root.join("keys"))]), 0);
+    let rc = rfpii(&[
+        "redact", s(&root.join("in")), "--templates", s(&root.join("templates")), "--out", s(&root.join("out")),
+        "--review", s(&root.join("review")), "--workers", "2", "--sign-key", s(&root.join("keys/signing_key.pem")),
+        "--no-pdf-signature", "--per-page",
+    ]);
+    // the page that can't be read is held back alone
+    assert_eq!(rc, 2);
+    let out = root.join("out");
+    assert!(out.join("batch.p001.pdf").exists() && out.join("batch.p003.pdf").exists());
+    assert!(!out.join("batch.p002.pdf").exists() && root.join("review").join("batch.p002.json").exists());
+    let mpath = out.join("batch.p003.manifest.json");
+    let m: Value = serde_json::from_str(&std::fs::read_to_string(&mpath).unwrap()).unwrap();
+    assert_eq!((m["source"]["page"].as_u64(), m["source"]["pages"].as_u64(), m["source"]["name"].as_str()), (Some(3), Some(3), Some("batch.pdf")));
+    // checked against the whole original, by that page, and re-run
+    let r = check(&root, &out.join("batch.p003.pdf"), None, &orig, &[], None, Some(&root.join("templates")));
+    assert!(r.ok(), "{}", r.text());
+    assert!(r.checks.iter().any(|(ok, msg)| *ok && msg.contains("this is page 3")), "{}", r.text());
+    // said to be another page of the same file, it doesn't verify
+    let mut other = m.clone();
+    other["source"]["page"] = serde_json::json!(1);
+    let opath = root.join("other.manifest.json");
+    std::fs::write(&opath, serde_json::to_string(&other).unwrap()).unwrap();
+    let r = check(&root, &out.join("batch.p003.pdf"), Some(&opath), &orig, &[], None, None);
+    assert!(r.checks.iter().any(|(ok, msg)| !*ok && msg.contains("page 1: ") && msg.contains("block")), "{}", r.text());
+}
