@@ -154,6 +154,9 @@ pub struct Template {
     /// What a vision review of the redacted page looks at (where officers
     /// and agents write), [x, y, w, h]; the whole page if unset.
     pub review_area: Option<[f64; 4]>,
+    /// Learned from the forms themselves (`learn.rs`): the reference is a
+    /// median page with its lighting flattened.
+    pub learned: bool,
     // filled in by align::prepare
     pub regions: Vec<(String, crate::structure::Region)>,
     pub mask: Mat,
@@ -340,6 +343,7 @@ pub fn load_template(dir: &Path) -> Result<Template> {
         min_glyph_h: getf("min_glyph_h"),
         free_text,
         text_h: getf("text_h"),
+        learned: spec.get("learned").and_then(|v| v.as_bool()).unwrap_or(false),
         review_area: match spec.get("review_area") {
             Some(v) => Some(rect4(v, "review_area")?),
             None => None,

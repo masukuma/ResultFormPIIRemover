@@ -312,7 +312,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
             templates: tdir.to_string_lossy().into_owned(),
             out: work.join("out").to_string_lossy().into_owned(),
             review: work.join("review").to_string_lossy().into_owned(),
-            align: AlignSettings::default(),
+            align: AlignSettings::from_json(&st["align"]),
             mask: ms,
             strict_structure: st["strict_structure"].as_bool().unwrap_or(false),
             generic: st["generic"].as_bool().unwrap_or(false),

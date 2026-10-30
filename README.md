@@ -66,6 +66,11 @@ rfpii certgen --name "Returning Officer, Kibwezi West" --org "..." --country KE
 rfpii redact Forms/34A/*.zip --templates templates --out public --review review \
     --sign-key keys/signing_key.pem
 
+# Forms no one made a template for: each printing's layout is learned from
+# the batch itself (GENERALIZING.md), kept in learned/, and used
+rfpii redact Forms/36A/ --learn learned --out public --review review \
+    --sign-key keys/signing_key.pem
+
 # Unattended, at scale: vision models on Ollama Cloud review every redacted
 # page (only redacted pages are sent) and mask what the rules missed; pages
 # whose columns can't be placed get them hidden whole if the review passes
@@ -129,6 +134,9 @@ Useful flags:
   the models.
 - `--no-generic`: send forms with no template to review instead of reading
   them without one.
+- `--learn DIR`: learn the layout of every printing in the batch that has
+  no template in `DIR` yet (at least 5 pages of it), write it there, and
+  redact with it. `rfpii learn FORMS --out DIR` only learns.
 
 ## Adding a form type
 

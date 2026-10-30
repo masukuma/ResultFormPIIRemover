@@ -196,6 +196,18 @@ pub fn gaussian(src: &Mat, k: i32) -> Result<Mat> {
     Ok(out)
 }
 
+/// Paper brightness evened out: each pixel divided by a wide estimate of
+/// the paper around it (dark print and writing don't lower the estimate),
+/// paper at 235.
+pub fn flatten_light(g: &Mat) -> Result<Mat> {
+    let paper = dilate(g, &ones_kernel(15, 15)?)?;
+    let mut bg = Mat::default();
+    opencv::imgproc::gaussian_blur(&paper, &mut bg, Size::new(0, 0), 25.0, 25.0, core::BORDER_DEFAULT, core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+    let mut out = Mat::default();
+    core::divide2(g, &bg, &mut out, 235.0, -1)?;
+    Ok(out)
+}
+
 pub fn adaptive_inv(src: &Mat, block: i32, c: f64) -> Result<Mat> {
     let mut out = Mat::default();
     opencv::imgproc::adaptive_threshold(

@@ -141,3 +141,13 @@ fn redact_boxes_masks_signature() {
     let poly = [[100.0, 150.0], [249.0, 150.0], [249.0, 209.0], [100.0, 209.0]];
     assert!(region(&img, &poly).iter().all(|&v| v == 0));
 }
+
+#[test]
+fn a_tables_columns_move_together_or_not_at_all() {
+    // rows 35 px: headers that agree within half a row move the table
+    assert_eq!(table_shift(&[-90.0, -89.0], 35.0), Some(-89.5));
+    assert_eq!(table_shift(&[-22.0, -24.0, -21.0], 35.0), Some(-22.0));
+    // a column's header matched a row or more off the others': no telling
+    assert_eq!(table_shift(&[121.0, -63.0], 35.0), None);
+    assert_eq!(table_shift(&[-63.0, -88.0], 35.0), None);
+}

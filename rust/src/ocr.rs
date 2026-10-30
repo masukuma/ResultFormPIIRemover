@@ -378,6 +378,9 @@ fn session(name: &str) -> Result<Session> {
     let env = environment()?;
     let mut b = Session::builder(env).map_err(|e| anyhow!("{e}"))?;
     b = b.with_optimization_level(GraphOptimizationLevel::All).map_err(|e| anyhow!("{e}"))?;
+    // Images of every size are read, and a memory pattern is kept per input
+    // shape: over a batch, on every worker, that grows to gigabytes.
+    b = b.with_memory_pattern(false).map_err(|e| anyhow!("{e}"))?;
     let t = *THREADS.get().unwrap_or(&0);
     if t > 0 {
         b = b.with_intra_threads(t).map_err(|e| anyhow!("{e}"))?;
