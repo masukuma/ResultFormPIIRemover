@@ -84,6 +84,11 @@ rfpii redact Forms/ --templates templates --out public --review review \
     --sign-key keys/signing_key.pem --vlm-audit --vlm-rescue   # default: gemma4:31b
 # ...or on a local Ollama: --vlm-host localhost:11434 (default qwen3.8:27b)
 
+# Phone photos with no orientation tag, many stored on their side: Clef
+# judges which way up each redacted page stands, and it is published upright
+rfpii redact Photos/ --learn learned --out public --review review \
+    --sign-key keys/signing_key.pem --orient
+
 # Anyone, later: prove a published form against its original
 rfpii verify public/x.pdf --original x.PDF --pubkey signing_key.pub.pem \
     --ledger public/ledger.jsonl --overlay changes/ --trust signer.crt
@@ -130,6 +135,12 @@ Useful flags:
   can't be placed, with those columns hidden whole, once the review passes.
 - `--vlm-concurrency`: requests to the model host at once across all workers
   (default 10; Ollama Cloud answers 429 above an account's limit).
+- `--orient`: photos with no EXIF orientation tag are shown as stored, often
+  on their side. With this flag, Clef on Ollama Cloud is asked which way up
+  each published page stands, and the page is turned to show it upright. It
+  sees only the redacted page, gets one question per upright page and four
+  per turned one, and the turn is recorded in the manifest
+  (`--orient-model`, default `clef`).
 - `--allow-remote-unredacted`: needed before `--vlm-fallback` or `propose` may
   send unredacted forms to a cloud model.
 - `--strict-structure`: withhold pages whose table rules can't be matched,

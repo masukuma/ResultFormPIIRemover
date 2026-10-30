@@ -114,7 +114,11 @@ no red block should touch one.
 - **Shown the same way.** Each published page shows its image as the
   original does: same page size, and turned or mirrored the same way (a
   photo's EXIF orientation, or how the original PDF places and rotates its
-  image).
+  image). One exception: a photo with no orientation tag that Clef judged to
+  be on its side (`redact --orient`) is shown turned upright, by the
+  quarter turns its manifest records. The image itself is not turned (the
+  page's `/Rotate` is), and the verifier accepts a turn only for such a
+  photo.
 - **Signature.** The manifest is signed with the publisher's Ed25519 key. If
   anyone edits it afterwards, the signature fails.
 - **The PDF's own signature.** The published PDF can also carry a digital

@@ -122,6 +122,9 @@ pub struct SourcePage {
     pub page_size: Option<(f64, f64)>,          // PDF points, to rebuild the same layout
     pub place: Option<[f64; 6]>,                // how the image is drawn on the page (below)
     pub rotate: i64,
+    /// An image file with no EXIF orientation tag: shown as stored, which
+    /// for a photo may be on its side (`redact --orient` asks Clef).
+    pub untagged: bool,
 }
 
 /// `SourcePage::place`: the matrix drawing the image's unit square on the
@@ -140,6 +143,11 @@ pub fn shown(sp: &SourcePage) -> ((f64, f64), Place, i64) {
 
 /// The EXIF orientation (1-8) a JPEG asks viewers to show it in; 1 if none.
 pub fn exif_orientation(jpeg: &[u8]) -> u16 {
+    exif_orientation_tag(jpeg).unwrap_or(1)
+}
+
+/// A JPEG's EXIF orientation tag, if it has one.
+pub fn exif_orientation_tag(jpeg: &[u8]) -> Option<u16> {
     let mut i = 2;
     while i + 4 <= jpeg.len() && jpeg[i] == 0xff {
         let marker = jpeg[i + 1];
@@ -150,12 +158,12 @@ pub fn exif_orientation(jpeg: &[u8]) -> u16 {
         let seg = &jpeg[(i + 4).min(jpeg.len())..(i + 2 + len).min(jpeg.len())];
         if marker == 0xe1 && seg.starts_with(b"Exif\0\0") {
             if let Some(o) = tiff_orientation(&seg[6..]) {
-                return o;
+                return Some(o);
             }
         }
         i += 2 + len;
     }
-    1
+    None
 }
 
 /// Tag 0x0112 of a TIFF header's first IFD.
@@ -215,7 +223,8 @@ pub fn source_pages(src: &str, data: Option<&[u8]>) -> Result<Vec<SourcePage>> {
     }
     if data.starts_with(&[0xff, 0xd8]) {
         let pixels = decode_bytes(data)?;
-        let (page_size, place) = match exif_orientation(data) {
+        let tag = exif_orientation_tag(data);
+        let (page_size, place) = match tag.unwrap_or(1) {
             1 => (None, None),
             o => {
                 let (size, m) = exif_page(o, (pixels.cols(), pixels.rows()));
@@ -230,6 +239,7 @@ pub fn source_pages(src: &str, data: Option<&[u8]>) -> Result<Vec<SourcePage>> {
             page_size,
             place,
             rotate: 0,
+            untagged: tag.is_none(),
         }]);
     }
     if sfx == ".tif" || sfx == ".tiff" {
@@ -253,6 +263,7 @@ pub fn source_pages(src: &str, data: Option<&[u8]>) -> Result<Vec<SourcePage>> {
                 page_size: None,
                 place: None,
                 rotate: 0,
+                untagged: true,
             })
             .collect());
     }
@@ -264,6 +275,7 @@ pub fn source_pages(src: &str, data: Option<&[u8]>) -> Result<Vec<SourcePage>> {
         page_size: None,
         place: None,
         rotate: 0,
+        untagged: true,
     }])
 }
 
@@ -650,6 +662,7 @@ fn pdf_source_pages(data: &[u8], only: Option<usize>) -> Result<(Vec<SourcePage>
                             page_size: Some(size),
                             place: Some([m[0], m[1], m[2], m[3], m[4] - x0, m[5] - y0]),
                             rotate,
+                            untagged: false,
                         });
                         continue;
                     }
@@ -672,6 +685,7 @@ fn pdf_source_pages(data: &[u8], only: Option<usize>) -> Result<(Vec<SourcePage>
             page_size: Some(shown),
             place: None,
             rotate: 0, // the rendering is upright already
+            untagged: false,
         });
     }
     Ok((out, n))
@@ -879,6 +893,9 @@ mod tests {
         }
         assert_eq!(exif_orientation(&[0xff, 0xd8, 0xff, 0xda, 0, 2]), 1); // none
         assert_eq!(exif_orientation(&exif_jpeg(9, b"II")), 1); // not an orientation
+        // a tag saying "as stored" is a tag: the photo's maker said so
+        assert_eq!(exif_orientation_tag(&exif_jpeg(1, b"MM")), Some(1));
+        assert_eq!(exif_orientation_tag(&[0xff, 0xd8, 0xff, 0xda, 0, 2]), None);
     }
 
     #[test]

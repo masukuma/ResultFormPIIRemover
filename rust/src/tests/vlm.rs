@@ -197,3 +197,63 @@ fn a_chat_model_is_not_a_decision_model() {
     c.probe().unwrap();
     assert!(!c.decision);
 }
+
+fn turn_answer(p: [f64; 4]) -> Value {
+    json!({"answers": {"turn": {"type": "choice", "choice": "", "probabilities": {
+        "upright": p[0], "lying_on_right_side": p[1], "upside_down": p[2], "lying_on_left_side": p[3]}}}})
+}
+
+/// (rows, cols) of the image sent in request `i`.
+fn sent_size(s: &Stub, i: usize) -> (i32, i32) {
+    let b = &s.requests.lock().unwrap()[i].1["images"][0];
+    let m = crate::io::decode_bytes(&base64::engine::general_purpose::STANDARD.decode(b.as_str().unwrap()).unwrap()).unwrap();
+    (m.rows(), m.cols())
+}
+
+#[test]
+fn an_upright_page_is_asked_about_once() {
+    let s = stub(vec![turn_answer([0.96, 0.01, 0.02, 0.01])]);
+    let clef = Ollama::new(settings(&s.url, "clef")).unwrap();
+    let (turn, rec) = clef.orient(&page(2000, 1400)).unwrap();
+    assert_eq!(turn, 0);
+    {
+        let req = s.requests.lock().unwrap();
+        assert_eq!(req.len(), 1);
+        assert!(req[0].0 == "/v1/systemone" && req[0].1["model"] == "clef" && req[0].1["questions"]["turn"]["type"] == "choice");
+    }
+    assert_eq!(sent_size(&s, 0), (1024, 717)); // at most 1024 px long
+    assert!(rec["asked"].as_array().unwrap().len() == 1 && rec["judged"] == "upright" && rec["turn"] == 0 && rec.get("undecided").is_none());
+    assert_eq!(rec["asked"][0]["p"]["upright"], 0.96);
+}
+
+#[test]
+fn a_page_on_its_side_is_judged_from_all_four_turns() {
+    // The page lies on its left side. Asked as it is, the answer leans the
+    // wrong way (on its right side); turned a quarter clockwise it is upright,
+    // a half, on its right side, three quarters, upside down: together, a
+    // quarter turn clockwise shows it upright.
+    let s = stub(vec![
+        turn_answer([0.07, 0.47, 0.07, 0.39]),
+        turn_answer([0.96, 0.01, 0.02, 0.01]),
+        turn_answer([0.07, 0.6, 0.07, 0.26]),
+        turn_answer([0.02, 0.03, 0.92, 0.03]),
+    ]);
+    let clef = Ollama::new(settings(&s.url, "clef")).unwrap();
+    let (turn, rec) = clef.orient(&page(1400, 2000)).unwrap();
+    assert_eq!(turn, 90);
+    assert_eq!(s.requests.lock().unwrap().len(), 4);
+    assert_eq!(sent_size(&s, 0), (717, 1024));
+    assert_eq!(sent_size(&s, 1), (1024, 717)); // turned a quarter
+    assert_eq!(sent_size(&s, 2), (717, 1024));
+    let turned: Vec<i64> = rec["asked"].as_array().unwrap().iter().map(|a| a["turned"].as_i64().unwrap()).collect();
+    assert_eq!(turned, vec![0, 90, 180, 270]);
+    assert!(rec["judged"] == "lying_on_left_side" && rec["turn"] == 90 && rec.get("undecided").is_none());
+}
+
+#[test]
+fn a_turn_no_answer_confirms_is_not_made() {
+    let s = stub(vec![turn_answer([0.25; 4]); 4]);
+    let clef = Ollama::new(settings(&s.url, "clef")).unwrap();
+    let (turn, rec) = clef.orient(&page(1400, 2000)).unwrap();
+    assert!(turn == 0 && rec["turn"] == 0 && rec["undecided"] == true);
+}
