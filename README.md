@@ -71,6 +71,11 @@ rfpii redact Forms/34A/*.zip --templates templates --out public --review review 
 rfpii redact Forms/36A/ --learn learned --out public --review review \
     --sign-key keys/signing_key.pem
 
+# Scanned batches, one constituency to a PDF: each page published (or held
+# back) on its own, as public/<name>.p012.pdf
+rfpii redact Scans/ --templates templates --out public --review review \
+    --sign-key keys/signing_key.pem --per-page
+
 # Unattended, at scale: vision models on Ollama Cloud review every redacted
 # page (only redacted pages are sent) and mask what the rules missed; pages
 # whose columns can't be placed get them hidden whole if the review passes
@@ -137,6 +142,13 @@ Useful flags:
 - `--learn DIR`: learn the layout of every printing in the batch that has
   no template in `DIR` yet (at least 5 pages of it), write it there, and
   redact with it. `rfpii learn FORMS --out DIR` only learns.
+- `--per-page`: each page of a file of several pages is a document of its
+  own, published as `NAME.p012.pdf` with its own manifest, or sent to review
+  alone. For scanned batches of many forms in one PDF, where otherwise one
+  page that fails holds back the whole file. Only that page is decoded, so
+  memory stays at a page per worker. The manifest names the whole file (its
+  SHA-256) and the page, and `verify` checks it against that page of the
+  original.
 
 ## Adding a form type
 
