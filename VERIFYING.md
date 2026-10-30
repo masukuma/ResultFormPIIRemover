@@ -111,6 +111,10 @@ no red block should touch one.
   must also be identical, so the whole image can't be re-compressed.
 - **Results checked again in pixels.** The pixels inside each results region
   are also decoded from both files and compared directly.
+- **Shown the same way.** Each published page shows its image as the
+  original does: same page size, and turned or mirrored the same way (a
+  photo's EXIF orientation, or how the original PDF places and rotates its
+  image).
 - **Signature.** The manifest is signed with the publisher's Ed25519 key. If
   anyone edits it afterwards, the signature fails.
 - **The PDF's own signature.** The published PDF can also carry a digital

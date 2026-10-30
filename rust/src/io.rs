@@ -120,8 +120,84 @@ pub struct SourcePage {
     pub data: Option<Vec<u8>>,
     pub reference: String,    // where it came from, e.g. "page 1, image xref 6"
     pub page_size: Option<(f64, f64)>,          // PDF points, to rebuild the same layout
-    pub rect: Option<(f64, f64, f64, f64)>,     // where the image sits on the page (PDF coordinates)
+    pub place: Option<[f64; 6]>,                // how the image is drawn on the page (below)
     pub rotate: i64,
+}
+
+/// `SourcePage::place`: the matrix drawing the image's unit square on the
+/// page (a PDF `cm`, relative to the page box), as the source draws it: turned
+/// or mirrored by its EXIF orientation or its PDF's placement, the published
+/// page shows the image as the transmitted one did. None: upright across the
+/// whole page.
+pub type Place = [f64; 6];
+
+/// How a page shows its image: page size, placement and rotation, with the
+/// defaults filled in (an image without a page is 150 dpi).
+pub fn shown(sp: &SourcePage) -> ((f64, f64), Place, i64) {
+    let size = sp.page_size.unwrap_or((sp.pixels.cols() as f64 * 72.0 / 150.0, sp.pixels.rows() as f64 * 72.0 / 150.0));
+    (size, sp.place.unwrap_or([size.0, 0.0, 0.0, size.1, 0.0, 0.0]), sp.rotate.rem_euclid(360))
+}
+
+/// The EXIF orientation (1-8) a JPEG asks viewers to show it in; 1 if none.
+pub fn exif_orientation(jpeg: &[u8]) -> u16 {
+    let mut i = 2;
+    while i + 4 <= jpeg.len() && jpeg[i] == 0xff {
+        let marker = jpeg[i + 1];
+        if marker == 0xda || marker == 0xd9 {
+            break; // the image data: no metadata after it
+        }
+        let len = u16::from_be_bytes([jpeg[i + 2], jpeg[i + 3]]) as usize;
+        let seg = &jpeg[(i + 4).min(jpeg.len())..(i + 2 + len).min(jpeg.len())];
+        if marker == 0xe1 && seg.starts_with(b"Exif\0\0") {
+            if let Some(o) = tiff_orientation(&seg[6..]) {
+                return o;
+            }
+        }
+        i += 2 + len;
+    }
+    1
+}
+
+/// Tag 0x0112 of a TIFF header's first IFD.
+fn tiff_orientation(t: &[u8]) -> Option<u16> {
+    let le = match t.get(0..2)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    let u16_at = |o: usize| t.get(o..o + 2).map(|b| if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) });
+    let u32_at = |o: usize| {
+        t.get(o..o + 4).map(|b| {
+            let a = [b[0], b[1], b[2], b[3]];
+            if le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) }
+        })
+    };
+    let ifd = u32_at(4)? as usize;
+    for k in 0..u16_at(ifd)? as usize {
+        let e = ifd + 2 + 12 * k;
+        if u16_at(e)? == 0x0112 {
+            return u16_at(e + 8).filter(|v| (1..=8).contains(v));
+        }
+    }
+    None
+}
+
+/// A `pw` x `ph` page showing a stored image the way EXIF orientation `o`
+/// asks: mirrored and/or turned. Pages are 150 dpi, as for any image.
+pub fn exif_page(o: u16, stored: (i32, i32)) -> ((f64, f64), Place) {
+    let (w, h) = (stored.0 as f64 * 72.0 / 150.0, stored.1 as f64 * 72.0 / 150.0);
+    let (pw, ph) = if o >= 5 { (h, w) } else { (w, h) };
+    let m = match o {
+        2 => [-pw, 0.0, 0.0, ph, pw, 0.0],
+        3 => [-pw, 0.0, 0.0, -ph, pw, ph],
+        4 => [pw, 0.0, 0.0, -ph, 0.0, ph],
+        5 => [0.0, -ph, -pw, 0.0, pw, ph],
+        6 => [0.0, -ph, pw, 0.0, 0.0, ph],
+        7 => [0.0, ph, pw, 0.0, 0.0, 0.0],
+        8 => [0.0, ph, -pw, 0.0, pw, 0.0],
+        _ => [pw, 0.0, 0.0, ph, 0.0, 0.0],
+    };
+    ((pw, ph), m)
 }
 
 pub fn source_pages(src: &str, data: Option<&[u8]>) -> Result<Vec<SourcePage>> {
@@ -138,13 +214,21 @@ pub fn source_pages(src: &str, data: Option<&[u8]>) -> Result<Vec<SourcePage>> {
         return Ok(pdf_source_pages(data, None)?.0);
     }
     if data.starts_with(&[0xff, 0xd8]) {
+        let pixels = decode_bytes(data)?;
+        let (page_size, place) = match exif_orientation(data) {
+            1 => (None, None),
+            o => {
+                let (size, m) = exif_page(o, (pixels.cols(), pixels.rows()));
+                (Some(size), Some(m))
+            }
+        };
         return Ok(vec![SourcePage {
-            pixels: decode_bytes(data)?,
+            pixels,
             kind: "jpeg",
             data: Some(data.to_vec()),
             reference: "file".into(),
-            page_size: None,
-            rect: None,
+            page_size,
+            place,
             rotate: 0,
         }]);
     }
@@ -167,7 +251,7 @@ pub fn source_pages(src: &str, data: Option<&[u8]>) -> Result<Vec<SourcePage>> {
                 data: None,
                 reference: format!("tiff page {}", i + 1),
                 page_size: None,
-                rect: None,
+                place: None,
                 rotate: 0,
             })
             .collect());
@@ -178,7 +262,7 @@ pub fn source_pages(src: &str, data: Option<&[u8]>) -> Result<Vec<SourcePage>> {
         data: None,
         reference: "file".into(),
         page_size: None,
-        rect: None,
+        place: None,
         rotate: 0,
     }])
 }
@@ -260,9 +344,9 @@ fn mat_mul(a: &M6, b: &M6) -> M6 {
     ]
 }
 
-/// Where the page's content stream draws XObject `name`: bounding box of the
-/// unit square under the CTM at the `Do`, in PDF coordinates.
-fn image_rect(doc: &Document, page: ObjectId, name: &[u8]) -> Option<(f64, f64, f64, f64)> {
+/// How the page's content stream draws XObject `name`: the CTM at its `Do`,
+/// mapping the image's unit square to PDF coordinates.
+fn image_ctm(doc: &Document, page: ObjectId, name: &[u8]) -> Option<M6> {
     let content = Content::decode(&doc.get_page_content(page)).ok()?;
     let mut stack: Vec<M6> = Vec::new();
     let mut ctm: M6 = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
@@ -278,22 +362,26 @@ fn image_rect(doc: &Document, page: ObjectId, name: &[u8]) -> Option<(f64, f64, 
             }
             "Do" => {
                 if op.operands.first().and_then(|o| o.as_name().ok()) == Some(name) {
-                    let pts = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
-                        .map(|(x, y)| (x * ctm[0] + y * ctm[2] + ctm[4], x * ctm[1] + y * ctm[3] + ctm[5]));
-                    let xs = pts.map(|p| p.0);
-                    let ys = pts.map(|p| p.1);
-                    return Some((
-                        xs.iter().cloned().fold(f64::MAX, f64::min),
-                        ys.iter().cloned().fold(f64::MAX, f64::min),
-                        xs.iter().cloned().fold(f64::MIN, f64::max),
-                        ys.iter().cloned().fold(f64::MIN, f64::max),
-                    ));
+                    return Some(ctm);
                 }
             }
             _ => {}
         }
     }
     None
+}
+
+/// Bounding box of the unit square under `m`.
+fn ctm_box(m: &M6) -> (f64, f64, f64, f64) {
+    let pts = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)].map(|(x, y)| (x * m[0] + y * m[2] + m[4], x * m[1] + y * m[3] + m[5]));
+    let xs = pts.map(|p| p.0);
+    let ys = pts.map(|p| p.1);
+    (
+        xs.iter().cloned().fold(f64::MAX, f64::min),
+        ys.iter().cloned().fold(f64::MAX, f64::min),
+        xs.iter().cloned().fold(f64::MIN, f64::max),
+        ys.iter().cloned().fold(f64::MIN, f64::max),
+    )
 }
 
 fn filters(dict: &Dictionary) -> Vec<Vec<u8>> {
@@ -546,7 +634,8 @@ fn pdf_source_pages(data: &[u8], only: Option<usize>) -> Result<(Vec<SourcePage>
             let (name, id) = &imgs[0];
             if let Ok(Object::Stream(s)) = doc.get_object(*id) {
                 let masked = s.dict.get(b"SMask").is_ok();
-                if let (false, Some(r)) = (masked, image_rect(&doc, page, name)) {
+                if let (false, Some(m)) = (masked, image_ctm(&doc, page, name)) {
+                    let r = ctm_box(&m);
                     let rarea = (r.2 - r.0) * (r.3 - r.1);
                     if (rarea - area).abs() < 0.02 * area {
                         // the image as stored: JPEGs stay JPEG, so the redaction
@@ -559,7 +648,7 @@ fn pdf_source_pages(data: &[u8], only: Option<usize>) -> Result<(Vec<SourcePage>
                             data: if jpeg { Some(bytes) } else { None },
                             reference: format!("page {}, image xref {}", i + 1, id.0),
                             page_size: Some(size),
-                            rect: Some((r.0 - x0, r.1 - y0, r.2 - x0, r.3 - y0)),
+                            place: Some([m[0], m[1], m[2], m[3], m[4] - x0, m[5] - y0]),
                             rotate,
                         });
                         continue;
@@ -581,7 +670,7 @@ fn pdf_source_pages(data: &[u8], only: Option<usize>) -> Result<(Vec<SourcePage>
             data: None,
             reference: format!("page {}, rendered at zoom {:.4} by MuPDF {}", i + 1, zoom, mupdf_version()),
             page_size: Some(shown),
-            rect: Some((0.0, 0.0, shown.0, shown.1)),
+            place: None,
             rotate: 0, // the rendering is upright already
         });
     }
@@ -647,14 +736,14 @@ pub enum PageImage<'a> {
 }
 
 /// PDF with one image per page, laid out like the source page; no metadata.
-pub fn build_pdf(pages: &[(PageImage, Option<(f64, f64)>, Option<(f64, f64, f64, f64)>, i64)]) -> Result<Vec<u8>> {
+pub fn build_pdf(pages: &[(PageImage, Option<(f64, f64)>, Option<Place>, i64)]) -> Result<Vec<u8>> {
     let mut w = PdfWriter::new();
     let n = pages.len();
     // ids: 1 catalog, 2 pages, then 3 per page (page, content, image)
     let kids: Vec<String> = (0..n).map(|i| format!("{} 0 R", 3 + 3 * i)).collect();
     w.obj(1, b"<</Type /Catalog /Pages 2 0 R>>");
     w.obj(2, format!("<</Type /Pages /Kids [{}] /Count {}>>", kids.join(" "), n).as_bytes());
-    for (i, (img, size, rect, rotate)) in pages.iter().enumerate() {
+    for (i, (img, size, place, rotate)) in pages.iter().enumerate() {
         let (pid, cid, iid) = (3 + 3 * i, 4 + 3 * i, 5 + 3 * i);
         let (iw, ih, dict, data): (i32, i32, String, Vec<u8>) = match img {
             PageImage::Jpeg(d) => {
@@ -683,7 +772,7 @@ pub fn build_pdf(pages: &[(PageImage, Option<(f64, f64)>, Option<(f64, f64, f64,
             }
         };
         let (pw, ph) = size.unwrap_or((iw as f64 * 72.0 / 150.0, ih as f64 * 72.0 / 150.0));
-        let (x0, y0, x1, y1) = rect.unwrap_or((0.0, 0.0, pw, ph));
+        let m = place.unwrap_or([pw, 0.0, 0.0, ph, 0.0, 0.0]);
         let rot = if *rotate != 0 { format!(" /Rotate {}", rotate) } else { String::new() };
         w.obj(
             pid,
@@ -697,7 +786,7 @@ pub fn build_pdf(pages: &[(PageImage, Option<(f64, f64)>, Option<(f64, f64, f64,
             )
             .as_bytes(),
         );
-        let content = format!("q {} 0 0 {} {} {} cm /Im0 Do Q", fmt_num(x1 - x0), fmt_num(y1 - y0), fmt_num(x0), fmt_num(y0));
+        let content = format!("q {} cm /Im0 Do Q", m.map(fmt_num).join(" "));
         w.stream(cid, "", content.as_bytes());
         w.stream(iid, &format!(" {}", dict), &data);
     }
@@ -752,4 +841,61 @@ pub fn pdf_images(data: &[u8]) -> Result<Vec<(Vec<u8>, &'static str)>> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A JPEG header carrying EXIF orientation `o` in byte order `order`.
+    pub fn exif_jpeg(o: u16, order: &[u8; 2]) -> Vec<u8> {
+        let le = order == b"II";
+        let (w16, w32) = (
+            |v: u16| if le { v.to_le_bytes().to_vec() } else { v.to_be_bytes().to_vec() },
+            |v: u32| if le { v.to_le_bytes().to_vec() } else { v.to_be_bytes().to_vec() },
+        );
+        let mut tiff = order.to_vec();
+        tiff.extend(w16(42));
+        tiff.extend(w32(8));
+        tiff.extend(w16(2)); // two tags, orientation second
+        tiff.extend([w16(0x010f), w16(2), w32(4), b"ACME".to_vec()].concat());
+        tiff.extend([w16(0x0112), w16(3), w32(1), w16(o), vec![0, 0]].concat());
+        tiff.extend(w32(0));
+        let mut seg = b"Exif\0\0".to_vec();
+        seg.extend(tiff);
+        let mut j = vec![0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0]; // an APP0 first, as most JPEGs have
+        j.extend([0xff, 0xe1]);
+        j.extend(((seg.len() + 2) as u16).to_be_bytes());
+        j.extend(seg);
+        j.extend([0xff, 0xda, 0, 2]);
+        j
+    }
+
+    #[test]
+    fn exif_orientation_is_read_in_either_byte_order() {
+        for o in 1..=8 {
+            assert_eq!(exif_orientation(&exif_jpeg(o, b"II")), o);
+            assert_eq!(exif_orientation(&exif_jpeg(o, b"MM")), o);
+        }
+        assert_eq!(exif_orientation(&[0xff, 0xd8, 0xff, 0xda, 0, 2]), 1); // none
+        assert_eq!(exif_orientation(&exif_jpeg(9, b"II")), 1); // not an orientation
+    }
+
+    #[test]
+    fn exif_pages_show_the_image_as_viewers_do() {
+        // where each stored corner lands on the page, as a viewer shows it
+        // (x right, y down, in units of the displayed size)
+        let corner = |o: u16, u: f64, t: f64| {
+            let ((pw, ph), m) = exif_page(o, (300, 200));
+            let v = 1.0 - t; // PDF image space: row 0 at the top
+            let (x, y) = (m[0] * u + m[2] * v + m[4], m[1] * u + m[3] * v + m[5]);
+            ((x / pw).round() as i32, (1.0 - y / ph).round() as i32)
+        };
+        // top-left and top-right of the stored image, per orientation
+        let want = [(1, (0, 0), (1, 0)), (2, (1, 0), (0, 0)), (3, (1, 1), (0, 1)), (4, (0, 1), (1, 1)), (5, (0, 0), (0, 1)), (6, (1, 0), (1, 1)), (7, (1, 1), (1, 0)), (8, (0, 1), (0, 0))];
+        for (o, tl, tr) in want {
+            assert_eq!((corner(o, 0.0, 0.0), corner(o, 1.0, 0.0)), (tl, tr), "orientation {}", o);
+        }
+        assert_eq!(exif_page(6, (300, 200)).0, (96.0, 144.0)); // turned: portrait
+    }
 }

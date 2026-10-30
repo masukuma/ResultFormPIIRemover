@@ -11,7 +11,9 @@
 //!     of any decoder) or *solid black and listed* in the manifest;
 //!  5. that no blacked block touches a protected results region, and that those
 //!     regions decode to identical pixels in both files;
-//!  6. optionally (--rerun), that re-running the same code, templates and seed
+//!  6. that each page shows its image as the original does: same page size,
+//!     placement and rotation (a JPEG's EXIF orientation included);
+//!  7. optionally (--rerun), that re-running the same code, templates and seed
 //!     on the original reproduces the same output.
 //!
 //! It also writes an overlay per page: the original with every changed block
@@ -228,6 +230,15 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
                 vec![p]
             }
         };
+        // shown as transmitted: turned or mirrored the same way (EXIF
+        // orientation, PDF placement and rotation), on the same page
+        let out = io::source_pages("redacted.pdf", Some(&pdf))?;
+        for (k, (o, p)) in sp.iter().zip(&out).enumerate() {
+            let ((size_o, place_o, rot_o), (size_p, place_p, rot_p)) = (io::shown(o), io::shown(p));
+            let near = |x: &[f64], y: &[f64]| x.iter().zip(y).all(|(a, b)| (a - b).abs() < 0.01);
+            let same = rot_o == rot_p && near(&[size_o.0, size_o.1], &[size_p.0, size_p.1]) && near(&place_o, &place_p);
+            r.add(same, format!("page {}: shown as the original is (page size, placement and rotation)", label(k as u64 + 1)));
+        }
         src_pages = Some(sp);
     } else {
         r.notes.push(

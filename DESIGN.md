@@ -386,6 +386,21 @@ no text layer, no annotations and no metadata. JPEG markers other than
 JFIF/ICC/Adobe (for example EXIF, which can hold camera serials or GPS) are
 dropped.
 
+**The page shows the image the way the transmitted file did.** Redaction
+works on the image as stored, whichever way up it is: pages are matched to
+their template, or read without one, at any quarter turn. The page then
+draws the image turned or mirrored just as the source did:
+- a JPEG file by its EXIF orientation tag. The tag is dropped with the rest
+  of EXIF, so the turn goes into the page instead. A phone photo stored
+  sideways and tagged upright was published sideways before;
+- a PDF page by the matrix that places its image on the page, as well as its
+  `/Rotate`. A scan placed turned was published unturned before.
+
+`verify` checks this against the original: same page size, placement and
+rotation. Mirrored orientations (EXIF 2, 4, 5 and 7; cameras don't write
+them) are drawn correctly, but their pages can't be matched to a template,
+and they go to review.
+
 Next to each PDF goes its signed manifest (`.manifest.json`), plus the ledger
 and batch roots described below. Documents that fail go to `review/`, each
 with a JSON report of why. `review/report.jsonl` logs every document.
@@ -520,7 +535,9 @@ original, the verifier checks:
 - both files' hashes;
 - **every block's coefficients** (identical, or listed and black);
 - that no listed block touches a protected region;
-- that each results region decodes to identical pixels in both files.
+- that each results region decodes to identical pixels in both files;
+- that each page shows its image as the original does (page size, placement
+  and rotation, EXIF orientation included).
 
 It also writes an overlay showing every changed block. With `--rerun` it
 repeats the redaction from the recorded seed and templates and must

@@ -114,7 +114,7 @@ fn altered_result_is_detected() {
     let sp = io::source_pages(s(&root.join("in").join(NAME)), None).unwrap().remove(0);
     let d = tmpdir("tampered");
     let tampered = d.join("tampered.pdf");
-    std::fs::write(&tampered, io::build_pdf(&[(PageImage::Jpeg(&bad), sp.page_size, sp.rect, sp.rotate)]).unwrap()).unwrap();
+    std::fs::write(&tampered, io::build_pdf(&[(PageImage::Jpeg(&bad), sp.page_size, sp.place, sp.rotate)]).unwrap()).unwrap();
     let mpath = root.join("out").join(NAME.replace(".PDF", ".manifest.json"));
     let r = check(root, &tampered, Some(&mpath), &root.join("in").join(NAME), &[], None, None);
     let failed: Vec<&String> = r.checks.iter().filter(|(ok, _)| !ok).map(|(_, m)| m).collect();
@@ -322,6 +322,56 @@ fn what_the_review_finds_is_masked_and_replayed() {
     .unwrap();
     assert!(r.ok(), "{}", r.text());
     assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+#[test]
+fn a_photo_turned_by_its_exif_tag_is_published_as_it_was_shown() {
+    // A phone photo stored sideways, with an EXIF tag telling viewers to turn
+    // it upright: it is redacted where it is stored, and published turned the
+    // same way, which the check against the original confirms.
+    let root = tmpdir("exif");
+    write_template(&root.join("templates").join("sample_rs1")).unwrap();
+    let (scan, _) = simulate_scan(&filled_form(5).unwrap(), 5, 1.0, 1.3).unwrap();
+    let mut stored = opencv::core::Mat::default();
+    opencv::core::rotate(&scan, &mut stored, opencv::core::ROTATE_90_COUNTERCLOCKWISE).unwrap();
+    let jpg = io::encode(&stored, "jpg", 90).unwrap();
+    // EXIF orientation 6, "turn 90 degrees clockwise to show", after SOI
+    let tiff = [b"MM\0*\0\0\0\x08\0\x01".as_slice(), b"\x01\x12\0\x03\0\0\0\x01\0\x06\0\0", b"\0\0\0\0"].concat();
+    let seg = [b"Exif\0\0".as_slice(), &tiff].concat();
+    let mut tagged = vec![0xff, 0xd8, 0xff, 0xe1];
+    tagged.extend(((seg.len() + 2) as u16).to_be_bytes());
+    tagged.extend(&seg);
+    tagged.extend(&jpg[2..]);
+    assert_eq!(io::exif_orientation(&tagged), 6);
+    std::fs::create_dir_all(root.join("in")).unwrap();
+    std::fs::write(root.join("in/photo.jpg"), &tagged).unwrap();
+    let rc = rfpii(&["redact", s(&root.join("in")), "--templates", s(&root.join("templates")), "--out", s(&root.join("out")), "--review", s(&root.join("review")), "--workers", "1", "--no-pdf-signature"]);
+    assert_eq!(rc, 0, "{}", std::fs::read_to_string(root.join("review/report.jsonl")).unwrap_or_default());
+    let out = std::fs::read(root.join("out/photo.pdf")).unwrap();
+    let page = &io::source_pages("photo.pdf", Some(&out)).unwrap()[0];
+    let ((w, h), place, rotate) = io::shown(page);
+    assert!(h > w && rotate == 0, "published upright, as viewers show the photo");
+    let want = io::exif_page(6, (stored.cols(), stored.rows())).1;
+    assert!(place.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.01), "{:?}", place);
+    let m: Value = serde_json::from_str(&std::fs::read_to_string(root.join("out/photo.manifest.json")).unwrap()).unwrap();
+    assert!(m["pages"][0]["blocks_blacked"].as_u64().unwrap() > 0);
+    let r = verify(&VerifyArgs {
+        redacted: &root.join("out/photo.pdf"),
+        manifest: None,
+        original: Some(&root.join("in/photo.jpg")),
+        pubkey: None,
+        ledger: None,
+        overlay_dir: None,
+        rerun_templates: None,
+        trust: &[],
+    })
+    .unwrap();
+    assert!(r.ok() && r.checks.iter().any(|(ok, m)| *ok && m.contains("shown as the original")), "{}", r.text());
+    // the same photo stored upright and untagged is a different page: caught
+    let plain = io::encode(&scan, "jpg", 90).unwrap();
+    std::fs::write(root.join("plain.jpg"), &plain).unwrap();
+    let sp = io::source_pages("plain.jpg", Some(&plain)).unwrap();
+    assert_ne!(io::shown(&sp[0]).1, place);
 }
 
 /// The re-run check of `verify` on `m` (the manifest at `manifest_path`).
