@@ -75,6 +75,19 @@ PASS  page 1: results regions and stamps decode to identical pixels in original 
 RESULT: VERIFIED - only the listed blocks were blacked out; nothing else changed
 ```
 
+A scanned batch (one PDF of many forms) may be published page by page, as
+`NAME.p012.pdf`. Its manifest names the whole original file, by its SHA-256,
+and which page of it this is (`source.page`, of `source.pages`). Verify it
+against the whole original, exactly as above: the check reads
+
+```
+PASS  original matches the manifest's source SHA-256 71af42cf2eb67437...
+PASS  original has 10 pages, as recorded; this is page 4
+PASS  page 4: 135704 of 136400 blocks identical to the original (DCT coefficients); 696 changed, all listed and solid black
+```
+
+and compares the published page with that page of the original only.
+
 `changes/` then contains an image of the original with every changed block
 shaded red, the results regions outlined in green and the stamps in magenta,
 so you can see for yourself where the changes are.

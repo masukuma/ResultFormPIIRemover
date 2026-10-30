@@ -370,3 +370,44 @@ fn manifests_without_alignment_settings_rerun_with_the_defaults() {
     let c = rfpii::align::AlignSettings::from_json(&d.to_json());
     assert_eq!(c.to_json(), d.to_json());
 }
+
+#[test]
+fn a_scanned_batch_is_published_page_by_page() {
+    // one file of three pages: a form, a page nothing can be read on, the
+    // form again (encoded anew: other coefficients)
+    let root = tmpdir("per-page");
+    write_template(&root.join("templates").join("sample_rs1")).unwrap();
+    let (scan, _) = simulate_scan(&filled_form(4).unwrap(), 4, 2.0, 1.3).unwrap();
+    let blank = opencv::core::Mat::new_rows_cols_with_default(scan.rows(), scan.cols(), opencv::core::CV_8UC3, opencv::core::Scalar::all(255.0)).unwrap();
+    let (a, b, c) = (io::encode(&scan, "jpg", 80).unwrap(), io::encode(&blank, "jpg", 80).unwrap(), io::encode(&scan, "jpg", 90).unwrap());
+    let size = Some((1612.0, 2280.0));
+    let pdf = io::build_pdf(&[(PageImage::Jpeg(&a), size, None, 0), (PageImage::Jpeg(&b), size, None, 0), (PageImage::Jpeg(&c), size, None, 0)]).unwrap();
+    std::fs::create_dir_all(root.join("in")).unwrap();
+    let orig = root.join("in").join("batch.pdf");
+    std::fs::write(&orig, pdf).unwrap();
+    assert_eq!(rfpii(&["keygen", s(&root.join("keys"))]), 0);
+    let rc = rfpii(&[
+        "redact", s(&root.join("in")), "--templates", s(&root.join("templates")), "--out", s(&root.join("out")),
+        "--review", s(&root.join("review")), "--workers", "2", "--sign-key", s(&root.join("keys/signing_key.pem")),
+        "--no-pdf-signature", "--per-page",
+    ]);
+    // the page that can't be read is held back alone
+    assert_eq!(rc, 2);
+    let out = root.join("out");
+    assert!(out.join("batch.p001.pdf").exists() && out.join("batch.p003.pdf").exists());
+    assert!(!out.join("batch.p002.pdf").exists() && root.join("review").join("batch.p002.json").exists());
+    let mpath = out.join("batch.p003.manifest.json");
+    let m: Value = serde_json::from_str(&std::fs::read_to_string(&mpath).unwrap()).unwrap();
+    assert_eq!((m["source"]["page"].as_u64(), m["source"]["pages"].as_u64(), m["source"]["name"].as_str()), (Some(3), Some(3), Some("batch.pdf")));
+    // checked against the whole original, by that page, and re-run
+    let r = check(&root, &out.join("batch.p003.pdf"), None, &orig, &[], None, Some(&root.join("templates")));
+    assert!(r.ok(), "{}", r.text());
+    assert!(r.checks.iter().any(|(ok, msg)| *ok && msg.contains("this is page 3")), "{}", r.text());
+    // said to be another page of the same file, it doesn't verify
+    let mut other = m.clone();
+    other["source"]["page"] = serde_json::json!(1);
+    let opath = root.join("other.manifest.json");
+    std::fs::write(&opath, serde_json::to_string(&other).unwrap()).unwrap();
+    let r = check(&root, &out.join("batch.p003.pdf"), Some(&opath), &orig, &[], None, None);
+    assert!(r.checks.iter().any(|(ok, msg)| !*ok && msg.contains("page 1: ") && msg.contains("block")), "{}", r.text());
+}

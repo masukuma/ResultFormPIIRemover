@@ -135,7 +135,7 @@ pub fn source_pages(src: &str, data: Option<&[u8]>) -> Result<Vec<SourcePage>> {
     };
     let sfx = suffix(src);
     if sfx == ".pdf" {
-        return pdf_source_pages(data);
+        return Ok(pdf_source_pages(data, None)?.0);
     }
     if data.starts_with(&[0xff, 0xd8]) {
         return Ok(vec![SourcePage {
@@ -468,23 +468,57 @@ fn render_page(data: &[u8], index: i32, zoom: f64) -> Result<Mat> {
     Ok(bgr)
 }
 
-fn pdf_source_pages(data: &[u8]) -> Result<Vec<SourcePage>> {
-    let fixed;
-    let (doc, data) = match Document::load_mem(data) {
-        Ok(d) => (d, data),
+/// Page `k` (from 1) of a source by itself, and how many pages the source
+/// has: only that page is decoded (a scanned batch may hold hundreds).
+pub fn source_page(src: &str, data: &[u8], k: usize) -> Result<(SourcePage, usize)> {
+    let (mut pages, n) = if suffix(src) == ".pdf" {
+        pdf_source_pages(data, Some(k))?
+    } else {
+        let all = source_pages(src, Some(data))?;
+        let n = all.len();
+        (all.into_iter().skip(k.max(1) - 1).take(1).collect(), n)
+    };
+    match (k >= 1, pages.pop()) {
+        (true, Some(p)) => Ok((p, n)),
+        _ => bail!("page {} of {}: no such page", k, n),
+    }
+}
+
+/// How many pages a source has, none of them decoded for a PDF.
+pub fn page_count(src: &str, data: &[u8]) -> Result<usize> {
+    if suffix(src) == ".pdf" {
+        return Ok(load_pdf(data)?.map(|(d, _)| d.get_pages().len()).unwrap_or(0));
+    }
+    Ok(source_pages(src, Some(data))?.len())
+}
+
+/// The PDF, and its bytes as MuPDF repaired them where lopdf can't read it
+/// as it is (as with PyMuPDF: a truncated download may have no pages left:
+/// None).
+fn load_pdf(data: &[u8]) -> Result<Option<(Document, Option<Vec<u8>>)>> {
+    match Document::load_mem(data) {
+        Ok(d) => Ok(Some((d, None))),
         Err(e) => {
-            // as with PyMuPDF: what MuPDF can repair is read (a truncated
-            // download may have no pages left)
             let (pages, f) = repair(data).map_err(|m| anyhow!("reading PDF: {e}; MuPDF: {m}"))?;
             if pages == 0 {
-                return Ok(vec![]);
+                return Ok(None);
             }
-            fixed = f;
-            (Document::load_mem(&fixed).context("reading repaired PDF")?, fixed.as_slice())
+            Ok(Some((Document::load_mem(&f).context("reading repaired PDF")?, Some(f))))
         }
-    };
+    }
+}
+
+/// A PDF's pages (only page `only`, from 1, if given), and how many it has.
+fn pdf_source_pages(data: &[u8], only: Option<usize>) -> Result<(Vec<SourcePage>, usize)> {
+    let Some((doc, fixed)) = load_pdf(data)? else { return Ok((vec![], 0)) };
+    let data = fixed.as_deref().unwrap_or(data);
+    let all = doc.get_pages();
+    let n = all.len();
     let mut out = Vec::new();
-    for (i, (_, page)) in doc.get_pages().into_iter().enumerate() {
+    for (i, (_, page)) in all.into_iter().enumerate() {
+        if only.is_some_and(|k| k != i + 1) {
+            continue;
+        }
         let (x0, y0, x1, y1) = page_box(&doc, page)?;
         let size = (x1 - x0, y1 - y0);
         let area = size.0 * size.1;
@@ -551,7 +585,7 @@ fn pdf_source_pages(data: &[u8]) -> Result<Vec<SourcePage>> {
             rotate: 0, // the rendering is upright already
         });
     }
-    Ok(out)
+    Ok((out, n))
 }
 
 // --- writing --------------------------------------------------------------------------------
