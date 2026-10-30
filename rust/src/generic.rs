@@ -673,7 +673,15 @@ fn declaration(l: &mut Layout, top: f64, bottom: f64) -> BTreeSet<usize> {
             let k = row(&mut rws, ln.cy(), h);
             rws[k].misread.push(ln.span(a, b).0);
         }
-        if has(&OFFICER_RE, &ln.text) && !stamps::is_stamp_text(&ln.text) {
+        // a stamp's "PRESIDING OFFICER" read into the name written under
+        // it ("PRESiDINGNSOZOGZ") names no officer; the printed label, in
+        // small letters, does even under a stamp
+        let printed = matches(&OFFICER_RE, &ln.text).into_iter().any(|(a, b)| {
+            let (x0, x1) = ln.span(a, b);
+            let caps = ln.chars[a..b].iter().filter(|c| c.is_uppercase()).count() as f64 >= 0.8 * (b - a) as f64;
+            !caps || !l.stamps.iter().any(|s| (0.5 * (x0 + x1) - s.cx).hypot(ln.cy() - s.cy) < s.r)
+        });
+        if printed && !stamps::is_stamp_text(&ln.text) {
             let k = row(&mut rws, ln.cy(), h);
             rws[k].officer = true;
         }
@@ -829,17 +837,20 @@ fn headings_read(l: &Layout, hs: &[Line], vs: &[Line], cy: f64, kinds: &BTreeSet
 /// A page that opens with an officer's lines, no declaration above them:
 /// it goes on with the declaration of the page before (a 2013 Form 34's
 /// back: the deputy's lines, the agents, comments), and has no results on
-/// it if no count is printed on it either. A word of results anywhere above
-/// the comments (a blurred front page whose labels OCR garbled) says
-/// otherwise.
+/// it if no count is printed on it either. The deputy's label may be
+/// garbled ("DeputyPresigingOfficer") or unread, his 'ID No. / Passport'
+/// read, or the page open with the agents (the deputy signed on the
+/// front). A word of results anywhere above the comments (a blurred front
+/// page whose labels OCR garbled) says otherwise.
 fn goes_on_with_declaration(lines: &[OLine], page_h: f64) -> bool {
-    lines.iter().any(|ln| ln.cy() < 0.2 * page_h && has(&ROLE_RE, &ln.text) && !stamps::is_stamp_text(&ln.text))
+    lines.iter().any(|ln| ln.cy() < 0.2 * page_h && has(&OPENER_RE, &ln.text) && !stamps::is_stamp_text(&ln.text))
         && !lines.iter().any(|ln| ln.cy() < 0.7 * page_h && has(&RESULTS_WORD_RE, &ln.text))
 }
 
-// an officer's role, not "presidential"
-static ROLE_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)deputy\s*presid|presiding\s*officer"));
-static RESULTS_WORD_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)vot|ballot|regist|reject|disput|result"));
+// an officer's role (not "presidential"), his ID line, the agents' heading
+static OPENER_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)deputy|presiding\s*officer|id\s*no\W*passport|candidates?\W*or\W*candidates?\W*agents"));
+// "vote", not a name written "VOTU"
+static RESULTS_WORD_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)vote|ballot|regist|reject|disput|result"));
 
 static AGENTS_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)agent"));
 
@@ -1363,13 +1374,19 @@ fn x_fill(text: &str) -> bool {
 pub fn printed(l: &Layout) -> Result<(Mat, Mat)> {
     let mut mask = util::zeros_u8(l.gray.rows(), l.gray.cols())?;
     for ln in &l.lines {
-        if x_fill(&ln.text) || has(&PRINTED_LINE, &ln.text) {
-            let d = [[-2.0f32, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]];
-            let pts: Vector<Point> = (0..4).map(|k| Point::new(round_even((ln.quad[k][0] + d[k][0]) as f64) as i32, round_even((ln.quad[k][1] + d[k][1]) as f64) as i32)).collect();
-            let polys: Vector<Vector<Point>> = vec![pts].into_iter().collect();
-            imgproc::fill_poly_def(&mut mask, &polys, Scalar::all(255.0))?;
-        }
         let lb = ln.bbox();
+        if x_fill(&ln.text) || has(&PRINTED_LINE, &ln.text) {
+            // the characters read, not the whole box: OCR may box a label
+            // with the signature written after it and read the label alone
+            // ("Signature: " over 290 px, the label 130 of them), or with
+            // the signature's first stroke for a stop or a bracket
+            // ("signature:)")
+            let ink: Vec<usize> = (0..ln.chars.len()).filter(|&i| ln.chars[i].is_alphanumeric() || ln.chars[i] == ':').collect();
+            if let (Some(&a), Some(&b)) = (ink.first(), ink.last()) {
+                let (x0, x1) = ln.span(a, b + 1);
+                imgproc::rectangle_points(&mut mask, Point::new(x0 as i32 - 2, lb.1 as i32 - 2), Point::new(x1 as i32 + 2, lb.3 as i32 + 2), Scalar::all(255.0), -1, imgproc::LINE_8, 0)?;
+            }
+        }
         for (a, b) in matches(&FREE_LABEL, &ln.text) {
             let (x0, x1) = ln.span(a, b);
             imgproc::rectangle_points(&mut mask, Point::new(x0 as i32 - 2, lb.1 as i32 - 2), Point::new(x1 as i32 + 2, lb.3 as i32 + 2), Scalar::all(255.0), -1, imgproc::LINE_8, 0)?;

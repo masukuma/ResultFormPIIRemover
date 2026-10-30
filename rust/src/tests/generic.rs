@@ -325,6 +325,14 @@ fn a_page_opening_with_an_officers_lines_goes_on_with_the_declaration() {
     // comments at the foot of a back page may speak of votes
     back[1] = at("There were no disputed votes", 230.0, 1700.0, 900.0, 1730.0);
     assert!(goes_on_with_declaration(&back, 2040.0));
+    // nor is an agent's name read "VOTU" a word of results
+    back[1] = at("VOTU", 200.0, 545.0, 330.0, 573.0);
+    assert!(goes_on_with_declaration(&back, 2040.0));
+    // the deputy's label garbled, or unread but for his ID line, or the
+    // page opening with the agents (2013 back pages, Baringo)
+    for opener in ["DeputyPresigingOfficer:", "ID No. / Passport:", "CandidatesorCandidates'Agents"] {
+        assert!(goes_on_with_declaration(&[at(opener, 276.0, 114.0, 562.0, 139.0)], 2040.0), "{}", opener);
+    }
 }
 
 /// The 2013 Form 34's agents' table, its heading row at y = 465: number,
@@ -375,4 +383,53 @@ fn an_agents_section_is_found_below_the_results() {
     assert!(agents_section(&[at("Candidates or Candidates' Agents", 177.0, 352.0, 558.0, 381.0)], 0.0));
     // above the declaration it is someone else's
     assert!(!agents_section(&lines, 1500.0));
+}
+
+#[test]
+fn a_stamps_lettering_read_into_a_name_names_no_officer() {
+    // KIAMBU (117) p15: the stamp's "PRESIDING" read with the name under it
+    let lines = vec![
+        at("Presiding Officer:", 326.0, 1924.0, 531.0, 1952.0),
+        at("PRESiDINGNSOZOGZ", 631.0, 1953.0, 933.0, 1987.0),
+        at("Name:", 325.0, 1960.0, 410.0, 1991.0),
+        at("ID No. / Passport:", 325.0, 1996.0, 534.0, 2031.0),
+        at("Signature:.", 326.0, 2041.0, 452.0, 2068.0),
+    ];
+    let stamp = crate::stamps::Stamp::new(708.0, 1959.0, 93.0, 1.0, "ring");
+    let mut l = page(lines.clone());
+    l.stamps.push(stamp.clone());
+    declaration(&mut l, 1900.0, 2100.0);
+    assert!(l.problems.is_empty(), "{:?}", l.problems);
+    assert_eq!(l.fields.iter().filter(|f| f.kind == "signature").count(), 1);
+    // with no stamp found there, it is an officer's line without a signature line
+    let mut l = page(lines.clone());
+    declaration(&mut l, 1900.0, 2100.0);
+    assert!(l.problems.iter().any(|p| p.contains("2 officer(s) named but 1")), "{:?}", l.problems);
+    // the printed label, in small letters, names one even under a stamp
+    let mut l = page(vec![at("Deputy Presiding Officer:", 326.0, 1924.0, 600.0, 1952.0), lines[4].clone()]);
+    l.stamps.push(crate::stamps::Stamp::new(450.0, 1938.0, 93.0, 1.0, "ring"));
+    l.lines.push(at("Presiding Officer:", 326.0, 1824.0, 531.0, 1852.0));
+    declaration(&mut l, 1800.0, 2100.0);
+    assert!(l.problems.iter().any(|p| p.contains("2 officer(s) named but 1")), "{:?}", l.problems);
+}
+
+#[test]
+fn printed_text_is_masked_where_its_characters_are() {
+    // Tiaty p19: OCR boxed "Signature:" with the signature after it (to
+    // x = 595) and read the label alone
+    let mut pos: Vec<f64> = (0..10).map(|i| 0.03 + 0.04 * i as f64).collect();
+    pos.push(0.5);
+    let label = OLine::new([[306.0, 2022.0], [595.0, 2022.0], [595.0, 2064.0], [306.0, 2064.0]], "Signature: ".into(), 0.96, pos, vec![0.96; 11]);
+    let heading = at("Signature", 586.0, 448.0, 696.0, 475.0);
+    let (mask, _) = printed(&page(vec![label, heading])).unwrap();
+    let px = |x: i32, y: i32| *mask.at_2d::<u8>(y, x).unwrap();
+    assert_eq!(px(330, 2043), 255);
+    assert_eq!(px(520, 2043), 0, "the signature is no print");
+    assert_eq!((px(590, 461), px(692, 461)), (255, 255));
+    // Luanda p33: the signature's first stroke read as a bracket
+    let mut pos: Vec<f64> = (0..10).map(|i| 0.03 + 0.04 * i as f64).collect();
+    pos.push(0.8);
+    let label = OLine::new([[295.0, 1914.0], [623.0, 1914.0], [623.0, 1972.0], [295.0, 1972.0]], "signature:)".into(), 0.93, pos, vec![0.93; 11]);
+    let (mask, _) = printed(&page(vec![label])).unwrap();
+    assert_eq!((*mask.at_2d::<u8>(1943, 330).unwrap(), *mask.at_2d::<u8>(1943, 520).unwrap()), (255, 0));
 }

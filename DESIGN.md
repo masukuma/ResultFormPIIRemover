@@ -923,7 +923,11 @@ It is on by default (`--no-generic` turns it off) and needs the OCR models
 5. **Declaration.** Each officer's line is found by its "Signature" and "Date"
    labels; the signature field lies between them. The band is OCR'd again at
    2.5× because, at page scale, a label running into handwriting is often
-   missed. The officers' written names are kept for step 7.
+   missed. The officers' written names are kept for step 7. A page naming
+   more officers than it has signature lines goes to review; a stamp's
+   "PRESIDING OFFICER", read in capitals inside the stamp's circle and often
+   run into the name written under it ("PRESiDINGNSOZOGZ"), names no
+   officer. The printed label, in small letters, still does under a stamp.
 6. **Numbers written anywhere else.** An ID (7–9 digits that aren't a date,
    or digits after "ID") or a phone number written below the results gets the
    same partial masking as in the table.
@@ -953,7 +957,12 @@ It is on by default (`--no-generic` turns it off) and needs the OCR models
    signature and digit masking as template zones, with glyph sizes scaled to
    the text height, and then through the same block proof, gates, manifest
    and verification. Typed "XXXX" fill and printed labels inside a field are
-   left alone.
+   left alone: a label as far as the characters OCR read in it, not the box
+   OCR drew round it. OCR often boxes "Signature:" together with the
+   signature written after it and reads the label alone; taking the whole
+   box for print hid those signatures from the finder, which judged the line
+   empty and left them visible: many of the 276 officers' lines judged
+   empty in the first run over the 2013 Forms 34 were such signatures.
 
 The manifest records what was read (the page frame, each field, the notes)
 and the OCR engine with its models' hashes, so `rfpii verify --rerun` can

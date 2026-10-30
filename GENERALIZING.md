@@ -67,8 +67,12 @@ readable.
 3. Printed rules give the tables.
 4. Each label's meaning gives the role of the field next to it or below it.
 5. Everything above the declaration is protected. A page that opens with
-   an officer's lines and prints no counts goes on with the declaration of
-   the page before (the 2013 back page): it has no results to protect.
+   an officer's lines (his role, garbled or not, or his "ID No. / Passport"
+   line when the role isn't read) or with the agents' heading, and prints
+   no counts, goes on with the declaration of the page before (the 2013
+   back page): it has no results to protect. A results word ("vote",
+   "ballot", "registered"...) above the comments says otherwise; a name
+   OCR reads as "VOTU" does not.
 6. A signatories table missing the ID or phone column is taken as it is
    only when every other column's heading is read, and none of them is
    for an ID or phone number: otherwise the missing column may simply not
