@@ -275,6 +275,43 @@ impl Drop for Permit {
     }
 }
 
+/// What the model hosts were asked for in this process, by host and
+/// model: requests answered, and the tokens the host counted (input,
+/// images included, and output), as its replies report them. What a call
+/// costs follows from its host's price per token.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct Usage {
+    pub requests: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+static USAGE: std::sync::LazyLock<std::sync::Mutex<std::collections::BTreeMap<(String, String), Usage>>> = std::sync::LazyLock::new(Default::default);
+
+/// The tokens a reply reports: Ollama's `prompt_eval_count` and
+/// `eval_count`, or an OpenAI-style `usage`.
+pub fn reply_tokens(reply: &Value) -> (u64, u64) {
+    let first = |keys: &[&str]| keys.iter().find_map(|k| k.split('.').try_fold(reply, |v, p| v.get(p)).and_then(Value::as_u64)).unwrap_or(0);
+    (first(&["prompt_eval_count", "usage.prompt_tokens", "usage.input_tokens"]), first(&["eval_count", "usage.completion_tokens", "usage.output_tokens"]))
+}
+
+fn record_usage(host: &str, model: &str, reply: &Value) {
+    let (i, o) = reply_tokens(reply);
+    if let Ok(mut u) = USAGE.lock() {
+        let e = u.entry((host.to_string(), model.to_string())).or_default();
+        e.requests += 1;
+        e.input_tokens += i;
+        e.output_tokens += o;
+    }
+}
+
+/// The usage so far, as a list of {host, model, requests, input_tokens,
+/// output_tokens}.
+pub fn usage() -> Value {
+    let u = USAGE.lock().map(|u| u.clone()).unwrap_or_default();
+    Value::Array(u.into_iter().map(|((host, model), x)| json!({"host": host, "model": model, "requests": x.requests, "input_tokens": x.input_tokens, "output_tokens": x.output_tokens})).collect())
+}
+
 /// What a job lets its model clients send (HARNESS.md §7): only images its
 /// tools made (`job::view`: crops of published pages, views of held ones)
 /// and views `find`, `check` and `locate` cut from those, and no text with
@@ -630,7 +667,12 @@ impl Ollama {
                 Ok(mut resp) => {
                     let status = resp.status().as_u16();
                     if status == 200 {
-                        return resp.body_mut().read_json().map_err(|e| anyhow!("Ollama reply: {e}"));
+                        let reply: Value = resp.body_mut().read_json().map_err(|e| anyhow!("Ollama reply: {e}"))?;
+                        // what the model was asked, not what the host says about it
+                        if !url.ends_with("/api/show") {
+                            record_usage(&host_name(&self.s.host), &self.s.model, &reply);
+                        }
+                        return Ok(reply);
                     }
                     last = format!("HTTP {}", status);
                     if !(status == 429 || status >= 500) {
@@ -836,26 +878,16 @@ impl Ollama {
         let (small, (sx, sy)) = self.resize(img)?;
         let (h, w) = (small.rows() as f64, small.cols() as f64);
         let prompt = LOCATE_PROMPT.replace("{w}", &format!("{}", w as i64)).replace("{h}", &format!("{}", h as i64));
-        let (out, _) = self.ask_cut(&prompt, &small, img, locate_schema())?;
-        let mut boxes = Vec::new();
-        for it in out["items"].as_array().cloned().unwrap_or_default() {
-            let label = it["label"].as_str().unwrap_or("");
-            let bb: Vec<f64> = it["bbox"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
-            if !LABELS.contains(&label) || bb.len() != 4 {
-                continue;
-            }
-            let (mut x0, mut y0, mut x1, mut y1) = (bb[0], bb[1], bb[2], bb[3]);
-            if self.s.coords == "norm1000" {
-                (x0, x1, y0, y1) = (x0 * w / 1000.0, x1 * w / 1000.0, y0 * h / 1000.0, y1 * h / 1000.0);
-            }
-            let (x0, x1) = (x0.min(x1), x0.max(x1));
-            let (y0, y1) = (y0.min(y1), y0.max(y1));
-            if x1 - x0 < 2.0 || y1 - y0 < 2.0 {
-                continue;
-            }
-            boxes.push(Box { label: label.into(), x0: x0 / sx, y0: y0 / sy, x1: x1 / sx, y1: y1 / sy });
-        }
-        Ok(boxes)
+        let sent = jpeg(&small)?;
+        self.cut(img, &sent)?;
+        // read as `find` reads its reply: models wrap the JSON in a fence
+        // whatever `format` asks, and gemma models answer `box_2d`
+        let reply = self.chat(&prompt, &sent, locate_schema())?;
+        let Some(v) = loose_json(&reply) else { bail!("{} answered something that isn't JSON: {:.120}", self.s.model, reply) };
+        Ok(reply_boxes(&v, w, h, &self.s.coords)
+            .into_iter()
+            .map(|f| Box { label: f.label, x0: f.rect[0] / sx, y0: f.rect[1] / sy, x1: f.rect[2] / sx, y1: f.rect[3] / sy })
+            .collect())
     }
 }
 

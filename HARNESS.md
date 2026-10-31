@@ -383,8 +383,8 @@ The report is described in §10.
 
 | Role | Needs | Candidates (Ollama Cloud, 2026) |
 |---|---|---|
-| Orchestrator: policy, plans, phase decisions, notes | tool calling, reasoning, long context, JSON | `qwen3.5:397b`, `kimi-k2.6`, `glm-5.1`, `deepseek-v4-flash`, `gpt-oss:120b` |
-| Vision finder and checker (published crops only) | vision, JSON | `gemma4:31b` (the current `--vlm-audit` default: on 88 spots flagged on redacted Forms 34A, as checker it kept 26 of 31 real misses and dropped 53 of 56 false alarms), `qwen3.5:397b` |
+| Orchestrator: policy, plans, phase decisions, notes | tool calling, reasoning, long context, JSON | `gpt-oss:120b` (used for the cost measurement in API.md), `deepseek-v4.1-flash`, `glm-5.3-flash`, `kimi-k2.6` (`qwen3.5:397b` was retired on 25 September 2026) |
+| Vision finder and checker (published crops only) | vision, JSON | `gemma4:31b` (the current `--vlm-audit` default: on 88 spots flagged on redacted Forms 34A, as checker it kept 26 of 31 real misses and dropped 53 of 56 false alarms), `deepseek-v4.1-flash` |
 | Scored checks | the same answer every time | Clef (`--vlm-checker clef`), as now |
 | Held pages: triage, and locating fields (§4.7) | vision, JSON | the vision models above |
 
