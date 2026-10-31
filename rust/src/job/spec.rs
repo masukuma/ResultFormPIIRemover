@@ -134,6 +134,12 @@ impl JobFile {
     pub fn load(path: &Path) -> Result<JobFile> {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let mut j: JobFile = serde_yaml::from_str(&text).with_context(|| format!("{} is not a job file", path.display()))?;
+        // an empty name would be taken for the host's default model
+        for (role, names) in [("orchestrator", &j.models.orchestrator), ("vision", &j.models.vision)] {
+            if names.iter().any(|n| n.trim().is_empty()) {
+                anyhow::bail!("{}: models.{} names an empty model; leave the list out for no model", path.display(), role);
+            }
+        }
         let dir = path.parent().unwrap_or(Path::new("."));
         let abs = |p: &Path| if p.is_absolute() { p.to_path_buf() } else { dir.join(p) };
         j.inputs = j.inputs.iter().map(|i| abs(Path::new(i)).to_string_lossy().into_owned()).collect();
@@ -171,5 +177,8 @@ mod tests {
         assert!(j.held_pages == HeldPages::Cloud && j.models.vision == ["gemma4:31b"] && j.models.orchestrator.is_empty());
         std::fs::write(dir.join("bad.yaml"), "inputs: [in/]\noutputs: out\nsign_key: k\ncontroller: c\ntemplates: t\nheld_pages: sometimes\n").unwrap();
         assert!(JobFile::load(&dir.join("bad.yaml")).is_err());
+        // an empty model name is refused, not taken for the host's default
+        std::fs::write(dir.join("empty.yaml"), "inputs: [in/]\noutputs: out\nsign_key: k\ncontroller: c\ntemplates: t\nmodels: {orchestrator: [''], vision: ['']}\n").unwrap();
+        assert!(JobFile::load(&dir.join("empty.yaml")).unwrap_err().to_string().contains("empty model"));
     }
 }
