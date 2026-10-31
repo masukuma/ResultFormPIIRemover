@@ -181,8 +181,15 @@ impl Models {
     /// One structured call to `c`, journalled: the parsed reply, or None.
     #[allow(clippy::too_many_arguments)]
     fn call(&self, journal: &Journal, phase: &str, purpose: &str, c: &Ollama, prompt: &str, images: &[&[u8]], schema: Value) -> Option<Value> {
+        self.call_sent(journal, phase, purpose, c, prompt, images, schema).0
+    }
+
+    /// `call`, and the images the guard let go with it (sent, whatever the
+    /// reply).
+    #[allow(clippy::too_many_arguments)]
+    fn call_sent(&self, journal: &Journal, phase: &str, purpose: &str, c: &Ollama, prompt: &str, images: &[&[u8]], schema: Value) -> (Option<Value>, Vec<Value>) {
         if !self.spend(journal, phase) {
-            return None;
+            return (None, vec![]);
         }
         let r = c.chat_json(prompt, images, schema);
         let sent = self.guard.take_sent();
@@ -192,7 +199,7 @@ impl Models {
             Err(err) => e["error"] = json!(format!("{:#}", err)),
         }
         let _ = journal.write(phase, "model", e);
-        r.ok()
+        (r.ok(), sent)
     }
 
     /// The policy the orchestrator compiles from `instructions`, checked;
@@ -223,19 +230,21 @@ impl Models {
     /// What a held page is: from its triage view (sent to the vision model)
     /// if given, else from its diagnostics alone (to the orchestrator). The
     /// reply, checked against the schema's values; None if it can't be read.
-    pub fn triage(&self, diagnostics: &Value, view: Option<&View>, document: &str, page: usize, journal: &Journal) -> Option<Value> {
+    /// A view that left for a host abroad is recorded as a transfer whatever
+    /// the reply; Err if that record can't be written.
+    pub fn triage(&self, diagnostics: &Value, view: Option<&View>, document: &str, page: usize, journal: &Journal) -> Result<Option<Value>> {
         let text = format!("{}{}", TRIAGE_PROMPT, scrub::fields(diagnostics, DIAGNOSTICS));
-        let (c, images): (&Ollama, Vec<&[u8]>) = match view {
-            Some(v) => (self.vision.as_ref()?, vec![v.encoded.as_slice()]),
-            None => (self.orchestrator.as_ref()?, vec![]),
+        let (c, images): (&Ollama, Vec<&[u8]>) = match (view, &self.vision, &self.orchestrator) {
+            (Some(v), Some(c), _) => (c, vec![v.encoded.as_slice()]),
+            (None, _, Some(c)) => (c, vec![]),
+            _ => return Ok(None),
         };
-        let reply = self.call(journal, "triage", "triage", c, &text, &images, triage_schema())?;
-        if let Some(v) = view {
-            let data = "the held page with every mask the redactor placed, 512 px on its long side: too small to read handwriting".to_string();
-            let _ = self.transfer(c, "triage of a held page", data, document, page, &[json!({"sha256": v.sha256})]);
-        }
+        let (reply, sent) = self.call_sent(journal, "triage", "triage", c, &text, &images, triage_schema());
+        let data = format!("the held page with every mask the redactor placed, {} px on its long side: too small to read handwriting", super::view::TRIAGE_SIDE);
+        self.transfer(c, "triage of a held page", data, document, page, &sent)?;
+        let Some(reply) = reply else { return Ok(None) };
         let ok = |k: &str, of: &[&str]| reply[k].as_str().is_some_and(|x| of.contains(&x));
-        (ok("kind", &["this_form", "other_form", "tally_sheet", "blank", "not_a_form"]) && ok("action", &["locate", "retry", "not_for_this_job", "people"])).then_some(reply)
+        Ok((ok("kind", &["this_form", "other_form", "tally_sheet", "blank", "not_a_form"]) && ok("action", &["locate", "retry", "not_for_this_job", "people"])).then_some(reply))
     }
 
     /// The review of a crop: spots the finder sees breaking the policy's
@@ -264,21 +273,27 @@ impl Models {
     /// Where the signatures, ID and phone numbers of a held page are, from
     /// its full-resolution view (the guard and the client refuse it unless
     /// the job allows held pages to go to the cloud model): boxes in page px.
-    pub fn locate(&self, view: &View, document: &str, page: usize, journal: &Journal) -> Option<Vec<crate::vlm::Box>> {
-        let c = self.vision.as_ref()?;
+    /// Err if the record of its transfer abroad can't be written.
+    pub fn locate(&self, view: &View, document: &str, page: usize, journal: &Journal) -> Result<Option<Vec<crate::vlm::Box>>> {
+        let Some(c) = self.vision.as_ref() else { return Ok(None) };
         if !self.spend(journal, "triage") {
-            return None;
+            return Ok(None);
         }
         let r = c.locate(&view.image);
         let sent = self.guard.take_sent();
         let data = "the held page, unredacted, at full resolution: names, parties, ID and phone numbers and signatures of officers and agents".to_string();
-        let id = self.transfer(c, "locating the fields of a held page", data, document, page, &sent).ok().flatten();
-        let mut e = json!({"purpose": "locate", "model": c.s.model, "host": crate::vlm::host_name(&c.s.host), "document": document, "page": page, "images_sent": sent, "transfer": id});
+        let id = self.transfer(c, "locating the fields of a held page", data, document, page, &sent);
+        let mut e = json!({"purpose": "locate", "model": c.s.model, "host": crate::vlm::host_name(&c.s.host), "document": document, "page": page, "images_sent": sent});
+        match &id {
+            Ok(t) => e["transfer"] = json!(t),
+            Err(err) => e["transfer_error"] = json!(format!("{:#}", err)),
+        }
         match &r {
             Ok(b) => e["reply"] = json!(b.iter().map(|b| json!({"label": b.label, "box": [b.x0, b.y0, b.x1, b.y1]})).collect::<Vec<_>>()),
             Err(err) => e["error"] = json!(format!("{:#}", err)),
         }
-        let _ = journal.write("triage", "model", e);
-        r.ok()
+        journal.write("triage", "model", e)?;
+        id?;
+        Ok(r.ok())
     }
 }

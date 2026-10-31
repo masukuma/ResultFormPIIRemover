@@ -470,3 +470,28 @@ fn a_job_asking_to_hide_names_is_redacted_but_not_released() {
     assert!(transfers.lines().all(|l| l.contains("review of a published page")));
     canaries(&root, &h);
 }
+
+#[test]
+fn a_held_view_sent_abroad_is_recorded_even_when_the_reply_is_unreadable() {
+    let root = tmpdir("job-garbled");
+    // the vision model answers the triage view with something that isn't
+    // JSON: no verdict, so the page is sorted by fixed rules and never sent
+    // at full resolution; but its triage view left, so it is a transfer.
+    let h = host(|_, body| match asks(body) {
+        "policy" => default_policy(),
+        "pilot note" => json!({"note": "fine", "groups": []}),
+        "triage" => json!("sorry, I can't tell"),
+        _ => json!("[]"),
+    });
+    let job = job_setup(&root, &format!("dpia: {{reference: ODPC/DPIA/2026/4, status: approved}}\nheld_pages: cloud\nmodels: {{orchestrator: [orch], vision: [eyes], host: \"{}\"}}\n", h.url));
+    assert_eq!(rfpii(&["job", s(&job)]).0, 2);
+    let o = root.join("out");
+    let triage = events(&root, "model").into_iter().find(|e| e["purpose"] == "triage").unwrap();
+    assert!(triage.get("error").is_some() && triage["images_sent"].as_array().unwrap().len() == 1, "{}", triage);
+    let transfers: Vec<Value> = std::fs::read_to_string(o.join("staging/transfers.jsonl")).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let held: Vec<&Value> = transfers.iter().filter(|t| t["purpose"] == "triage of a held page").collect();
+    assert_eq!(held.len(), 1, "{:?}", transfers);
+    assert_eq!(held[0]["images_sha256"][0], triage["images_sent"][0]["sha256"]);
+    assert!(!transfers.iter().any(|t| t["purpose"] == "locating the fields of a held page"));
+    canaries(&root, &h);
+}

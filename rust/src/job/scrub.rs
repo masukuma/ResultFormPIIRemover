@@ -20,9 +20,8 @@ pub fn digits(s: &str) -> String {
 /// Text the redactor wrote: quoted text replaced by `'…'`, then runs of
 /// digits by `#`.
 pub fn text(s: &str) -> String {
-    let single = regex::Regex::new(r#"(^|[\s(\[:,=])'[^'\n]*'"#).unwrap();
     let double = regex::Regex::new(r#""[^"\n]*""#).unwrap();
-    let s = single.replace_all(s, "$1'…'");
+    let s = crate::annex::unquote(s);
     digits(&double.replace_all(&s, "'…'"))
 }
 
@@ -68,6 +67,10 @@ mod tests {
         assert_eq!(text("label 'JANE DOE 07123' not found; \"Tel 0712 345678\" near"), "label '…' not found; '…' near");
         // an apostrophe is not a quote
         assert_eq!(text("the officers' signatures don't show"), "the officers' signatures don't show");
+        assert_eq!(text("can't see the printed rule at the column's left edge"), "can't see the printed rule at the column's left edge");
+        // a quote holding an apostrophe, or in brackets, or before a colon
+        assert_eq!(text("'AGENT'S NAME' column also holds 'ID NO': a rule is missing"), "'…' column also holds '…': a rule is missing");
+        assert_eq!(text("phone number written in free text ('0712 345 678') partially masked"), "phone number written in free text ('…') partially masked");
     }
 
     #[test]

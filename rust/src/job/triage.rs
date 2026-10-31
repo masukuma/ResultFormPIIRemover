@@ -75,7 +75,10 @@ impl Job {
             if let Some(v) = &v {
                 sent.push(json!({"mode": "triage", "size": format!("{} px", view::TRIAGE_SIDE), "sha256": v.sha256}));
             }
-            let verdict = self.models.as_ref().and_then(|m| m.triage(&d, v.as_ref(), &u.name(), u.page_no(), &self.journal));
+            let verdict = match self.models.as_ref() {
+                Some(m) => m.triage(&d, v.as_ref(), &u.name(), u.page_no(), &self.journal)?,
+                None => None,
+            };
             let (category, mut action, why) = match &verdict {
                 Some(x) => (x["kind"].as_str().unwrap_or("").to_string(), x["action"].as_str().unwrap_or("").to_string(), format!("the {} model's verdict", if v.is_some() { "vision" } else { "orchestrator" })),
                 None => categorise(&d, &reason),
@@ -104,7 +107,11 @@ impl Job {
     fn locate(&mut self, u: &Unit, sent: &mut Vec<Value>) -> Result<String> {
         let v = self.held_view(u, Mode::Locate)?;
         sent.push(json!({"mode": "locate", "size": "full resolution", "sha256": v.sha256}));
-        let boxes = self.models.as_ref().and_then(|m| m.locate(&v, &u.name(), u.page_no(), &self.journal)).unwrap_or_default();
+        let boxes = match self.models.as_ref() {
+            Some(m) => m.locate(&v, &u.name(), u.page_no(), &self.journal)?,
+            None => None,
+        }
+        .unwrap_or_default();
         if boxes.is_empty() {
             return Ok("people".into());
         }
