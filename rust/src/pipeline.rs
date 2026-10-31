@@ -692,7 +692,7 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
             continue;
         }
         let st = struck(cells);
-        let opts = SigOptions { reach: reach(cells), reference: Some(&t.image), printed: printed(cells), centered: on_line(cells), strikes: Some(st.as_slice()), exclude: stamp_ink.as_ref() };
+        let opts = SigOptions { reach: reach(cells), reference: Some(&t.image), printed: printed(cells), centered: on_line(cells), strikes: Some(st.as_slice()), exclude: stamp_ink.as_ref(), hang: 0.0 };
         report.extend(masking::signature_column(&mut canvas, &gray, &mapper(cells)?, cells, ms, &opts)?);
     }
     for (key, cells) in &columns {
@@ -806,7 +806,7 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
                 continue;
             }
             let st = struck(cells);
-            let opts = SigOptions { reach: reach(cells), reference: Some(&t.image), printed: printed(cells), centered: on_line(cells), strikes: Some(st.as_slice()), exclude: stamp_ink.as_ref() };
+            let opts = SigOptions { reach: reach(cells), reference: Some(&t.image), printed: printed(cells), centered: on_line(cells), strikes: Some(st.as_slice()), exclude: stamp_ink.as_ref(), hang: 0.0 };
             let r = masking::verify_signatures(&gray, &out, &mapper(cells)?, cells, ms, Some(&keep), &opts)?;
             if !r.is_empty() {
                 leaks.push(r);

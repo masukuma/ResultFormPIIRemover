@@ -14,7 +14,7 @@ const Y: i32 = 200;
 const W: i32 = 220;
 
 fn none() -> SigOptions<'static> {
-    SigOptions { reach: Reach::default(), reference: None, printed: None, centered: false, strikes: None, exclude: None }
+    SigOptions { reach: Reach::default(), reference: None, printed: None, centered: false, strikes: None, exclude: None, hang: 0.0 }
 }
 
 fn centered() -> SigOptions<'static> {
@@ -385,6 +385,11 @@ fn a_signature_hanging_below_its_line_is_still_its_lines() {
     }
     let mut canvas = gray(320, 900, 255);
     assert_eq!(modes(&sigs(&mut canvas, &img, &field, &centered())), ["empty"]);
+    // ... unless nothing is written under the line (an officer's last line)
+    let last = SigOptions { hang: 45.0, ..centered() };
+    let mut canvas = gray(320, 900, 255);
+    assert_eq!(modes(&sigs(&mut canvas, &img, &field, &last)), ["signature"]);
+    assert_eq!(verify_sig(&img, &apply(&canvas, &img), &field, &last), "");
 }
 
 /// A signature on its line, 150-400 px; `draw` draws the line. Returns the

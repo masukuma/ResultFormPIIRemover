@@ -1393,6 +1393,9 @@ pub struct SigOptions<'a> {
     pub centered: bool,
     pub strikes: Option<&'a [Strike]>,
     pub exclude: Option<&'a Mat>,
+    /// px below the cells where writing is still theirs (`centered` only):
+    /// an officer's last line, with no next line's writing under it
+    pub hang: f64,
 }
 
 /// Signature blobs in a column. `o.printed` (template space, nonzero =
@@ -1403,7 +1406,7 @@ pub struct SigOptions<'a> {
 /// the neighbouring lines). Strokes mostly on the next line belong to it; an
 /// underline joins only the strokes crossing it.
 fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, more_below: f64, o: &SigOptions) -> Result<(Vec<SigBlob>, [f64; 2], Vec<(f64, f64)>, Vec<Zone>, Img)> {
-    let (above, below) = sig_window(cells, s, o.reach, more_below);
+    let (above, below) = sig_window(cells, s, o.reach, more_below + o.hang);
     let cs = column_strip(gray, f, cells, above, below, SIG_OVERRUN)?;
     let row_h = median_row_h(&cs.cells);
     let mut ink_m = ink_mask(&cs.strip, row_h, true)?;
@@ -1438,6 +1441,7 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
     }
     let lo = cs.bands[0].0 as i64;
     let hi = cs.bands.last().unwrap().1.ceil() as i64;
+    let hi_on = hi + o.hang.round() as i64;
     let mut bridge: Option<Img> = None;
     if o.centered {
         let rref = match o.reference {
@@ -1504,7 +1508,7 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
             if ink.d[k] > 0 {
                 total[l as usize] += 1;
                 let yy = (k / ink.w) as i64;
-                if yy >= lo.max(0) && yy < hi.max(0) {
+                if yy >= lo.max(0) && yy < hi_on.max(0) {
                     inside[l as usize] += 1;
                 }
             }
@@ -1534,7 +1538,7 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
                     crossing |= br.at(xx as usize, yy as usize) > 0;
                     if ink.at(xx as usize, yy as usize) > 0 {
                         total += 1;
-                        if yy >= lo && yy < hi {
+                        if yy >= lo && yy < hi_on {
                             inside += 1;
                         }
                     }

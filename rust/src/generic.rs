@@ -752,16 +752,7 @@ fn declaration(l: &mut Layout, top: f64, bottom: f64) -> BTreeSet<usize> {
             l.problems.push(format!("declaration line at y={:.0}: no room for a signature before 'Date'", cy));
             continue;
         }
-        // nothing written under the line but a stamp's lettering (a 2013
-        // Form 34's last line, over the security stripe): a signature
-        // hanging below the line is the line's, there's no next line's
-        let under = l.lines.iter().any(|o| {
-            let (ox0, oy0, ox1, oy1) = o.bbox();
-            let in_stamp = l.stamps.iter().any(|s| ((ox0 + ox1) / 2.0 - s.cx).hypot((oy0 + oy1) / 2.0 - s.cy) < s.r);
-            oy0 > cy + 0.5 * h && oy0 < cy + 2.0 * h && ox1 > x0 && ox0 < x1 && !in_stamp
-        });
-        let hang = if under { 0.0 } else { h };
-        let mut z = Zone::new(&format!("signature@{:.0},{:.0}", x0, cy), [x0, cy - 0.75 * h, x1 - x0, 1.3 * h + hang], "signature");
+        let mut z = Zone::new(&format!("signature@{:.0},{:.0}", x0, cy), [x0, cy - 0.75 * h, x1 - x0, 1.3 * h], "signature");
         z.search = Some([0.9 * h, 0.5 * h]);
         l.fields.push(Field { kind: "signature".into(), zones: vec![z], source: "declaration".into(), label: how, label_box: (x0, cy - 0.5 * h, x1, cy + 0.5 * h) });
     }
@@ -890,6 +881,24 @@ fn officer_lines_end(lines: &[OLine], from: f64) -> f64 {
             _ => return bottom,
         }
     }
+}
+
+/// How far below an officer's signature line writing is still the line's:
+/// a printed line where nothing is written under it but a stamp's lettering
+/// (a 2013 Form 34's last line, over the security stripe), there being no
+/// next line's writing to tell it from.
+fn hang(l: &Layout, fl: &Field) -> f64 {
+    if fl.source != "declaration" {
+        return 0.0;
+    }
+    let (x0, y0, x1, y1) = fl.label_box;
+    let (cy, h) = ((y0 + y1) / 2.0, y1 - y0);
+    let under = l.lines.iter().any(|o| {
+        let (ox0, oy0, ox1, oy1) = o.bbox();
+        let in_stamp = l.stamps.iter().any(|s| ((ox0 + ox1) / 2.0 - s.cx).hypot((oy0 + oy1) / 2.0 - s.cy) < s.r);
+        oy0 > cy + 0.5 * h && oy0 < cy + 2.0 * h && ox1 > x0 && ox0 < x1 && !in_stamp
+    });
+    if under { 0.0 } else { h }
 }
 
 // --- labelled fields outside tables -------------------------------------------------------------
@@ -1812,7 +1821,7 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
             masking::fill(&mut canvas, &f, &[[x, y], [x + w, y], [x + w, y + h], [x, y + h]])?;
             report.push(json!({"zone": fl.zones[0].name, "mode": "signature", "signatures": 1}));
         } else if fl.kind == "signature" {
-            let opts = SigOptions { reach: masking::Reach::default(), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref() };
+            let opts = SigOptions { reach: masking::Reach::default(), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref(), hang: hang(&l, fl) };
             report.extend(masking::signature_column(&mut canvas, &gray, &f, &fl.zones, ms, &opts)?);
         } else {
             report.extend(masking::partial_column(&mut canvas, &gray, &f, &fl.zones, &field_settings(fl), rng, masking::Reach::default(), Some(&print_ref), struck(fl), stamp_ink.as_ref())?);
@@ -1854,7 +1863,7 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
                 continue; // masked whole, box and all
             }
             let r = if fl.kind == "signature" {
-                let opts = SigOptions { reach: masking::Reach::default(), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref() };
+                let opts = SigOptions { reach: masking::Reach::default(), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref(), hang: hang(&l, fl) };
                 masking::verify_signatures(&gray, &out, &f, &fl.zones, ms, Some(&keep), &opts)?
             } else {
                 masking::verify_column(&out, &f, &fl.zones, Some(&print_ref), &field_settings(fl), masking::Reach::default(), struck(fl), stamp_ink.as_ref())?

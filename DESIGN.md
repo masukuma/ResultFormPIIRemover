@@ -959,9 +959,11 @@ It is on by default (`--no-generic` turns it off) and needs the OCR models
    good read's "Passport" was taken for the label after it, leaving no
    room for the field). Nothing is written under a 2013 officer's last line
    but the stamp's lettering, over the security stripe: there a signature
-   hanging below the line is the line's, and the field reaches a printed
-   line lower. Taken for the next line's, such signatures were left
-   showing. The officers' written names are kept for step 7. A page naming
+   hanging below the line is the line's, as far as a printed line lower.
+   Taken for the next line's, such signatures were left showing. The field
+   itself keeps its height: a taller one moved its middle down, and a
+   signature written high, reaching in from the top of the search and
+   ending above the new middle, was taken for the line above's. The officers' written names are kept for step 7. A page naming
    more officers than it has signature lines goes to review; a stamp's
    "PRESIDING OFFICER", read in capitals inside the stamp's circle and often
    run into the name written under it ("PRESiDINGNSOZOGZ"), names no

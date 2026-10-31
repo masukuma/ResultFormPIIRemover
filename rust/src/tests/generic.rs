@@ -480,19 +480,17 @@ fn a_last_signature_line_takes_the_writing_under_it() {
         at("Signature:", 297.0, 1994.0, 415.0, 2020.0),
         at("Date:", 915.0, 1994.0, 980.0, 2020.0),
     ];
-    let field = |l: &Layout| l.fields.iter().find(|f| f.kind == "signature").unwrap().zones[0].rect;
+    let reach = |l: &Layout| hang(l, l.fields.iter().find(|f| f.kind == "signature").unwrap());
     let mut l = page(officer.clone());
     l.lines.push(at("OFFICER", 600.0, 2025.0, 730.0, 2055.0));
     l.stamps.push(crate::stamps::Stamp::new(670.0, 1990.0, 100.0, 1.0, "ring"));
     declaration(&mut l, 1850.0, 2100.0);
-    let last = field(&l);
-    // the next officer's line under it: the line's own height
+    assert!(reach(&l) >= 0.9 * TEXT_H, "{}", reach(&l));
+    // the next officer's line under it: its writing is that line's
     let mut l = page(officer.clone());
     l.lines.push(at("Deputy Presiding Officer:", 297.0, 2040.0, 600.0, 2066.0));
     declaration(&mut l, 1850.0, 2100.0);
-    let next = field(&l);
-    assert!(last[3] >= next[3] + 0.9 * TEXT_H, "{:?} vs {:?}", last, next);
-    assert_eq!((last[0], last[1]), (next[0], next[1]));
+    assert_eq!(reach(&l), 0.0);
 }
 
 #[test]
