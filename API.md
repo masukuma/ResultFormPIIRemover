@@ -62,7 +62,7 @@ serves what `rfpii job` put in `public/`.
 | Account | `acct_…` | A customer: its plan, its controller record and DPIA, its settings |
 | API key | `key_…` | `rfpii_live_…`, with scopes; only its SHA-256 and prefix are stored |
 | File | `file_…` | An uploaded PDF, JPEG, PNG, TIFF or zip, stored by id; never served back |
-| Job | `job_…` | One run of `rfpii job` on some files: status, forms, price, cost, outputs |
+| Job | `job_…` | One run of `rfpii job` on some files: status, forms, price, outputs |
 | Usage record | `usage_…` | The forms a settled job released, at its plan's unit price |
 | Webhook delivery | `msg_…` | One event to one URL, with every attempt |
 
@@ -236,10 +236,6 @@ The job resource:
   "inventory": {"files": 1, "pages": 3, "duplicates": 0, "broken": 0, "forms": 3},
   "price": {"currency": "usd", "plan": "paid", "unit_microusd": 4900, "estimate_microusd": 14700,
             "forms_charged": 2, "amount_microusd": 9800, "amount_usd": "0.0098"},
-  "cost": {"currency": "usd", "cpu_seconds": 31.2, "server_microusd": 519,
-           "models": [{"host": "ollama.com", "model": "gemma4:31b", "requests": 8, "input_tokens": 2041,
-                       "output_tokens": 146, "cost_microusd": 344, "price_known": true}],
-           "total_microusd": 863, "total_usd": "0.000863"},
   "exit_code": 2, "error": null, "attempts": 1,
   "created_at": "2026-10-31T09:00:00Z", "started_at": "…", "finished_at": "…",
   "inputs_deleted_at": "…", "outputs_expire_at": "2026-11-30T09:01:10Z",
@@ -247,11 +243,19 @@ The job resource:
 }
 ```
 
-`cost` is what the job cost the operator: its CPU time (with its child
-processes', from `wait4`) at `SERVER_PRICE_PER_VCPU_HOUR_MICROUSD`, and each
-model's tokens (from the report's `model_usage`) at `MODEL_PRICES`, as
-PRICING.md computes it; it is recorded next to the price so the margin can be
-watched.
+Customers see the price, not what the job cost to run. The operator does:
+`GET /v1/admin/jobs/{id}` (with ADMIN_TOKEN) returns the same resource with
+`cost`, its CPU time (with its child processes', from `wait4`) at
+`SERVER_PRICE_PER_VCPU_HOUR_MICROUSD`, and each model's tokens (from the
+report's `model_usage`) at `MODEL_PRICES`, as PRICING.md computes it, so the
+margin can be watched:
+
+```json
+"cost": {"currency": "usd", "cpu_seconds": 31.2, "server_microusd": 519,
+         "models": [{"host": "ollama.com", "model": "gemma4:31b", "requests": 8, "input_tokens": 2041,
+                     "output_tokens": 146, "cost_microusd": 344, "price_known": true}],
+         "total_microusd": 863, "total_usd": "0.000863"}
+```
 
 ### Outputs
 

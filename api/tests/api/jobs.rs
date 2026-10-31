@@ -61,7 +61,9 @@ async fn a_job_runs_to_its_outputs() {
     assert_eq!(j["status"], "succeeded", "{j}");
     assert_eq!((j["forms_released"].as_i64(), j["forms_held"].as_i64(), j["exit_code"].as_i64()), (Some(2), Some(1), Some(2)));
     assert_eq!(j["metadata"]["batch"], "Nyeri");
-    assert_eq!(j["cost"]["models"][0]["model"], "gemma4:31b");
+    // the customer sees the price, the operator the cost too
+    assert!(j.get("cost").is_none(), "{j}");
+    assert_eq!(t.operator_job(&id).await["cost"]["models"][0]["model"], "gemma4:31b");
     assert!(j["outputs_expire_at"].is_string());
     // the inputs are deleted just after the job ends
     t.wait_job(&key, &id, |j| j["inputs_deleted_at"].is_string()).await;

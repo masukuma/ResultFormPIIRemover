@@ -72,6 +72,7 @@ impl TestServer {
         std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/api/fake-rfpii.sh"), &script).unwrap();
         make_executable(&script);
         let mut cfg = test_config(&dir);
+        cfg.admin_token = Some("test-admin-token".into());
         edit(&mut cfg);
         Self::start_with(dir, cfg, workers).await
     }
@@ -93,6 +94,15 @@ impl TestServer {
     /// A file the fake wrote (last-job.yaml, job.pid, ...).
     pub fn fake_file(&self, name: &str) -> Option<String> {
         std::fs::read_to_string(self.dir.join("fake").join(name)).ok()
+    }
+
+    /// A job as the operator sees it, with its cost (`GET /v1/admin/jobs/{id}`,
+    /// with the server's admin token).
+    pub async fn operator_job(&self, id: &str) -> Value {
+        let token = self.state.cfg.admin_token.clone().expect("the test server needs an admin token");
+        let r = self.client.get(self.url(&format!("/v1/admin/jobs/{id}"))).bearer_auth(token).send().await.unwrap();
+        assert_eq!(r.status(), 200);
+        r.json().await.unwrap()
     }
 
     pub fn url(&self, path: &str) -> String {

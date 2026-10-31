@@ -173,6 +173,16 @@ impl JobRow {
     }
 
     /// The job as the API returns it.
+    /// The job as the operator sees it (`GET /v1/admin/jobs/{id}`): the
+    /// customer's resource and what the job cost to run, its CPU time and
+    /// model tokens at the configured prices. Customers see the price, not
+    /// the cost.
+    pub fn operator_resource(&self) -> Value {
+        let mut v = self.resource();
+        v["cost"] = json!(self.cost);
+        v
+    }
+
     pub fn resource(&self) -> Value {
         let t = |x: Option<i64>| x.map(rfc3339);
         let path = format!("/v1/jobs/{}", self.id);
@@ -203,7 +213,6 @@ impl JobRow {
             "forms_held": self.forms_held,
             "inventory": self.inventory,
             "price": price,
-            "cost": self.cost,
             "exit_code": self.exit_code,
             "error": self.error,
             "attempts": self.attempts,

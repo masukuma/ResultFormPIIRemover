@@ -41,6 +41,7 @@ async fn a_whole_job_runs_with_the_real_binary_and_verify_checks_its_output() {
     cfg.rfpii_templates = dir.join("demo/templates");
     cfg.sign_key = dir.join("keys/signing_key.pem");
     cfg.job_timeout_secs = 600;
+    cfg.admin_token = Some("test-admin-token".into());
     let t = TestServer::start_with(dir.clone(), cfg, 1).await;
     let (account, key) = t.account("free", true).await;
     let r: Value = t.client.get(t.url("/readyz")).send().await.unwrap().json().await.unwrap();
@@ -72,7 +73,8 @@ async fn a_whole_job_runs_with_the_real_binary_and_verify_checks_its_output() {
     // held by the gate (no visual review without a model): nothing charged
     assert_eq!((j["exit_code"].as_i64(), j["forms_released"].as_i64(), j["forms_held"].as_i64()), (Some(2), Some(0), Some(2)));
     assert_eq!((j["price"]["forms_charged"].as_i64(), j["price"]["amount_microusd"].as_i64()), (Some(0), Some(0)));
-    assert!(j["cost"]["cpu_seconds"].as_f64().unwrap() > 0.0, "{}", j["cost"]);
+    let cost = &t.operator_job(&id).await["cost"];
+    assert!(cost["cpu_seconds"].as_f64().unwrap() > 0.0, "{cost}");
     let a: Value = t.get(&key, "/v1/account").await.json().await.unwrap();
     assert_eq!((a["free_forms_left"].as_i64(), a["forms_reserved"].as_i64()), (Some(5), Some(0)));
     let report: Value = t.get(&key, &format!("/v1/jobs/{id}/report")).await.json().await.unwrap();

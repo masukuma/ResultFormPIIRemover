@@ -34,6 +34,14 @@ pub fn account_value(a: &Account) -> Value {
            "ready_for_jobs": accounts::missing_for_jobs(a).is_empty(), "stripe_customer": a.stripe_customer_id.is_some(), "created_at": crate::clock::rfc3339(a.created_at)})
 }
 
+/// `GET /v1/admin/jobs/{id}`: a job, whoever's it is, with what it cost.
+pub async fn get_job(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<axum::Json<Value>> {
+    match db(&s, move |c| crate::jobs::load_any(c, &id)).await? {
+        Some(job) => Ok(axum::Json(job.operator_resource())),
+        None => Err(ApiError::new(StatusCode::NOT_FOUND, Some("not-found"), "Not found", "no such job")),
+    }
+}
+
 /// `GET /v1/admin/accounts`.
 pub async fn list_accounts(State(s): State<AppState>) -> ApiResult<axum::Json<Value>> {
     let all = db(&s, |c| accounts::list(c)).await?;

@@ -102,7 +102,8 @@ pub fn router(state: AppState) -> (Router, Vec<(Method, &'static str)>) {
         .add(Method::GET, "/v1/admin/accounts", get(admin::list_accounts))
         .add(Method::POST, "/v1/admin/accounts", post(admin::create_account))
         .add(Method::PUT, "/v1/admin/accounts/{id}/plan", put(admin::set_plan))
-        .add(Method::POST, "/v1/admin/accounts/{id}/keys", post(admin::create_key));
+        .add(Method::POST, "/v1/admin/accounts/{id}/keys", post(admin::create_key))
+        .add(Method::GET, "/v1/admin/jobs/{id}", get(admin::get_job));
 
     let mut table = Vec::new();
     for r in [&ops, &public, &private, &admin] {

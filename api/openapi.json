@@ -217,6 +217,11 @@
         "requestBody": {"required": false, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false,
           "properties": {"name": {"type": "string"}, "scopes": {"type": "array", "items": {"$ref": "#/components/schemas/Scope"}}}}}}},
         "responses": {"201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiKeyWithSecret"}}}}, "404": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/admin/jobs/{id}": {
+      "parameters": [{"$ref": "#/components/parameters/Id"}],
+      "get": {"tags": ["admin"], "summary": "A job, whoever's it is, with what it cost to run (customers see the price, not the cost)", "operationId": "adminGetJob", "security": [{"adminToken": []}],
+        "responses": {"200": {"description": "The job and its cost", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperatorJob"}}}}, "404": {"$ref": "#/components/responses/Problem"}}}
     }
   },
   "webhooks": {
@@ -283,12 +288,13 @@
           "inventory": {"type": ["object", "null"]},
           "price": {"type": "object", "properties": {"currency": {"const": "usd"}, "plan": {"$ref": "#/components/schemas/Plan"}, "unit_microusd": {"type": "integer"}, "estimate_microusd": {"type": "integer"},
                     "forms_charged": {"type": ["integer", "null"]}, "amount_microusd": {"type": ["integer", "null"]}, "amount_usd": {"type": ["string", "null"]}}},
-          "cost": {"type": ["object", "null"], "description": "What the job cost the operator: CPU time and model tokens at the configured prices (PRICING.md)"},
           "exit_code": {"type": ["integer", "null"]}, "error": {"type": ["string", "null"]}, "attempts": {"type": "integer"},
           "created_at": {"type": "string", "format": "date-time"}, "started_at": {"type": ["string", "null"]}, "finished_at": {"type": ["string", "null"]},
           "inputs_deleted_at": {"type": ["string", "null"]}, "outputs_expire_at": {"type": ["string", "null"]}, "outputs_deleted_at": {"type": ["string", "null"]}, "deleted_at": {"type": ["string", "null"]},
           "warnings": {"type": "array", "items": {"type": "string"}, "description": "On creation only: why the release gate will hold everything"},
           "links": {"type": "object"}}},
+      "OperatorJob": {"allOf": [{"$ref": "#/components/schemas/Job"}, {"type": "object", "properties": {
+          "cost": {"type": ["object", "null"], "description": "What the job cost the operator: CPU time and model tokens at the configured prices (PRICING.md). Not shown to customers."}}}]},
       "JobList": {"type": "object", "properties": {"data": {"type": "array", "items": {"$ref": "#/components/schemas/Job"}}, "has_more": {"type": "boolean"}, "next_after": {"type": ["string", "null"]}}},
       "OutputList": {"type": "object", "properties": {"data": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "bytes": {"type": "integer"}, "content_type": {"type": "string"}, "url": {"type": "string"}}}}}},
       "ControllerRecord": {"type": "object", "required": ["controller", "legal_basis", "purpose", "commercial"],

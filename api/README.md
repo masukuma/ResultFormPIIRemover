@@ -53,7 +53,8 @@ rfpii-api admin list-accounts [--json]
 
 With `ADMIN_TOKEN` set, the same is served under `/v1/admin/*` for a bearer
 of that token (`GET`/`POST /v1/admin/accounts`,
-`PUT /v1/admin/accounts/{id}/plan`, `POST /v1/admin/accounts/{id}/keys`).
+`PUT /v1/admin/accounts/{id}/plan`, `POST /v1/admin/accounts/{id}/keys`),
+and `GET /v1/admin/jobs/{id}` gives any job with what it cost to run.
 Every change is written to the audit log. With Stripe configured, Stripe's
 webhook sets plans as subscriptions start and end.
 

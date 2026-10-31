@@ -94,6 +94,7 @@ is carried to the next month rather than charged.
 
 The rates are configuration (`api/README.md`): price per form, free forms a
 month, token prices per model and the server's price per vCPU-hour. The API
-records each job's actual cost next to its price (`cost` on the job), from
-its CPU time and the tokens its report lists, so the margin can be watched
-as models and prices change.
+records each job's actual cost next to its price, from its CPU time and the
+tokens its report lists; the operator reads it at `GET /v1/admin/jobs/{id}`
+(customers see only the price), so the margin can be watched as models and
+prices change.

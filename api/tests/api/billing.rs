@@ -54,11 +54,13 @@ async fn paid_usage_is_recorded_at_the_unit_price_with_the_actual_cost() {
     let (_, key) = t.account("paid", true).await;
     let j = t.start_job(&key).await;
     assert_eq!((j["price"]["unit_microusd"].as_i64(), j["price"]["estimate_microusd"].as_i64()), (Some(4900), Some(14700)));
-    let j = t.wait_end(&key, j["id"].as_str().unwrap()).await;
+    let id = j["id"].as_str().unwrap().to_string();
+    let j = t.wait_end(&key, &id).await;
     assert_eq!((j["price"]["forms_charged"].as_i64(), j["price"]["amount_microusd"].as_i64(), j["price"]["amount_usd"].as_str()), (Some(2), Some(9800), Some("0.0098")));
     // the cost next to the price: gemma4:31b, 1000 in and 200 out at $0.14 and $0.40 a million
-    assert_eq!(j["cost"]["models"][0]["cost_microusd"], 220);
-    assert!(j["cost"]["total_microusd"].as_i64().unwrap() >= 220);
+    let cost = &t.operator_job(&id).await["cost"];
+    assert_eq!(cost["models"][0]["cost_microusd"], 220);
+    assert!(cost["total_microusd"].as_i64().unwrap() >= 220);
     let u: Value = t.get(&key, "/v1/usage").await.json().await.unwrap();
     assert_eq!((u["paid_forms"].as_i64(), u["amount_due_microusd"].as_i64(), u["amount_due_usd"].as_str()), (Some(2), Some(9800), Some("0.0098")));
     assert_eq!((u["records"][0]["forms"].as_i64(), u["records"][0]["unit_price_microusd"].as_i64()), (Some(2), Some(4900)));
@@ -125,6 +127,9 @@ async fn the_admin_api_needs_its_token() {
     let t = TestServer::start(0, |c| c.admin_token = Some("admin-secret".into())).await;
     let admin = |path: &str, token: &str, body: Value| t.client.post(t.url(path)).bearer_auth(token).json(&body).send();
     problem(admin("/v1/admin/accounts", "wrong", json!({"name": "X"})).await.unwrap(), 401).await;
+    // a job's cost is for the operator only
+    problem(t.client.get(t.url("/v1/admin/jobs/job_x")).bearer_auth("wrong").send().await.unwrap(), 401).await;
+    problem(t.client.get(t.url("/v1/admin/jobs/job_x")).bearer_auth("admin-secret").send().await.unwrap(), 404).await;
     let r = admin("/v1/admin/accounts", "admin-secret", json!({"name": "Observers", "plan": "free"})).await.unwrap();
     assert_eq!(r.status(), 201);
     let id = r.json::<Value>().await.unwrap()["id"].as_str().unwrap().to_string();
@@ -140,7 +145,7 @@ async fn the_admin_api_needs_its_token() {
     t.stop().await;
 
     // without ADMIN_TOKEN the admin routes don't exist
-    let t = TestServer::start(0, |_| {}).await;
+    let t = TestServer::start(0, |c| c.admin_token = None).await;
     problem(t.client.get(t.url("/v1/admin/accounts")).bearer_auth("anything").send().await.unwrap(), 404).await;
     t.stop().await;
 }
