@@ -121,6 +121,20 @@ fn region_mask(p: &Value, rows: i32, cols: i32) -> Result<Mat> {
     Ok(m)
 }
 
+/// Blacked blocks (`blocks`) inside the protected regions of a page
+/// `rows` x `cols` (a manifest page's `protected`, each region less its
+/// `except_blocks`): what `verify` requires to be none, and `redact`
+/// checks before anything is written.
+pub fn protected_hits(protected: &[Value], blocks: &Grid, rows: i32, cols: i32) -> Result<usize> {
+    let mut prot = util::zeros_u8(rows, cols)?;
+    for p in protected {
+        let m = region_mask(p, rows, cols)?;
+        core::bitwise_or_def(&prot.clone(), &m, &mut prot)?;
+    }
+    let pb = proof::to_blocks(&prot)?;
+    Ok(if pb.rows == blocks.rows && pb.cols == blocks.cols { blocks.and(&pb).count() } else { blocks.count() })
+}
+
 fn same_inside(a: &Mat, b: &Mat, p: &Value) -> Result<bool> {
     let region = region_mask(p, a.rows(), a.cols())?;
     let (r, av, bv) = (util::bytes(&region)?, util::bytes(a)?, util::bytes(b)?);
@@ -333,13 +347,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
         let red_px = io::decode_bytes(img_bytes)?;
         // blacked blocks must not touch results regions
         let protected = pm["protected"].as_array().cloned().unwrap_or_default();
-        let mut prot = util::zeros_u8(red_px.rows(), red_px.cols())?;
-        for p in &protected {
-            let m = region_mask(p, red_px.rows(), red_px.cols())?;
-            core::bitwise_or_def(&prot.clone(), &m, &mut prot)?;
-        }
-        let pb = proof::to_blocks(&prot)?;
-        let hits = if pb.rows == declared.rows && pb.cols == declared.cols { declared.and(&pb).count() } else { declared.count() };
+        let hits = protected_hits(&protected, &declared, red_px.rows(), red_px.cols())?;
         let n_stamps = protected.iter().filter(|p| p.get("kind").and_then(|v| v.as_str()) == Some("stamp")).count();
         let what = format!("{} protected results region(s) and {} stamp(s)", protected.len() - n_stamps, n_stamps);
         r.add(
