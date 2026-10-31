@@ -197,6 +197,17 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
     };
     let m = mf::read_json(&manifest_path)?;
     let pdf = std::fs::read(a.redacted)?;
+    // who published it, and on what legal basis (covered by the signature)
+    if let Some(c) = m.get("controller").filter(|c| !c.is_null()) {
+        r.notes.push(format!(
+            "published by {} ({}), legal basis: {}; purpose: {}; controller record sha256 {}",
+            c["controller"].as_str().unwrap_or("?"),
+            c["operator_role"].as_str().unwrap_or("?"),
+            c["legal_basis"].as_str().unwrap_or("?"),
+            c["purpose"].as_str().unwrap_or("?"),
+            c["sha256"].as_str().unwrap_or("?")
+        ));
+    }
 
     // 1. signature and ledger
     if let Some(pk) = a.pubkey {
@@ -381,6 +392,9 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
             vlm_rounds: 0,
             pdf_signer: None,
             orient: None,
+            controller: None,
+            transfers: None,
+            kenya_hosts: vec![],
         };
         if let Some(o) = m.get("ocr") {
             let now = crate::ocr::info().map(|i| i["models"].clone()).unwrap_or(Value::Null);

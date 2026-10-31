@@ -899,6 +899,7 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
     if !leaks.is_empty() {
         return Ok(PageResult { unsure, ..fail(format!("leak check: {}", leaks.join("; ")), report, notes) });
     }
+    masking::tag_roles(&mut report, 0, None);
     Ok(PageResult {
         ok: true,
         image: Some(out),
@@ -981,6 +982,7 @@ pub fn redact_boxes(img: &Mat, boxes: &[(f64, f64, f64, f64, String)], ms: &Mask
         }
     }
     let (blocks, out) = apply(img, &canvas, None)?;
+    masking::tag_roles(&mut report, 0, Some("unknown"));
     Ok(PageResult {
         ok: true,
         image: Some(out),

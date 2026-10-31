@@ -603,9 +603,26 @@ altered, only obscured, and the manifest records where.
     and the page alignment;
   - per agent row, the rule applied and which character *positions* were
     hidden (never the characters themselves);
-  - any VLM verdicts.
+  - any VLM verdicts, with each model host's region (local, kenya,
+    foreign) and the id of the transfer recorded for a host abroad;
+  - whose personal data each mask holds (`role`: officer, agent or
+    unknown, from the zone's name or the field's place on the form), for
+    the record of processing and for counting who a breach would touch;
+  - the controller record (`--controller`): its SHA-256, the controller,
+    the operator's role, the legal basis, the purpose and whether the use
+    is commercial.
 
   It is signed with the publisher's Ed25519 key (`manifest.rs`).
+- **Transfers abroad.** Every call that sends a page to a model host
+  outside Kenya (anything not on this machine nor named with
+  `--kenya-host`) appends a line to `transfers.jsonl`, the record reg.
+  41(2) of the Data Protection (General) Regulations 2021 requires: date
+  and time, recipient (host, model), justification (the controller's
+  purpose and legal basis), a description of the data sent, and the
+  hashes of the images. Reg. 26 asks that processing for elections run in
+  Kenya, or keep a serving copy there (the originals and outputs stay on
+  the operator's machine); the record shows what left it
+  (`legal/C-recommendations.md` §2.1).
 - **Ledger.** `ledger.jsonl` is append-only and hash-chained. Each entry commits
   to the previous one, so altering, dropping or back-dating any entry breaks
   the chain.

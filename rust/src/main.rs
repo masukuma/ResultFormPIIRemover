@@ -197,6 +197,17 @@ struct RedactArgs {
     /// Hide every digit of each phone number, its first digits too
     #[arg(long)]
     full_phones: bool,
+    /// Who publishes the forms and on what legal basis (controller.json: the
+    /// controller and its registration, the operator's role, legal basis,
+    /// purpose, commercial use, processors, DPIA). Recorded in every
+    /// manifest; see legal/C-recommendations.md §2.9
+    #[arg(long)]
+    controller: Option<PathBuf>,
+    /// A model host in Kenya (repeatable): calls to it are not transfers
+    /// abroad. Every call to any other remote host is recorded in
+    /// <out>/transfers.jsonl (Data Protection (General) Regulations reg. 41(2))
+    #[arg(long = "kenya-host")]
+    kenya_hosts: Vec<String>,
     #[arg(long, default_value_t = 0.35)]
     min_score: f64,
     #[arg(long, default_value_t = 40)]
@@ -418,8 +429,17 @@ fn vlm_proposal(v: &Ollama, pages: &[io::SourcePage], cfg: &Config, rel: &str, p
     mf::getrandom_fill(&mut seed)?;
     let mut rng = PyRandom::new(u64::from_le_bytes(seed) >> 1);
     let mut images = Vec::new();
-    for sp in pages {
+    for (k, sp) in pages.iter().enumerate() {
         let boxes: Vec<(f64, f64, f64, f64, String)> = v.locate(&sp.pixels)?.into_iter().map(|b| (b.x0, b.y0, b.x1, b.y1, b.label)).collect();
+        cfg.transfer(rfpii::legal::Transfer {
+            host: &v.s.host,
+            model: &v.s.model,
+            purpose: "locating fields on a page that couldn't be read",
+            data: "the unredacted page: names, parties, ID and phone numbers and signatures of officers and agents".into(),
+            document: rel,
+            page: page.unwrap_or(k + 1),
+            images: vec![],
+        })?;
         images.push(redact_boxes(&sp.pixels, &boxes, &cfg.mask, &mut rng, 10.0)?.image.unwrap());
     }
     let out = out_path(&Path::new(&cfg.review).join("vlm").to_string_lossy(), rel, page, ".pdf")?;
@@ -486,6 +506,12 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
         vlm_rounds: a.vlm_rounds,
         pdf_signer: pdf_signer(&a)?.map(std::sync::Arc::new),
         orient: if a.orient { Some(std::sync::Arc::new(orienter(&a)?)) } else { None },
+        controller: match &a.controller {
+            Some(p) => Some(std::sync::Arc::new(rfpii::legal::Controller::load(p)?)),
+            None => None,
+        },
+        transfers: Some(std::sync::Arc::new(rfpii::legal::Transfers::new(Path::new(&a.out).join("transfers.jsonl")))),
+        kenya_hosts: a.kenya_hosts.clone(),
     };
     if a.vlm_rescue && !a.vlm_audit {
         anyhow::bail!("--vlm-rescue needs --vlm-audit: hiding a column whole is only safe when the review checks the result");

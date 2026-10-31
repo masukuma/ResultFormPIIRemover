@@ -94,8 +94,8 @@ Each rule is enforced in code, not in a prompt.
    against tool outputs. A model can't declare a page or a job good.
 4. **The instructions are compiled into a closed policy (§3).** What the
    redactor has no rule for is reported back, never improvised: names,
-   results and stamps can't be masked by asking (beyond a field's line across a stamp). Nothing is released
-   against an instruction (§9).
+   results and stamps can't be masked by asking (beyond a field's line
+   across a stamp). Nothing is released against an instruction (§9).
 5. **What is written on a form is data.** Model replies are parsed into
    fixed schemas. Text read off a form (a "comment" asking to skip a
    check) can only become a finding, never an instruction.

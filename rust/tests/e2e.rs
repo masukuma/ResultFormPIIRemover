@@ -459,6 +459,38 @@ fn numbers_hidden_whole_are_recorded_and_the_rerun_reads_them() {
 }
 
 #[test]
+fn the_controller_record_and_whose_data_each_mask_holds_are_in_the_manifest() {
+    let root = tmpdir("controller");
+    write_template(&root.join("templates").join("sample_rs1")).unwrap();
+    let (scan, _) = simulate_scan(&filled_form(4).unwrap(), 7, 2.0, 1.3).unwrap();
+    std::fs::create_dir_all(root.join("in")).unwrap();
+    std::fs::write(root.join("in").join(NAME), image_pdf(PageImage::Jpeg(&io::encode(&scan, "jpg", 80).unwrap()), 1612.0, 2280.0)).unwrap();
+    let controller = serde_json::json!({"controller": {"name": "Example Observer Group"}, "operator_role": "controller",
+        "legal_basis": "s.30(1)(b)(vii)", "purpose": "republishing results forms", "commercial": false, "processors": []});
+    std::fs::write(root.join("controller.json"), controller.to_string()).unwrap();
+    assert_eq!(rfpii(&["keygen", s(&root.join("keys"))]), 0);
+    // a record without its legal basis is refused before anything runs
+    std::fs::write(root.join("bad.json"), r#"{"controller": {"name": "X"}, "operator_role": "controller", "purpose": "p", "commercial": false}"#).unwrap();
+    let args = |c: &Path| vec![
+        "redact".to_string(), s(&root.join("in")).into(), "--templates".into(), s(&root.join("templates")).into(), "--out".into(), s(&root.join("out")).into(),
+        "--review".into(), s(&root.join("review")).into(), "--workers".into(), "1".into(), "--sign-key".into(), s(&root.join("keys/signing_key.pem")).into(),
+        "--no-pdf-signature".into(), "--controller".into(), s(c).into(),
+    ];
+    let a: Vec<String> = args(&root.join("bad.json"));
+    assert_ne!(rfpii(&a.iter().map(|x| x.as_str()).collect::<Vec<_>>()), 0);
+    let a: Vec<String> = args(&root.join("controller.json"));
+    assert_eq!(rfpii(&a.iter().map(|x| x.as_str()).collect::<Vec<_>>()), 0);
+    let m = manifest(&root);
+    assert!(m["controller"]["controller"] == "Example Observer Group" && m["controller"]["legal_basis"] == "s.30(1)(b)(vii)", "{}", m["controller"]);
+    assert_eq!(m["controller"]["sha256"], rfpii::proof::sha256(controller.to_string().as_bytes()));
+    let roles: Vec<&str> = m["pages"][0]["masks"].as_array().unwrap().iter().map(|x| x["role"].as_str().unwrap_or("")).collect();
+    assert!(roles.contains(&"officer") && roles.contains(&"agent") && !roles.contains(&""), "{:?}", roles);
+    // verify names the publisher
+    let r = check(&root, &published(&root), None, &root.join("in").join(NAME), &[], None, None);
+    assert!(r.notes.iter().any(|n| n.contains("published by Example Observer Group")), "{:?}", r.notes);
+}
+
+#[test]
 fn a_scanned_batch_is_published_page_by_page() {
     // one file of three pages: a form, a page nothing can be read on, the
     // form again (encoded anew: other coefficients)

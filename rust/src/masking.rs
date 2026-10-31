@@ -118,6 +118,32 @@ impl MaskSettings {
     }
 }
 
+/// Whose personal data a zone holds, from its name: an agent's, an
+/// officer's (presiding or deputy officer, returning officer, chairperson),
+/// or neither known. Recorded with each mask, for the record of processing
+/// and for counting who a breach would touch; masking is the same for all.
+pub fn role_of(zone: &str) -> &'static str {
+    let z = zone.to_ascii_lowercase();
+    if z.contains("agent") {
+        "agent"
+    } else if ["officer", "presiding", "deputy", "chair", "ro_", "returning", "handover"].iter().any(|k| z.contains(k)) {
+        "officer"
+    } else {
+        "unknown"
+    }
+}
+
+/// Tag each mask record from `from` on with `role`, or the role its zone's
+/// name gives when `role` is None, unless it has one already.
+pub fn tag_roles(report: &mut [serde_json::Value], from: usize, role: Option<&str>) {
+    for r in report.iter_mut().skip(from) {
+        if r.get("role").is_none() {
+            let role = role.unwrap_or_else(|| role_of(r["zone"].as_str().unwrap_or("")));
+            r["role"] = serde_json::json!(role);
+        }
+    }
+}
+
 /// The band a field's writing runs along: its zone, without the search
 /// above and below it, which reaches the next line's writing (a name).
 pub fn band(z: &Zone) -> [[f64; 2]; 4] {

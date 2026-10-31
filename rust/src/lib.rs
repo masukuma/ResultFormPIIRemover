@@ -9,6 +9,7 @@ pub mod align;
 pub mod generic;
 pub mod io;
 pub mod kiems;
+pub mod legal;
 pub mod learn;
 pub mod masking;
 pub mod ocr;

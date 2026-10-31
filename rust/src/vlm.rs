@@ -36,7 +36,7 @@ pub const DEFAULT_CLOUD_MODEL: &str = "gemma4:31b";
 pub const DEFAULT_CLOUD_CHECKER: &str = "gemma4:31b";
 pub const DEFAULT_LOCAL_MODEL: &str = "qwen3.8:27b";
 pub const LABELS: &[&str] = &["signature", "id_number", "phone_number"];
-const LOCAL_HOSTS: &[&str] = &["localhost", "127.0.0.1", "::1"];
+pub const LOCAL_HOSTS: &[&str] = &["localhost", "127.0.0.1", "::1"];
 
 pub const AUDIT_PROMPT: &str = "You are checking a Kenyan election results form before it is published.
 Black rectangles are intentional redactions. Each ID/passport number has 3 of its
@@ -384,6 +384,11 @@ pub struct Ollama {
     /// A decision model (Clef): answers typed questions through
     /// /v1/systemone instead of chatting. Set by `probe`.
     pub decision: bool,
+}
+
+/// The host name of a model host's URL (or of a bare host name).
+pub fn host_name(url: &str) -> String {
+    hostname(url)
 }
 
 fn hostname(url: &str) -> String {

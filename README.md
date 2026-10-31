@@ -155,6 +155,19 @@ Useful flags:
   too. Both are recorded in the manifest and repeated by `verify --rerun`;
   with them the leak check withholds a page showing 3 written characters in
   a row of such a number outside a stamp.
+- `--controller controller.json`: who publishes the forms and on what legal
+  basis: the controller and its registration with the Data Protection
+  Commissioner, whether the operator is the controller or a processor, the
+  legal basis, the purpose, whether the use is commercial, the processors
+  (model hosts with their country) and the DPIA reference. Checked when the
+  run starts, its hash and main fields recorded in every manifest, and
+  printed by `verify`. See `legal/C-recommendations.md` §2.9.
+- `--kenya-host HOST`: a model host in Kenya. Every call that sends a page to
+  any other remote host (the review, `--orient`, `--vlm-fallback`) is a
+  transfer of personal data abroad, recorded in `<out>/transfers.jsonl` with
+  what reg. 41(2) of the Data Protection (General) Regulations asks: date and
+  time, recipient, justification, a description of the data, and hashes of
+  the images sent.
 - `--keep-stamps`: never mask a stamp; an ID, phone number or signature a
   stamp lies over stays visible. By default each field's band across a
   stamp is blacked whole, covering that part of the stamp, and the rest of

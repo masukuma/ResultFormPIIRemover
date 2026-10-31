@@ -1816,6 +1816,13 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
     let stamp_ink = if on_page.is_empty() { None } else { Some(stamps::protect_mask(gray.rows(), gray.cols(), &on_page, STAMP_MARGIN)?) };
     let mut report: Vec<Value> = Vec::new();
     for fl in &l.fields {
+        // the declaration's lines are the officers', the table the agents'
+        let from = report.len();
+        let role = match fl.source.as_str() {
+            "declaration" => "officer",
+            "table" => "agent",
+            _ => "unknown",
+        };
         if fl.kind == "signature" && fl.source == "free-text" {
             let [x, y, w, h] = fl.zones[0].rect;
             masking::fill(&mut canvas, &f, &[[x, y], [x + w, y], [x + w, y + h], [x, y + h]])?;
@@ -1826,8 +1833,10 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
         } else {
             report.extend(masking::partial_column(&mut canvas, &gray, &f, &fl.zones, &field_settings(fl), rng, masking::Reach::default(), Some(&print_ref), struck(fl), stamp_ink.as_ref())?);
         }
+        masking::tag_roles(&mut report, from, Some(role));
     }
     let found_zones = crate::pipeline::mask_found(&mut canvas, &gray, extra, ms, rng, stamp_ink.as_ref(), &mut report)?;
+    masking::tag_roles(&mut report, 0, Some("unknown"));
     // the fields' bands, where writing under a stamp is hidden
     let bands = if ms.masks_stamps() {
         let mut bands = util::full_u8(gray.rows(), gray.cols(), 255)?;

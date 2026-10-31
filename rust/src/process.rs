@@ -47,6 +47,25 @@ pub struct Config {
     /// a decision model (Clef) asked which way up each published page of a
     /// photo with no EXIF orientation tag stands
     pub orient: Option<std::sync::Arc<crate::vlm::Ollama>>,
+    /// who publishes and on what legal basis (`controller.json`)
+    pub controller: Option<std::sync::Arc<crate::legal::Controller>>,
+    /// where every transfer of a page to a model host abroad is recorded
+    pub transfers: Option<std::sync::Arc<crate::legal::Transfers>>,
+    /// model hosts the operator names as in Kenya (not a transfer abroad)
+    pub kenya_hosts: Vec<String>,
+}
+
+impl Config {
+    /// Record a page sent to a model host, if it is abroad: the transfer's
+    /// id and the host's region (local, kenya, foreign).
+    pub fn transfer(&self, t: crate::legal::Transfer) -> Result<(Option<String>, &'static str)> {
+        let region = crate::legal::host_region(t.host, &self.kenya_hosts);
+        let id = match &self.transfers {
+            Some(tr) => tr.record(&t, &self.kenya_hosts, self.controller.as_deref())?,
+            None => None,
+        };
+        Ok((id, region))
+    }
 }
 
 /// Version and exact code revision, so a scrutineer can run the same code.
@@ -280,6 +299,21 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
                     for (k, x) in r.record.as_object().unwrap() {
                         rec[k] = x.clone();
                     }
+                    // spots already black are not asked about: no crop sent
+                    let checked = r.record["spots"].as_array().map(|s| s.iter().filter(|x| !x["what"].as_str().unwrap_or("").ends_with("already black")).count()).unwrap_or(0);
+                    let (id, region) = cfg.transfer(crate::legal::Transfer {
+                        host: &rv.finder.s.host,
+                        model: &format!("{} (checks: {})", rv.finder.s.model, rv.checker.s.model),
+                        purpose: "review",
+                        data: format!("the redacted page from the declaration down, and zoomed crops of it around {} spot(s): names and parties of officers and agents, ID and phone numbers and signatures masked as the manifest's settings record", checked),
+                        document: rel,
+                        page: number(i),
+                        images: r.record["image_sent_sha256"].as_str().map(|s| vec![s.to_string()]).unwrap_or_default(),
+                    })?;
+                    rec["host_region"] = json!(region);
+                    if let Some(id) = id {
+                        rec["transfer"] = json!(id);
+                    }
                     // with stamps kept, writing on a stamp stays visible
                     // (the stamp rule lifts any mask there): not the
                     // review's to mask. Otherwise every spot found is
@@ -407,7 +441,22 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
                     Some(m) => m.clone(),
                     None => io::decode_bytes(&reds[i].data)?,
                 };
-                Some(clef.orient(&img)?.1)
+                let mut rec = clef.orient(&img)?.1;
+                let images: Vec<String> = rec["asked"].as_array().map(|a| a.iter().filter_map(|q| q["image_sent_sha256"].as_str().map(String::from)).collect()).unwrap_or_default();
+                let (id, region) = cfg.transfer(crate::legal::Transfer {
+                    host: &clef.s.host,
+                    model: &clef.s.model,
+                    purpose: "orientation",
+                    data: format!("the redacted page at most 1024 px long, in {} turn(s): names and parties visible, ID and phone numbers and signatures masked", images.len()),
+                    document: rel,
+                    page: number(i),
+                    images,
+                })?;
+                rec["host_region"] = json!(region);
+                if let Some(id) = id {
+                    rec["transfer"] = json!(id);
+                }
+                Some(rec)
             }
             _ => None,
         };
@@ -469,6 +518,7 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
                      "full_ids": cfg.mask.full_ids, "full_phones": cfg.mask.full_phones,
                      "strict_structure": cfg.strict_structure, "generic": cfg.generic,
                      "align": cfg.align.to_json()},
+        "controller": cfg.controller.as_ref().map(|c| c.summary()),
         "templates": tmap,
         "pages": mpages,
         "vlm_review": if reviews.is_empty() { Value::Null } else { Value::Array(reviews) },
