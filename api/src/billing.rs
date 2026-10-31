@@ -235,13 +235,15 @@ pub fn usage(conn: &Connection, account: &str, period: &str, prices: &Prices) ->
         })?
         .collect::<rusqlite::Result<_>>()?;
     let m = month(conn, account, period)?;
+    // a paid account pays for every form: it has no free allowance left
+    let paid = crate::accounts::load(conn, account)?.is_some_and(|a| a.plan == "paid");
     Ok(json!({
         "object": "usage", "period": period, "currency": "usd",
         "records": records,
         "forms": m.released_free + m.released_paid,
         "free_forms": m.released_free,
         "paid_forms": m.released_paid,
-        "free_forms_left": free_left(&m, prices),
+        "free_forms_left": if paid { 0 } else { free_left(&m, prices) },
         "reserved_forms": m.reserved_free + m.reserved_paid,
         "amount_due_microusd": m.spend_microusd,
         "amount_due_usd": format_usd(m.spend_microusd),

@@ -63,6 +63,8 @@ async fn paid_usage_is_recorded_at_the_unit_price_with_the_actual_cost() {
     assert!(cost["total_microusd"].as_i64().unwrap() >= 220);
     let u: Value = t.get(&key, "/v1/usage").await.json().await.unwrap();
     assert_eq!((u["paid_forms"].as_i64(), u["amount_due_microusd"].as_i64(), u["amount_due_usd"].as_str()), (Some(2), Some(9800), Some("0.0098")));
+    // as /v1/account says: a paid account has no free forms left
+    assert_eq!(u["free_forms_left"].as_i64(), Some(0));
     assert_eq!((u["records"][0]["forms"].as_i64(), u["records"][0]["unit_price_microusd"].as_i64()), (Some(2), Some(4900)));
     let a: Value = t.get(&key, "/v1/account").await.json().await.unwrap();
     assert_eq!((a["spend_this_month_microusd"].as_i64(), a["free_forms_left"].as_i64()), (Some(9800), Some(0)));
