@@ -37,11 +37,20 @@ fn jsonl(path: &Path) -> Vec<Value> {
     std::fs::read_to_string(path).map(|t| t.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()).unwrap_or_default()
 }
 
+/// Text in single quotes (what OCR read off a form, as reasons and notes
+/// quote it) replaced by `'…'`. A quote opens at the start or after a
+/// character that is not a letter or digit, and closes before one: an
+/// apostrophe inside a word ("can't", "the column's edge", "the officers'
+/// signatures") is not a quote.
+pub fn unquote(s: &str) -> String {
+    regex::Regex::new(r"(^|[^\p{L}\p{N}])'.*?'($|[^\p{L}\p{N}])").unwrap().replace_all(s, "$1'…'$2").into_owned()
+}
+
 /// A held reason with its numbers and quoted text taken out, so like ones
 /// count together (and no text read off a form is repeated).
 pub fn normalise_reason(r: &str) -> String {
     let r = regex::Regex::new(r"^page \d+: ").unwrap().replace(r, "");
-    let r = regex::Regex::new(r"'[^']*'").unwrap().replace_all(&r, "'…'");
+    let r = unquote(&r);
     let r = regex::Regex::new(r"\d+(\.\d+)?").unwrap().replace_all(&r, "N");
     r.split("; ").next().unwrap_or("").chars().take(100).collect()
 }
@@ -244,4 +253,18 @@ pub fn markdown(f: &Value, controller: Option<&Controller>, retention: Option<&s
         None => s += "No retention schedule given (`--retention`).\n",
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reasons_lose_page_numbers_figures_and_quoted_text_but_keep_their_words() {
+        assert_eq!(
+            normalise_reason("page 1: agent_id: printed rule found off the column's left edge (table placed wrong); agent_phone: can't see the printed rule"),
+            "agent_id: printed rule found off the column's left edge (table placed wrong)"
+        );
+        assert_eq!(normalise_reason("'JANE DOE' header at y=812: no table rows found under it"), "'…' header at y=N: no table rows found under it");
+    }
 }

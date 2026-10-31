@@ -188,8 +188,14 @@ pub fn protect_stamps(img: &Mat, canvas: &mut Mat, found: &[Stamp], r_range: (f6
 fn stamp_record(st: &Stamp, band_blocks: &Grid) -> Value {
     let mut rec = st.record();
     let b = proof::BLOCK;
-    let (r0, r1) = (((st.cy - st.r).max(0.0) as usize) / b, ((st.cy + st.r).max(0.0) as usize) / b);
-    let (c0, c1) = (((st.cx - st.r).max(0.0) as usize) / b, ((st.cx + st.r).max(0.0) as usize) / b);
+    // every block the stamp's region can touch as `verify` draws it (its
+    // outline rounded out to whole px reaches into the next block), and
+    // all of its band blocks (hidden as far out as the stamp is kept
+    // clear): band blocks only are listed, so looking wider lists nothing
+    // else
+    let reach = st.r + STAMP_MARGIN + 0.04 * st.r + 2.0 * b as f64;
+    let (r0, r1) = (((st.cy - reach).max(0.0) as usize) / b, ((st.cy + reach).max(0.0) as usize) / b);
+    let (c0, c1) = (((st.cx - reach).max(0.0) as usize) / b, ((st.cx + reach).max(0.0) as usize) / b);
     let mut runs = Vec::new();
     for r in r0..=r1.min(band_blocks.rows.saturating_sub(1)) {
         let mut c = c0;

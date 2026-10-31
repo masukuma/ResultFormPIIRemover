@@ -178,6 +178,27 @@ fn by_default_the_band_across_a_stamp_is_hidden_and_the_rest_of_the_stamp_kept()
 }
 
 #[test]
+fn the_bands_across_a_stamp_are_listed_out_to_its_edge_as_verify_draws_it() {
+    // the stamp's outline ends 0.3 px short of a block's edge (x = 600), so
+    // drawn in whole px it reaches into that block: the band blocks there
+    // are listed too, and the page passes verify's check
+    for (cx, cy) in [(500.0, 500.0), (499.7, 500.3), (500.3, 499.7)] {
+        let stamp = Stamp::new(cx, cy, 99.7, 1.0, "ring");
+        let ident = masking::homography(util::IDENTITY);
+        let mut bands = gray(1000, 1000, 255);
+        for z in [Zone::new("id", [300.0, 480.0, 400.0, 40.0], "partial"), Zone::new("sig", [480.0, 300.0, 40.0, 400.0], "signature")] {
+            masking::fill(&mut bands, &ident, &masking::band(&z)).unwrap();
+        }
+        let (img, mut canvas) = (bgr(1000, 1000, [255, 255, 255]), gray(1000, 1000, 255));
+        let (_, _, _, records) = protect_stamps(&img, &mut canvas, std::slice::from_ref(&stamp), (40.0, 200.0), None, &MaskSettings::default(), Some(&bands)).unwrap();
+        let hidden: Vec<u8> = util::bytes(&canvas).unwrap().iter().map(|&v| if v == 0 { 255 } else { 0 }).collect();
+        let blocks = proof::to_blocks(&util::from_bytes(1000, 1000, &hidden).unwrap()).unwrap();
+        assert!(blocks.any(), "the bands across the stamp are hidden");
+        assert_eq!(crate::verify::protected_hits(&records, &blocks, 1000, 1000).unwrap(), 0, "stamp at {}, {}", cx, cy);
+    }
+}
+
+#[test]
 fn with_stamps_masked_over_as_before_the_officers_box_is_masked_stamp_and_all() {
     // the rule older manifests recorded as "mask_stamps": masks stay on the stamp
     let ts = templates();

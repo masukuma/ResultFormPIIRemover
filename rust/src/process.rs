@@ -465,6 +465,13 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
             report["reason"] = json!(format!("page {}: self-check failed: {}", number(i), cmp.problems.join("; ")));
             return Ok(Outcome { ok: false, report, manifest: None, pdf: None, redacted_pages: vec![], source_pages: vec![] });
         }
+        // and as `verify` will check it: no blacked block inside a
+        // protected region, less the bands recorded across its stamps
+        let hits = crate::verify::protected_hits(&p.protected, &red.luma_blocks, sp.pixels.rows(), sp.pixels.cols())?;
+        if hits > 0 {
+            report["reason"] = json!(format!("page {}: self-check failed: {} blacked block(s) inside protected results regions or stamps", number(i), hits));
+            return Ok(Outcome { ok: false, report, manifest: None, pdf: None, redacted_pages: vec![], source_pages: vec![] });
+        }
         let (h, w) = (sp.pixels.rows(), sp.pixels.cols());
         let src_sha = match &sp.data {
             Some(d) => proof::sha256(d),
