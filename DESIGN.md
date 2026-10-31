@@ -11,11 +11,11 @@ personal data gets a different treatment:
 | Field | Treatment |
 |---|---|
 | Signatures (officers, agents) | **Masked through the middle**: a black band along each signature; the tops and bottoms of its strokes show that it was signed |
-| National ID / passport numbers | **3 random characters hidden** |
-| Phone numbers | **First digits kept, 3 of the last 6 hidden**: `0734471897` keeps `0734` and hides 3 of `471897` |
+| National ID / passport numbers | **3 random characters hidden** (all of them with `--full-ids`) |
+| Phone numbers | **First digits kept, 3 of the last 6 hidden**: `0734471897` keeps `0734` and hides 3 of `471897` (all of them with `--full-phones`) |
 | Names | Left visible |
 | QR code, station codes, votes | Left visible: these are what make the form verifiable |
-| Stamps | **Never masked**, even where a stamp lies over a signature, an ID or a phone number |
+| Stamps | **Never masked**, even where a stamp lies over a signature, an ID or a phone number (unless `--mask-stamps`, see "Stamps") |
 
 The hidden characters are random, but never more than two neighbouring
 characters are left visible together.
@@ -254,7 +254,12 @@ writing on their own line. The date is written on the next line, often so
 close that the strokes of both were joined into one "signature", and the
 date was masked with it:
 - a group of strokes counts only if at least 30% of its ink is on the
-  field's line (tails and flourishes reach far above or below);
+  field's line (tails and flourishes reach far above or below), or if it
+  crosses the line with a signature's worth of ink (120 px) above it,
+  however far the rest hangs below: writing from the next line doesn't
+  cross this one. Some 2013 officers wrote a short scrawl on the line and
+  loops well below it, most of the ink under the line, and their
+  signatures were left visible;
 - strokes lying mostly on the line below or above (the date, the ID) are
   left out even where they run close to the signature;
 - the field's printed underline joins the strokes crossing it (ink just
@@ -350,6 +355,26 @@ checks alike, and the page notes say how many there were.
    visible together. The seed is drawn per document and recorded in the
    manifest, so the redaction can be reproduced.
 
+   **`--full-ids` and `--full-phones`** hide every character instead: each
+   ID or passport number, or each phone number with its prefix, is covered
+   from its first character to its last. Each flag is for its own rule, so
+   with only one of them the other numbers keep theirs. The line is still
+   segmented into characters and every slot hidden, so the mask has the
+   same height and reach as a hidden character's; a line that can't be
+   segmented was hidden whole already. The leak check still looks for 5
+   written characters in a row (8 for phones), and also for 3 off the
+   protected stamps: the default rule leaves runs of up to two visible, a
+   whole number none, so three showing are part of a number that should be
+   hidden. Writing on a protected stamp stays visible by the stamp rule. On
+   one 2022 Lamu form the stamp's edge lay over the first three digits of
+   two phone numbers. Counted, they held the page, and so would every
+   number a stamp touches; `--mask-stamps` hides them instead. On 225 pages
+   (two 2022 Form 34A zips, the 2013 Diaspora scan), the same pages were
+   published and held as with the default rule. The settings are recorded
+   in the manifest (`settings.full_ids`, `settings.full_phones`) and
+   `verify --rerun` repeats them; the VLM review is told that those numbers
+   must be hidden entirely.
+
    A hidden character is covered from the midpoint with its left neighbour to
    the midpoint with its right, from the line's top to its bottom (the
    median over its characters) or the character's own extent where that is
@@ -372,7 +397,7 @@ A document is published only if every page passes:
 | Reading without a template | a column of the agents table not found; officers named in the declaration but no signature line found; no PII fields at all |
 | QR code vs file name | form uploaded under the wrong station |
 | **Column edge check** | table matched one rule off. The straightened column must have its printed rules at its own edges, not a stronger rule somewhere else. This compares the mapping against the paper, because comparing the masks against the same mapping can't detect it |
-| **Leak check** | the redacted column is re-read over a wider window; 5 or more written characters in a row with no mask between them means something was missed |
+| **Leak check** | the redacted column is re-read over a wider window; 5 or more written characters in a row with no mask between them means something was missed (8 for phone numbers; for numbers hidden whole, 3 off the stamps) |
 | VLM audit (optional) | anything still readable anywhere: free-text comments, signatures outside the boxes |
 
 The edge check and the leak check were both added after reviewing real outputs
@@ -472,7 +497,12 @@ part of a signature or a number visible under it.
   30–60 and must stay masked), or 1.6–4.2 × the printed text height on a form
   read without a template. A line OCR reads as stamp
   lettering ("PRESIDING OFFICER", "I.E.B.C.") starts a second, more permissive
-  search around it.
+  search around it. Where no ring is found round it, a circle is guessed
+  from the line, as wide as it is; but not for a line reaching into a ring
+  found. That line is the ring's own lettering read with the writing next
+  to it: "LUJMOFFICER", the officer's name written through the stamp and
+  then its "OFFICER", made a circle twice the stamp's size that took in
+  the name, the ID and the signature, and left them visible.
 - **A second look where masks are about to go.** A faint stamp under a
   signature is the most likely miss and the costliest. So, before masks are
   applied, the area around them is searched again with lower thresholds, and
@@ -497,6 +527,25 @@ part of a signature or a number visible under it.
   found). `rfpii verify` checks that no blacked block touches one and that its
   pixels decode identically in the original and the redacted form, as for the
   results. The overlay outlines stamps in magenta.
+- **`--mask-stamps`: the stamp isn't sacred.** Off by default. Officers often
+  stamp over their own details: in the 2013 Forms 34, about 250 of 2,968
+  published pages had half or more of an officer's ID line inside a stamp,
+  and on some the whole ID was readable there. With the flag, no stamp is
+  protected and no mask is lifted off one, and each field's band across a
+  stamp (its zone: an ID's or phone number's line, a signature's line, a
+  table cell) is blacked whole. What is written under a stamp can't be told
+  from the stamp's own lettering: on Isiolo North-2 p17 the blue pen lies
+  10–20° of hue from the violet stamp, inside the stamp's own spread, and
+  the lettering is as dark as the pen. So it isn't read there, and the
+  three-characters rule gives way to hiding the part of the number under the
+  stamp. Outside stamps, masking is unchanged; the rest of each stamp (its
+  ring, the lettering off the fields' lines) stays visible. Stamps are then
+  not listed as protected regions, so `verify` doesn't require them
+  untouched and the overlay doesn't outline them; the page notes say how
+  much of the stamps the masks cover. The setting is recorded in the
+  manifest (`settings.mask_stamps`) and `verify --rerun` repeats it. The VLM
+  review is told that writing inside a stamp follows the rules, and what it
+  finds there is masked.
 
 ## Verifiability
 
@@ -621,7 +670,8 @@ non-local host unless `--allow-remote-unredacted` is given.)
    yes.
 4. **On a stamp?** A spot at least half inside a protected stamp is left
    visible: the stamp rule would lift a mask there anyway. It is recorded
-   (`on_stamps`) but not masked.
+   (`on_stamps`) but not masked. With `--mask-stamps` no stamp is protected,
+   and every spot is masked.
 5. **Mask and repeat.** What is confirmed is masked through the same block
    masking and proof as everything else: signatures hidden whole, numbers
    with 3 digits hidden. The page is redacted again from its seed and
@@ -950,10 +1000,34 @@ It is on by default (`--no-generic` turns it off) and needs the OCR models
 5. **Declaration.** Each officer's line is found by its "Signature" and "Date"
    labels; the signature field lies between them. The band is OCR'd again at
    2.5× because, at page scale, a label running into handwriting is often
-   missed. The officers' written names are kept for step 7.
+   missed. Both reads are kept, so a label is often read twice: it makes
+   one field, from the read that reads more of it, and the other read's
+   words are no next label ("ID No. / Rassport:" ends at "No.", and the
+   good read's "Passport" was taken for the label after it, leaving no
+   room for the field). Nothing is written under a 2013 officer's last line
+   but the stamp's lettering, over the security stripe: there a signature
+   hanging below the line is the line's, as far as a printed line lower.
+   Taken for the next line's, such signatures were left showing. The field
+   itself keeps its height: a taller one moved its middle down, and a
+   signature written high, reaching in from the top of the search and
+   ending above the new middle, was taken for the line above's. The officers' written names are kept for step 7. A page naming
+   more officers than it has signature lines goes to review; a stamp's
+   "PRESIDING OFFICER", read in capitals inside the stamp's circle and often
+   run into the name written under it ("PRESiDINGNSOZOGZ"), names no
+   officer. The printed label, in small letters, still does under a stamp.
 6. **Numbers written anywhere else.** An ID (7–9 digits that aren't a date,
    or digits after "ID") or a phone number written below the results gets the
-   same partial masking as in the table.
+   same partial masking as in the table. A label ("ID No. / Passport:",
+   "Tel.", "Mobile No.") names the field after it. OCR often misreads the
+   slash in "ID No. / Passport:" as a letter or digit ("IDNo.1Passport:"),
+   or the word itself ("Passoort:"): a word two letters or fewer off
+   "passport", before a colon, is still the label. "Mobile" heads a label
+   only at the start of a line or before "No." or a colon: it also ends the
+   names of mobile polling stations ("LOMUKE MOBILE (039)"), and the station
+   code after it was masked as a phone number on 37 pages of the 2013 run.
+   A field is no higher than a printed line, whatever box OCR drew: OCR boxes
+   a label with the ID written after it, and a field that high reached the
+   "Date:" on the line below and masked it.
 7. **Signatures outside any field**, typically an officer signing off under
    the comments ("name, ID, signature, date"). OCR tells writing from
    signatures: names, numbers and words are read, either confidently or the
@@ -980,7 +1054,17 @@ It is on by default (`--no-generic` turns it off) and needs the OCR models
    signature and digit masking as template zones, with glyph sizes scaled to
    the text height, and then through the same block proof, gates, manifest
    and verification. Typed "XXXX" fill and printed labels inside a field are
-   left alone.
+   left alone: a label as far as the characters OCR read in it, not the box
+   OCR drew round it. OCR often boxes "Signature:" together with the
+   signature written after it and reads the label alone; taking the whole
+   box for print hid those signatures from the finder, which judged the line
+   empty and left them visible: many of the 276 officers' lines judged
+   empty in the first run over the 2013 Forms 34 were such signatures.
+   And nothing is printed on an officer's line between "Signature" and
+   "Date": a word OCR reads there was written, even one that reads as a
+   label (a signature read as "No", the agents' table's heading). 2013's
+   "ID No. / Passport:" is print as well: a signature's search reaches up
+   into it, and "assport" was masked as part of the signature.
 
 The manifest records what was read (the page frame, each field, the notes)
 and the OCR engine with its models' hashes, so `rfpii verify --rerun` can
@@ -1163,6 +1247,7 @@ results don't depend on how the work is split.
 - **Writing under a stamp stays visible.** A signature, ID or phone number
   that a stamp lies across is masked only outside the stamp. This is the
   stamp rule working as intended, and the page notes record it.
+  `--mask-stamps` hides it instead, blacking that band of the stamp.
 - **A stamp the finder misses is not protected.** Rings that are very faint,
   mostly hidden, or far from circular can be missed. The second search near
   masks and the VLM audit's `stamp_covered` check reduce this; the overlay

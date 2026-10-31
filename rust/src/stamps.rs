@@ -403,6 +403,9 @@ pub fn find(img: &Mat, r_range: (f64, f64), text_lines: &[TextLine], maps: Optio
         .filter(|x| passes(x, &[&STRICT]))
         .map(|x| Stamp::new(x.cx, x.cy, x.r, x.m.0, "ring"))
         .collect();
+    // rings first, round every line of stamp lettering; a circle is
+    // guessed only for lettering no ring was found round
+    let mut unringed = Vec::new();
     for ln in text_lines {
         if !is_stamp_text(&ln.text) {
             continue;
@@ -424,8 +427,21 @@ pub fn find(img: &Mat, r_range: (f64, f64), text_lines: &[TextLine], maps: Optio
         if !local.is_empty() {
             stamps.extend(local);
         } else {
-            stamps.push(Stamp::new(mx, my, rr.1.max(0.6 * (x1 - x0)), 0.0, "text"));
+            unringed.push([x0, y0, x1, y1]);
         }
+    }
+    // a line reaching into a ring found is that stamp's lettering, read
+    // with the writing beside it ("LUJMOFFICER": the name written through
+    // the stamp, then its "OFFICER"); a circle as wide as the line would
+    // take in the name, the ID and the signature round the stamp
+    let rings = stamps.len();
+    for [x0, y0, x1, y1] in unringed {
+        let (mx, my) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        let reaches = |st: &Stamp| (st.cx.clamp(x0, x1) - st.cx).hypot(st.cy.clamp(y0, y1) - st.cy) < st.r;
+        if stamps[..rings].iter().any(reaches) || stamps[rings..].iter().any(|st| (mx - st.cx).hypot(my - st.cy) < st.r) {
+            continue;
+        }
+        stamps.push(Stamp::new(mx, my, rr.1.max(0.6 * (x1 - x0)), 0.0, "text"));
     }
     Ok(dedupe(&stamps).into_iter().map(|t| Stamp::new(t.cx / s, t.cy / s, t.r / s, t.coverage, &t.how)).collect())
 }

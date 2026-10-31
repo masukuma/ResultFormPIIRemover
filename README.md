@@ -7,8 +7,10 @@ that **nothing but the personal data was touched**.
 - **Signatures** are masked by a black band through the middle of each:
   the tops and bottoms of the strokes show that the form was signed, the
   signature itself can't be made out.
-- **ID and passport numbers** have 3 random characters hidden.
-- **Phone numbers** keep their first digits; 3 of the last 6 are hidden.
+- **ID and passport numbers** have 3 random characters hidden, or all of
+  them with `--full-ids`.
+- **Phone numbers** keep their first digits; 3 of the last 6 are hidden, or
+  every digit with `--full-phones`.
 - **Names, results, stamps and QR codes** stay readable. A stamp is never
   masked, even where it lies over a signature or a number.
 
@@ -145,6 +147,17 @@ Useful flags:
   send unredacted forms to a cloud model.
 - `--strict-structure`: withhold pages whose table rules can't be matched,
   instead of masking them with widened zones.
+- `--full-ids`: hide every character of each ID or passport number instead
+  of `--hide` of them.
+- `--full-phones`: hide every digit of each phone number, its first digits
+  too. Both are recorded in the manifest and repeated by `verify --rerun`;
+  with them the leak check withholds a page showing 3 written characters in
+  a row of such a number outside a stamp.
+- `--mask-stamps`: the stamp isn't sacred. An ID, phone number or signature
+  a stamp lies over is hidden: each field's band across the stamp is
+  blacked whole, covering that part of the stamp. By default stamps are
+  never masked and writing under one stays visible. Recorded in the
+  manifest, and repeated by `verify --rerun`.
 - `--workers`: number of documents processed at once. With `--vlm-audit`,
   use about three per core: most of a document's time is spent waiting for
   the models.

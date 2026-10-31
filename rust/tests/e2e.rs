@@ -427,6 +427,33 @@ fn manifests_without_alignment_settings_rerun_with_the_defaults() {
 }
 
 #[test]
+fn numbers_hidden_whole_are_recorded_and_the_rerun_reads_them() {
+    let d = &manifest(run())["settings"];
+    assert!(d["full_ids"] == false && d["full_phones"] == false);
+    let root = tmpdir("full-numbers");
+    write_template(&root.join("templates").join("sample_rs1")).unwrap();
+    let (scan, _) = simulate_scan(&filled_form(4).unwrap(), 6, 2.0, 1.3).unwrap();
+    std::fs::create_dir_all(root.join("in")).unwrap();
+    std::fs::write(root.join("in").join(NAME), image_pdf(PageImage::Jpeg(&io::encode(&scan, "jpg", 80).unwrap()), 1612.0, 2280.0)).unwrap();
+    assert_eq!(rfpii(&["keygen", s(&root.join("keys"))]), 0);
+    let rc = rfpii(&[
+        "redact", s(&root.join("in")), "--templates", s(&root.join("templates")), "--out", s(&root.join("out")),
+        "--review", s(&root.join("review")), "--workers", "1", "--sign-key", s(&root.join("keys/signing_key.pem")),
+        "--no-pdf-signature", "--full-ids", "--full-phones",
+    ]);
+    assert_eq!(rc, 0, "{}", std::fs::read_to_string(root.join("review/report.jsonl")).unwrap_or_default());
+    let m = manifest(&root);
+    assert!(m["settings"]["full_ids"] == true && m["settings"]["full_phones"] == true, "{}", m["settings"]);
+    let mpath = root.join("out").join(NAME.replace(".PDF", ".manifest.json"));
+    assert!(rerun_check(&root, &mpath, &root.join("in").join(NAME), &published(&root)));
+    let ms = rfpii::masking::MaskSettings::from_record(&m["settings"]);
+    assert!(ms.full_ids && ms.full_phones && !ms.mask_stamps && (ms.hide, ms.phone_tail) == (3, 6));
+    // manifests from before the flags: numbers hidden as by default
+    let old = rfpii::masking::MaskSettings::from_record(&serde_json::json!({"hide": 4, "phone_tail": 6, "mask_stamps": true}));
+    assert!(!old.full_ids && !old.full_phones && old.mask_stamps && old.hide == 4);
+}
+
+#[test]
 fn a_scanned_batch_is_published_page_by_page() {
     // one file of three pages: a form, a page nothing can be read on, the
     // form again (encoded anew: other coefficients)
