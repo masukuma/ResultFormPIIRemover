@@ -605,6 +605,9 @@ altered, only obscured, and the manifest records where.
     hidden (never the characters themselves);
   - any VLM verdicts, with each model host's region (local, kenya,
     foreign) and the id of the transfer recorded for a host abroad;
+  - the spot masks given for the run (`redact --spot-masks`: each box's
+    label and where it came from, such as a confirmed finding of a job's
+    review), which `verify --rerun` applies again;
   - whose personal data each mask holds (`role`: officer, agent or
     unknown, from the zone's name or the field's place on the form), for
     the record of processing and for counting who a breach would touch;
@@ -1230,6 +1233,18 @@ rules can't tell from block capitals (at least 13 of them among what the
 first run found), and any signature OCR reads as text. Forms 34B and the
 older forms are unchanged: no free-text areas there, and the rule for forms
 without a template is the same as before.
+
+## Jobs (`job/`, see HARNESS.md)
+
+`rfpii job` runs whole jobs in fixed phases, with `rfpii redact` making
+every edit and code deciding what is released. Its tools (`inventory`,
+`stats --risk`, `crop`, `held-view`, `diagnose`) are subcommands giving
+JSON. Models are asked at fixed points for JSON in fixed schemas. The
+privacy rules are enforced in code: `crop` renders only a published page
+that `verify` passes; held pages are shown only as a job allows; and every
+model client of a job carries a guard (`vlm::Guard`) that refuses any
+image no crop or held view made, and any text with a run of five digits.
+What is built, and what isn't, is in HARNESS.md §13.
 
 ## Implementation
 

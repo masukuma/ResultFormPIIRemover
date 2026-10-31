@@ -65,7 +65,7 @@ pub fn figures(job: &Job) -> Value {
         "groups": groups,
         "held": {"documents": held.len(), "reasons": reasons, "categories": categories,
                  "pages": job.held.iter().map(|h| json!({"document": h.unit.name(), "reason": h.reason, "category": h.category, "action": h.action, "images_sent": h.sent})).collect::<Vec<_>>()},
-        "held_sent_to_cloud": job.held.iter().filter(|h| !h.sent.is_empty()).map(|h| json!({"document": h.unit.name(), "images": h.sent})).collect::<Vec<_>>(),
+        "held_sent_to_cloud": job.cloud,
         "defects": defects,
         "batch_root": job.batch_root,
         "model_requests": models.len(),

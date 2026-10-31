@@ -1,7 +1,8 @@
 //! `rfpii job JOB.yaml`: a whole job, in fixed phases (HARNESS.md §4):
 //! intake, plan, pilot, run, QA, remediation, triage, release, report.
-//! Every tool call and decision goes in the journal. Without models the
-//! run is deterministic: samples are drawn from a seed the inputs give, and
+//! Every tool call, model call and decision goes in the journal. Models
+//! are asked at fixed points (`models.rs`); without them the run is
+//! deterministic: samples are drawn from a seed the inputs give, and
 //! decisions follow fixed rules. Nothing leaves `staging/` but through the
 //! release gate.
 
@@ -13,10 +14,12 @@ use std::path::{Path, PathBuf};
 
 use super::exec::Redact;
 use super::journal::Journal;
+use super::models::Models;
 use super::plan::{Plan, Unit};
-use super::policy::{Policy, Review};
+use super::policy::{Note, Policy, Review};
 use super::spec::JobFile;
-use super::{diagnose, inventory, sample, stats};
+use super::view::{self, Region};
+use super::{inventory, sample, stats};
 use crate::legal::Controller;
 use crate::templates::Template;
 
@@ -41,6 +44,16 @@ pub struct Check {
     /// confirmed findings, each with its journal id and whether it was fixed
     pub findings: Vec<Value>,
     pub quarantined: Option<String>,
+    /// published after its fields were located on it (triage): always
+    /// reviewed
+    pub located: bool,
+}
+
+impl Check {
+    /// Findings not fixed yet.
+    pub fn open(&self) -> Vec<&Value> {
+        self.findings.iter().filter(|f| f["fixed"] != true).collect()
+    }
 }
 
 /// What a group came to.
@@ -72,9 +85,10 @@ pub struct Job {
     pub spec: JobFile,
     pub dir: PathBuf,
     pub journal: Journal,
-    exe: PathBuf,
+    pub(super) exe: PathBuf,
     pub controller: Controller,
-    key: ed25519_dalek::SigningKey,
+    pub(super) key: ed25519_dalek::SigningKey,
+    pub models: Option<Models>,
     pub pubkey: PathBuf,
     pub templates: Vec<Template>,
     pub started: String,
@@ -84,6 +98,8 @@ pub struct Job {
     pub checks: BTreeMap<String, Check>,
     pub groups: BTreeMap<String, GroupState>,
     pub held: Vec<Held>,
+    /// every held page sent to the cloud model, and the views sent
+    pub cloud: Vec<Value>,
     pub stopped: Option<String>,
     pub batch_root: Option<String>,
 }
@@ -106,13 +122,18 @@ impl Job {
         self.plan.units().filter_map(|u| by_key.get(&(u.src.clone(), u.page.map(|p| p as u64))).map(|r| (u.name(), r.clone()))).collect()
     }
 
+    /// Whether `u` was quarantined, in this run or an earlier one.
+    pub fn quarantined(&self, u: &Unit) -> bool {
+        self.checks.get(&u.name()).is_some_and(|c| c.quarantined.is_some()) || u.at(&self.dir.join("quarantine"), ".json").exists()
+    }
+
     /// The units published to staging (and not quarantined), by group.
     pub fn published(&self) -> BTreeMap<String, Vec<Unit>> {
         let results = self.results();
         let mut out: BTreeMap<String, Vec<Unit>> = BTreeMap::new();
         for u in self.plan.units() {
             let ok = results.get(&u.name()).is_some_and(|r| r["ok"] == true) && u.at(&self.staging(), ".manifest.json").exists();
-            if ok && self.checks.get(&u.name()).is_none_or(|c| c.quarantined.is_none()) {
+            if ok && !self.quarantined(u) {
                 out.entry(u.group.clone()).or_default().push(u.clone());
             }
         }
@@ -125,16 +146,21 @@ impl Job {
         self.plan.units().filter_map(|u| results.get(&u.name()).filter(|r| r["ok"] == false).map(|r| (u.clone(), r["reason"].as_str().unwrap_or("").to_string()))).collect()
     }
 
-    fn check(&mut self, u: &Unit) -> &mut Check {
+    pub(super) fn check(&mut self, u: &Unit) -> &mut Check {
         self.checks.entry(u.name()).or_default()
+    }
+
+    /// What QA found on `u` so far.
+    pub(super) fn looked(&self, u: &Unit) -> Check {
+        self.checks.get(&u.name()).cloned().unwrap_or_default()
     }
 
     /// `redact` for `units`: per source file a process (its pages listed
     /// when page by page), whole files in batches; units already run are
-    /// left out unless `again`.
-    fn redact(&self, phase: &str, units: &[Unit], again: bool) -> Result<()> {
+    /// left out unless `again`, and quarantined ones always.
+    pub(super) fn redact(&self, phase: &str, units: &[Unit], again: bool) -> Result<()> {
         let results = self.results();
-        let todo: Vec<&Unit> = units.iter().filter(|u| again || !results.contains_key(&u.name())).collect();
+        let todo: Vec<&Unit> = units.iter().filter(|u| (again || !results.contains_key(&u.name())) && !self.quarantined(u)).collect();
         let mut by_page: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
         let mut whole: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
         for u in &todo {
@@ -260,12 +286,50 @@ impl Job {
         Ok(())
     }
 
-    /// The vision review of `units` would go here; without a vision model
-    /// nothing is reviewed, and the report says so.
-    fn review(&mut self, phase: &str, units: &[Unit], why: &str) -> Result<()> {
-        if !units.is_empty() {
-            self.journal.decision(phase, "not reviewed", json!(["no vision model in the job"]), json!({"documents": units.len(), "would_be": why}))?;
+    /// The vision review of `units` (HARNESS.md §4.5): each page cropped
+    /// from the declaration down, as published and verified, and reviewed;
+    /// what the checker confirms is a finding, in the journal and on the
+    /// unit's check. A reply that can't be read is a finding too (with no
+    /// box). Units already reviewed are not sent again, unless `again`.
+    /// Without a vision model nothing is reviewed, and the report says so.
+    pub(super) fn review(&mut self, phase: &str, units: &[Unit], why: &str, again: bool) -> Result<()> {
+        if !self.models.as_ref().is_some_and(|m| m.has_vision()) {
+            if !units.is_empty() {
+                self.journal.decision(phase, "not reviewed", json!(["no vision model in the job"]), json!({"documents": units.len(), "would_be": why}))?;
+            }
+            return Ok(());
         }
+        let ms = self.policy.mask();
+        for u in units {
+            if again || self.checks.get(&u.name()).is_none_or(|c| c.reviewed.is_none()) {
+                self.review_one(phase, u, why, &ms)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Crop each page of `u`, register the crop with the guard, review it.
+    fn review_one(&mut self, phase: &str, u: &Unit, why: &str, ms: &crate::masking::MaskSettings) -> Result<()> {
+        let manifest = u.at(&self.staging(), ".manifest.json");
+        let pages = crate::manifest::read_json(&manifest)?["pages"].as_array().map(|a| a.len()).unwrap_or(1);
+        for k in 1..=pages {
+            let v = view::crop(&view::CropArgs { manifest: &manifest, region: Region::Declaration, page: k, templates: &self.templates, max_side: 1800,
+                                                 pubkey: Some(&self.pubkey), within: Some(&self.staging()), format: "jpg" })?;
+            let m = self.models.as_ref().unwrap();
+            let (sha, px) = m.guard.register(&v.image, &v.encoded)?;
+            self.journal.write(phase, "tool", json!({"tool": "crop", "args": {"document": u.name(), "page": k, "region": "declaration"}, "image_sha256": sha, "pixels_sha256": px}))?;
+            let at = u.page.unwrap_or(k);
+            let found = match m.review(&v, ms, &u.name(), at, phase, &self.journal) {
+                Ok(r) => r.found.iter().map(|f| (f.label.clone(), Some(v.to_page(f.rect)), r.record["find_prompt_sha256"].clone())).collect(),
+                Err(e) => vec![("unreadable".to_string(), None, json!(format!("{:#}", e)))],
+            };
+            let model = m.reviewer.as_ref().map(|r| r.finder.s.model.clone());
+            for (label, rect, detail) in found {
+                let id = self.journal.decision(phase, "finding", json!([format!("the checker confirmed a {} still showing", label)]), json!({"document": u.name(), "page": at, "label": label, "box": rect, "crop_sha256": sha}))?;
+                self.check(u).findings.push(json!({"id": id, "label": label, "page": at, "box": rect, "crop_sha256": sha, "model": model, "detail": detail, "fixed": false}));
+            }
+        }
+        self.check(u).reviewed = Some(why.to_string());
         Ok(())
     }
 
@@ -287,17 +351,31 @@ impl Job {
         let all: BTreeSet<String> = pilot_pub.iter().map(Unit::name).collect();
         self.qa("pilot", &pilot_pub, &all)?;
         self.rank("pilot")?;
-        self.review("pilot", &pilot_pub, "pilot")?;
-        // going on: a group publishing less than half its pilot is held for review
+        self.review("pilot", &pilot_pub, "pilot", false)?;
+        self.remediate("pilot")?;
+        // going on: a group publishing less than half its pilot, or with a
+        // leak remediation couldn't clear, is held for review; the pilot
+        // note may hold more, never fewer
+        let mut figures = Vec::new();
         for g in self.plan.groups.clone() {
             let tried = picked.iter().filter(|u| u.group == g.id).count();
-            let ok = pilot_pub.iter().filter(|u| u.group == g.id).count();
+            let ok = pilot_pub.iter().filter(|u| u.group == g.id && !self.quarantined(u)).count();
+            let open = pilot_pub.iter().filter(|u| u.group == g.id).filter(|u| self.checks.get(&u.name()).is_some_and(|c| !c.open().is_empty() || c.quarantined.is_some())).count();
             let rate = if tried == 0 { 1.0 } else { ok as f64 / tried as f64 };
-            let state = self.groups.entry(g.id.clone()).or_default();
-            if rate < PILOT_PUBLISH {
-                state.review_only = Some(format!("its pilot published {} of {} documents", ok, tried));
+            let why = if rate < PILOT_PUBLISH { Some(format!("its pilot published {} of {} documents", ok, tried)) } else if open > 0 { Some(format!("{} pilot document(s) leaked and couldn't be cleared", open)) } else { None };
+            self.journal.decision("pilot", if why.is_some() { "review only" } else { "go on" }, json!([format!("{} of {} pilot documents published", ok, tried)]), json!({"group": g.id}))?;
+            let held: Vec<String> = self.held_units().iter().filter(|(u, _)| u.group == g.id).map(|(_, r)| crate::annex::normalise_reason(r)).collect();
+            figures.push(json!({"group": g.id, "kind": g.kind, "piloted": tried, "published": ok, "held": tried - ok.min(tried), "held_reasons": held,
+                                "at_risk": pilot_pub.iter().filter(|u| u.group == g.id && self.checks.get(&u.name()).is_some_and(|c| c.score >= stats::RISK_THRESHOLD)).count(), "leaks": open}));
+            self.groups.entry(g.id.clone()).or_default().review_only = why;
+        }
+        if let Some(note) = self.models.as_ref().and_then(|m| m.pilot_note(&json!(figures), &self.journal)) {
+            for g in note["groups"].as_array().into_iter().flatten().filter(|g| g["go_on"] == false) {
+                if let Some(state) = self.groups.get_mut(g["group"].as_str().unwrap_or("")) {
+                    state.review_only.get_or_insert_with(|| format!("the pilot note: {}", g["why"].as_str().unwrap_or("")));
+                }
             }
-            self.journal.decision("pilot", if rate < PILOT_PUBLISH { "review only" } else { "go on" }, json!([format!("{} of {} pilot documents published", ok, tried)]), json!({"group": g.id}))?;
+            std::fs::write(self.dir.join("pilot-note.json"), serde_json::to_string_pretty(&note)?)?;
         }
         // estimates again, from what the pilot measured
         let bytes: u64 = pilot_pub.iter().map(|u| std::fs::metadata(u.at(&self.staging(), ".pdf")).map(|m| m.len()).unwrap_or(0)).sum();
@@ -324,7 +402,9 @@ impl Job {
         Ok(())
     }
 
-    /// Phases 5 and 6: QA over everything staged, and its remediation.
+    /// Phase 5: QA over everything staged: risk ranked, every page
+    /// verified, a sample of each group re-run, the riskiest pages and a
+    /// random sample reviewed.
     fn qa_all(&mut self) -> Result<()> {
         let published = self.published();
         self.rank("qa")?;
@@ -338,49 +418,50 @@ impl Job {
             // the riskiest pages, then a random sample of the rest
             let risky: Vec<Unit> = units.iter().filter(|u| self.checks.get(&u.name()).is_some_and(|c| c.score >= stats::RISK_THRESHOLD)).cloned().collect();
             let rest: Vec<(String, Unit)> = items.iter().filter(|(_, u)| !risky.contains(u)).cloned().collect();
-            let k = match self.policy.vision_review {
-                Review::EveryPage => rest.len(),
-                Review::Sample => sample::sample_size(rest.len(), 0).unwrap_or(rest.len()),
-            };
-            let drawn = sample::spread(&rest, k, sample::seed(self.plan.seed, &format!("review:{}", gid)));
+            self.review("qa", &risky, "risk", false)?;
+            let (sampled, leaks) = self.sample(gid, &rest)?;
             let state = self.groups.entry(gid.clone()).or_default();
-            state.population = rest.len();
-            self.review("qa", &risky, "risk")?;
-            self.review("qa", &drawn, "sample")?;
+            (state.population, state.sampled, state.sample_leaks) = (rest.len(), sampled, leaks);
         }
         Ok(())
     }
 
-    /// Whether a unit's source has spot masks given for it.
-    fn spot_masked(&self, u: &Unit) -> bool {
-        let spots = self.dir.join("spot_masks.json");
-        crate::process::read_spot_masks(&spots).unwrap_or_default().iter().any(|s| s["sha256"].as_str() == Some(u.sha256.as_str()) && s["page"].as_u64() == Some(u.page_no() as u64))
-    }
-
-    /// Phase 7: what each held page is (HARNESS.md §4.7), from its text
-    /// diagnostics, with a category and a suggested action; a triage note
-    /// per page in `review/triage/`.
-    fn triage(&mut self) -> Result<()> {
-        let ms = self.policy.mask();
-        for (u, reason) in self.held_units() {
-            let d = match diagnose::diagnose(&u.src, u.page_no(), &self.templates, &ms) {
-                Ok(d) => d,
-                Err(e) => json!({"error": format!("{:#}", e)}),
+    /// The random sample of a group's pages below the risk threshold
+    /// (HARNESS.md §8): 600 pages (or all of 600 or fewer), grown to 950
+    /// after a leak and 1,260 after two, the new pages drawn from those not
+    /// yet drawn; three leaks stop it (a pattern). Pages reviewed and
+    /// leaks found among them.
+    fn sample(&mut self, gid: &str, rest: &[(String, Unit)]) -> Result<(usize, usize)> {
+        if !self.models.as_ref().is_some_and(|m| m.has_vision()) {
+            self.review("qa", &rest.iter().map(|(_, u)| u.clone()).collect::<Vec<_>>(), "sample", false)?;
+            return Ok((0, 0));
+        }
+        let mut drawn: Vec<Unit> = Vec::new();
+        let mut leaks = 0;
+        loop {
+            let want = match self.policy.vision_review {
+                Review::EveryPage => Some(rest.len()),
+                Review::Sample => sample::sample_size(rest.len(), leaks),
             };
-            self.journal.tool("triage", "diagnose", json!({"source": u.src, "page": u.page_no()}), &d)?;
-            let (category, action, why) = categorise(&d, &reason);
-            self.journal.decision("triage", category, json!([why]), json!({"source": u.src, "page": u.page_no(), "action": action}))?;
-            let note = json!({"document": u.name(), "source": u.src, "page": u.page_no(), "reason": crate::annex::normalise_reason(&reason),
-                              "diagnostics": d, "category": category, "action": action, "why": why, "images_sent": []});
-            let p = u.at(&self.review_dir().join("triage"), ".json");
-            std::fs::create_dir_all(p.parent().unwrap())?;
-            std::fs::write(&p, serde_json::to_string_pretty(&note)?)?;
-            self.held.push(Held { unit: u, reason: crate::annex::normalise_reason(&reason), category: category.into(), action: action.into(), sent: vec![] });
+            let Some(k) = want.filter(|&k| k > drawn.len()) else { break };
+            let left: Vec<(String, Unit)> = rest.iter().filter(|(_, u)| !drawn.contains(u)).cloned().collect();
+            let more = sample::spread(&left, k - drawn.len(), sample::seed(self.plan.seed, &format!("review:{}:{}", gid, drawn.len())));
+            self.review("qa", &more, "sample", false)?;
+            drawn.extend(more);
+            leaks = drawn.iter().filter(|u| self.checks.get(&u.name()).is_some_and(|c| !c.findings.is_empty())).count();
+            self.journal.decision("qa", "sample", json!([format!("{} of {} pages reviewed at random, {} with leaks", drawn.len(), rest.len(), leaks)]), json!({"group": gid}))?;
         }
-        Ok(())
+        Ok((drawn.len(), leaks))
     }
 
-    /// Phases 1 to 9, from a job file.
+    /// Whether spot masks were given for `u`.
+    fn spot_masked(&self, u: &Unit) -> bool {
+        let spots = crate::process::read_spot_masks(&self.dir.join("spot_masks.json")).unwrap_or_default();
+        spots.iter().any(|s| s["sha256"].as_str() == Some(u.sha256.as_str()) && u.page.is_none_or(|p| s["page"].as_u64() == Some(p as u64)))
+    }
+
+    /// Phases 1 and 2, intake and plan, from a job file: the job's folders,
+    /// its controller record and key checked, its models chosen.
     pub fn start(job_file: &Path, exe: &Path) -> Result<Job> {
         let spec = JobFile::load(job_file)?;
         let dir = spec.outputs.clone();
@@ -398,18 +479,42 @@ impl Job {
         // 1 intake
         let inv = inventory::inventory(&spec.inputs)?;
         journal.tool("intake", "inventory", json!({"inputs": spec.inputs}), &inv)?;
-        // 2 plan: the policy, then the groups
-        let policy = Policy::without_model(&spec.instructions, spec.policy.as_ref())?;
-        journal.decision("plan", "policy", json!(policy.words()), json!({"policy": policy, "flags": policy.flags(), "compiled_by": "the job file's policy, or the defaults"}))?;
+        // 2 plan: the models, the policy, then the groups
+        let models = Models::start(&spec, &journal, dir.join("staging").join("transfers.jsonl"))?;
+        let (policy, by) = Self::policy(&spec, models.as_ref(), &journal)?;
+        journal.decision("plan", "policy", json!(policy.words()), json!({"policy": policy, "flags": policy.flags(), "compiled_by": by}))?;
         let plan = Plan::new(&inv, &policy, &spec.templates, &dir);
         for g in &plan.groups {
             journal.decision("plan", if g.per_page { "page by page" } else { "whole files" }, json!([format!("{} {} documents", g.units.len(), g.kind)]), json!({"group": g.id}))?;
         }
-        Ok(Job { spec, dir, journal, exe: exe.to_path_buf(), controller, key, pubkey, templates, started, inventory: inv, policy, plan, checks: BTreeMap::new(), groups: BTreeMap::new(), held: vec![], stopped: None, batch_root: None })
+        Ok(Job { spec, dir, journal, exe: exe.to_path_buf(), controller, key, models, pubkey, templates, started, inventory: inv, policy, plan, checks: BTreeMap::new(), groups: BTreeMap::new(), held: vec![], cloud: vec![], stopped: None, batch_root: None })
     }
 
-    /// Run the phases after the plan; the exit code: 0 if everything was
-    /// released, 2 if anything was held or stays in staging.
+    /// The policy (HARNESS.md §3): compiled by the orchestrator from the
+    /// instructions if there are both; else the job file's, or the
+    /// defaults. A reply that isn't a policy can't show the instructions
+    /// met. Whatever compiled it, instructions to hide names or results are
+    /// caught. With what compiled it.
+    fn policy(spec: &JobFile, models: Option<&Models>, journal: &Journal) -> Result<(Policy, &'static str)> {
+        match models.filter(|m| m.has_orchestrator() && !spec.instructions.trim().is_empty()) {
+            Some(m) => {
+                let mut p = match m.compile(&spec.instructions, journal) {
+                    Some(p) => p,
+                    None => {
+                        let mut p = Policy::without_model("", spec.policy.as_ref())?;
+                        p.unsupported.push(Note { instruction: "the instructions as a whole".into(), settled: "the orchestrator's reply could not be read as a policy, so it can't be shown they were met".into() });
+                        p
+                    }
+                };
+                p.backstop(&spec.instructions);
+                Ok((p, "the orchestrator model, from the instructions"))
+            }
+            None => Ok((Policy::without_model(&spec.instructions, spec.policy.as_ref())?, if spec.policy.is_some() { "the job file's policy" } else { "the defaults" })),
+        }
+    }
+
+    /// Phases 3 to 9, from pilot to report; the exit code: 0 if everything
+    /// was released, 2 if anything was held or stays in staging.
     pub fn run(&mut self) -> Result<i32> {
         self.write_plan()?;
         match self.plan.refusal(self.spec.budget.hours) {
@@ -428,6 +533,7 @@ impl Job {
                         let all: Vec<Unit> = self.plan.units().cloned().collect();
                         self.redact("run", &all, false)?;
                         self.qa_all()?;
+                        self.remediate("remediate")?;
                         self.triage()?;
                     }
                 }
@@ -443,36 +549,6 @@ impl Job {
     }
 }
 
-/// A held page's category and suggested action from its diagnostics, by
-/// fixed rules, with the reason: blank, too faint, another form (a tally
-/// sheet), turned, or not read.
-pub fn categorise(d: &Value, reason: &str) -> (&'static str, &'static str, String) {
-    let ink = d["ink"].as_f64().unwrap_or(1.0);
-    let contrast = d["contrast"].as_f64().unwrap_or(100.0);
-    let conf = d["ocr"]["mean_confidence"].as_f64();
-    let words: Vec<&str> = d["ocr"]["vocabulary"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-    let turn = d["ocr"]["turn"].as_i64().unwrap_or(0);
-    if d.get("error").is_some() {
-        return ("unknown", "people", format!("diagnostics failed: {}", d["error"].as_str().unwrap_or("")));
-    }
-    if ink < 0.005 {
-        return ("blank", "not_for_this_job", format!("ink covers {:.2}% of the page", ink * 100.0));
-    }
-    if words.contains(&"TALLY") {
-        return ("tally_sheet", "not_for_this_job", "the printed word TALLY is on the page".into());
-    }
-    if contrast < 25.0 || conf.is_some_and(|c| c < 0.6) {
-        return ("faint", "people", format!("contrast {:.1}, OCR confidence {}", contrast, conf.map(|c| format!("{:.2}", c)).unwrap_or("none".into())));
-    }
-    if turn != 0 {
-        return ("turned", "retry", format!("its text reads at a {}° turn", turn));
-    }
-    if words.is_empty() {
-        return ("not_a_form", "people", "none of the forms' printed words was found".into());
-    }
-    ("not_read", "people", format!("held: {}", crate::annex::normalise_reason(reason)))
-}
-
 /// `rfpii job JOB.yaml`.
 pub fn run(job_file: &Path, exe: &Path) -> Result<i32> {
     if !job_file.exists() {
@@ -480,21 +556,4 @@ pub fn run(job_file: &Path, exe: &Path) -> Result<i32> {
     }
     let mut job = Job::start(job_file, exe)?;
     job.run()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn held_pages_are_sorted_by_fixed_rules() {
-        let d = |ink: f64, contrast: f64, conf: Option<f64>, words: &[&str], turn: i64| json!({"ink": ink, "contrast": contrast, "ocr": {"mean_confidence": conf, "vocabulary": words, "turn": turn}});
-        assert_eq!(categorise(&d(0.001, 2.0, None, &[], 0), "").0, "blank");
-        assert_eq!(categorise(&d(0.05, 50.0, Some(0.9), &["TALLY", "COUNTY"], 0), "").0, "tally_sheet");
-        assert_eq!(categorise(&d(0.05, 18.0, Some(0.9), &["DECLARATION"], 0), "").0, "faint");
-        assert_eq!(categorise(&d(0.05, 50.0, Some(0.9), &["DECLARATION"], 90), "").0, "turned");
-        assert_eq!(categorise(&d(0.05, 50.0, Some(0.9), &[], 0), "").0, "not_a_form");
-        let (c, a, why) = categorise(&d(0.05, 50.0, Some(0.9), &["DECLARATION"], 0), "page 3: leak check: agent_id: 7 in a row");
-        assert!(c == "not_read" && a == "people" && why.contains("N in a row"), "{}", why);
-    }
 }

@@ -3,9 +3,10 @@
 //! The tools here take and return JSON and need no model: an inventory of
 //! the inputs, statistics and risk signals over a run's manifests, the two
 //! views a model may be shown (`crop` of a published page, `held_view` of a
-//! held one), and text diagnostics of a held page. `rfpii job` runs them,
-//! with `rfpii redact`, through intake, plan, pilot, run, QA, remediation,
-//! triage, release and report.
+//! held one), and text diagnostics of a held page. `rfpii job` (`run.rs`)
+//! runs them, with `rfpii redact`, through intake, plan, pilot, run, QA,
+//! remediation, triage, release and report, asking its models at fixed
+//! points (`models.rs`); the gate (`gate.rs`) decides what is released.
 
 pub mod diagnose;
 pub mod exec;
@@ -13,13 +14,17 @@ pub mod gate;
 pub mod incident;
 pub mod inventory;
 pub mod journal;
+pub mod models;
 pub mod plan;
 pub mod policy;
+pub mod remedy;
 pub mod report;
 pub mod run;
 pub mod sample;
+pub mod scrub;
 pub mod spec;
 pub mod stats;
+pub mod triage;
 pub mod view;
 
 use anyhow::{bail, Result};

@@ -179,10 +179,10 @@ impl Plan {
     /// the output won't fit on the disk (with a tenth to spare), or the run
     /// won't fit the hours.
     pub fn refusal(&self, budget_hours: Option<f64>) -> Option<String> {
-        if let Some(free) = self.free_disk_bytes {
-            if self.disk_bytes * 1.1 > free as f64 {
-                return Some(format!("the output needs about {:.1} GB and {:.1} GB is free", self.disk_bytes / 1e9, free as f64 / 1e9));
-            }
+        if let Some(free) = self.free_disk_bytes
+            && self.disk_bytes * 1.1 > free as f64
+        {
+            return Some(format!("the output needs about {:.1} GB and {:.1} GB is free", self.disk_bytes / 1e9, free as f64 / 1e9));
         }
         match budget_hours {
             Some(h) if self.hours > h => Some(format!("the run needs about {:.1} hours and the budget is {} hours", self.hours, h)),

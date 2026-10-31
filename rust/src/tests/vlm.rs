@@ -277,3 +277,37 @@ fn a_turn_no_answer_confirms_is_not_made() {
     let (turn, rec) = clef.orient(&page(1400, 2000)).unwrap();
     assert!(turn == 0 && rec["turn"] == 0 && rec["undecided"] == true);
 }
+
+#[test]
+fn a_guarded_client_sends_only_registered_images_and_views_cut_from_them() {
+    let s = stub(vec![
+        json!("[{\"box_2d\": [100, 100, 180, 300], \"label\": \"signature\"}]"),
+        json!({"unmasked_signature": true, "complete_number": false, "what": "a scribble"}),
+        json!({"kind": "blank"}),
+    ]);
+    let guard = std::sync::Arc::new(Guard::default());
+    let mut client = Ollama::new(settings(&s.url, "gemma4:31b")).unwrap();
+    client.guard = Some(guard.clone());
+    let crop = page(600, 400);
+    let other = bgr(600, 400, [250, 250, 250]);
+    // an image no tool registered: refused before anything is sent
+    let e = client.find(&other, [0, 100, 400, 500], &client, &MaskSettings::default()).err().unwrap();
+    assert!(e.to_string().contains("no tool of the job made"), "{}", e);
+    let e = client.chat_json("What is this?", &[&jpeg(&other).unwrap()], json!({})).unwrap_err();
+    assert!(e.to_string().contains("no crop or held view"), "{}", e);
+    assert!(s.requests.lock().unwrap().is_empty());
+    // a registered crop: the finder's view and the checker's zoom of it go
+    let encoded = jpeg(&crop).unwrap();
+    let (sha, px) = guard.register(&crop, &encoded).unwrap();
+    let r = client.find(&crop, [0, 100, 400, 500], &client, &MaskSettings::default()).unwrap();
+    assert_eq!(r.found.len(), 1);
+    let sent = guard.take_sent();
+    assert!(sent.len() == 2 && sent.iter().all(|x| x["from"] == px.as_str()), "{:?}", sent);
+    assert!(client.chat_json("What kind of page is this?", &[&encoded], json!({})).unwrap()["kind"] == "blank");
+    assert_eq!(guard.take_sent(), vec![json!({"sha256": sha, "from": px})]);
+    assert_eq!(guard.requests(), 3);
+    // no text with an ID or phone number in it
+    let e = client.chat_json("Is 0712345678 a phone number?", &[], json!({})).unwrap_err();
+    assert!(e.to_string().contains("five or more digits"), "{}", e);
+    assert_eq!(s.requests.lock().unwrap().len(), 3);
+}

@@ -126,8 +126,11 @@ rfpii bundle public/x.pdf public/y.pdf --out bundle/ --public public \
 # A whole job, in phases, to a report (HARNESS.md): intake, plan, pilot,
 # run, QA, remediation, triage, release through a gate, report. job.yaml
 # names the inputs, the instructions (or a structured policy), the output
-# folder, the signing key, the controller record, the DPIA and the
-# templates; nothing is released unless every condition of the gate holds
+# folder, the signing key, the controller record, the DPIA, the templates,
+# the models (an orchestrator and a vision model, on Ollama Cloud unless a
+# host is given) and whether held pages may go to the cloud model. Models
+# see only verified crops of published pages and, if allowed, views of held
+# ones; nothing is released unless every condition of the gate holds
 rfpii job job.yaml
 # A leak found on a released form: withdrawn, the incident recorded with
 # whose data it holds by class, the s.43 deadlines and a notice drafted
@@ -140,6 +143,7 @@ rfpii job-incident jobs/2013-34 jobs/2013-34/public/x.pdf --reason "ID readable 
 rfpii inventory Forms/ --json
 rfpii stats public --review review --risk
 rfpii crop public/x.manifest.json --region declaration --templates templates --out x.png
+rfpii held-view Scans/k.pdf --page 12 --mode triage --job jobs/2013-34 --out k12.jpg
 rfpii diagnose Scans/k.pdf --page 12 --templates templates --json
 
 # Anyone, later: prove a published form against its original

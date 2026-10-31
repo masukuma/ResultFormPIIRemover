@@ -137,10 +137,10 @@ pub fn risk(out: &Path) -> Vec<Value> {
             if usual.as_ref().is_some_and(|u| *u != pages[i].layout) {
                 pages[i].signals.push((3.0, "fields read unlike its group's".into()));
             }
-            if let (Some(t), Some(c)) = (typical, pages[i].id_chars) {
-                if c < t - 1.0 {
-                    pages[i].signals.push((3.0, format!("ID numbers of {} characters where its group's have {}", c, t)));
-                }
+            if let (Some(t), Some(c)) = (typical, pages[i].id_chars)
+                && c < t - 1.0
+            {
+                pages[i].signals.push((3.0, format!("ID numbers of {} characters where its group's have {}", c, t)));
             }
         }
     }

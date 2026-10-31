@@ -45,8 +45,8 @@ pub fn conditions(job: &Job, gid: &str, units: &[Unit]) -> Vec<(String, bool, St
     let (ok, who) = some(units, |u| check(u).rerun == Some(false));
     let enough = reruns >= sample::rerun_size(units.len());
     add("2. every verify --rerun passes", (ok && enough, if ok { format!("{} of {} re-runs made", reruns, sample::rerun_size(units.len())) } else { format!("re-run differs: {}", who) }));
-    let (ok, who) = some(units, |u| check(u).score >= stats::RISK_THRESHOLD && check(u).reviewed.is_none());
-    add("3. every page above the risk threshold was reviewed", (ok, format!("not reviewed: {}", who)));
+    let (ok, who) = some(units, |u| (check(u).score >= stats::RISK_THRESHOLD || check(u).located) && check(u).reviewed.is_none());
+    add("3. every page above the risk threshold (or located on a held page) was reviewed", (ok, format!("not reviewed: {}", who)));
     let (fixed, who) = some(units, |u| check(u).findings.iter().any(|f| f["fixed"] != true));
     let bounded = sample::bounded(state.population, state.sampled, state.sample_leaks);
     add("4. the random sample bounds the leak rate below 0.5%, every leak fixed", (bounded && fixed, if !fixed { format!("leaks not fixed: {}", who) } else { format!("{} of {} pages reviewed at random, {} leak(s)", state.sampled, state.population, state.sample_leaks) }));

@@ -90,12 +90,12 @@ impl Redact<'_> {
                 let secs = t0.elapsed().as_secs_f64();
                 self.journal.write(phase, "heartbeat", json!({"done": done - start, "seconds": secs.round(), "rate": ((done - start) as f64 / secs * 100.0).round() / 100.0,
                                                               "memory_available": super::plan::memory_available(), "free_disk": free}))?;
-                if let (Some((floor, _)), Some(f)) = (&self.disk_floor, free) {
-                    if (f as f64) < *floor {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Ok((None, Some(format!("disk: {:.1} GB free, below the {:.1} GB the rest of the run needs", f as f64 / 1e9, floor / 1e9))));
-                    }
+                if let (Some((floor, _)), Some(f)) = (&self.disk_floor, free)
+                    && (f as f64) < *floor
+                {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok((None, Some(format!("disk: {:.1} GB free, below the {:.1} GB the rest of the run needs", f as f64 / 1e9, floor / 1e9))));
                 }
             }
             if last_change.elapsed() >= Duration::from_secs(STALL) {
