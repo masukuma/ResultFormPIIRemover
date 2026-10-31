@@ -7,6 +7,8 @@
 //!         a new template's zones (`rfpii propose`), or to redact a page no
 //!         template matches into review/vlm/ for a person to approve. Never
 //!         auto-published.
+//! orient  Which way up a redacted page stands (Clef), for photos that carry
+//!         no EXIF orientation tag.
 //!
 //! Privacy: the audit only ever sends the *redacted* page. Sending an
 //! unredacted form to a non-local host is refused unless explicitly allowed.
@@ -128,6 +130,29 @@ fn decide_questions() -> Value {
         "masked_number": "An ID, passport or phone number with some digits hidden under black",
         "printed": "Printed text, lines, a stamp, or nothing handwritten"}}})
 }
+
+/// Which way a page is turned, for a decision model (Clef).
+const ORIENT_STATE: &str = "A photo of a Kenyan election result form. Solid black rectangles are redactions added on purpose.";
+
+/// The options, in quarter turns clockwise from upright.
+const TURNS: [&str; 4] = ["upright", "lying_on_right_side", "upside_down", "lying_on_left_side"];
+
+fn orient_questions() -> Value {
+    json!({"turn": {"type": "choice", "instructions": "Which way is the form turned in this image? Judge by its printed text: the title, headings and table labels.", "criteria": {
+        "upright": "Upright: printed text reads normally, left to right, the title at the top",
+        "lying_on_right_side": "Turned a quarter clockwise: lines of text run downwards, from the top of the image to the bottom; the title is along the right edge",
+        "upside_down": "Upside down: printed text is inverted, the title at the bottom",
+        "lying_on_left_side": "Turned a quarter anticlockwise: lines of text run upwards, from the bottom of the image to the top; the title is along the left edge"}}})
+}
+
+/// Long side of the page Clef is shown when asked which way it is turned.
+const ORIENT_MAX_SIDE: f64 = 1024.0;
+
+/// Clef's probability of "upright" at or above which a page is taken as
+/// upright. On 13 redacted pages of six printings (2013 to 2022), each in
+/// its four quarter turns, upright ones scored 0.94 or more and turned ones
+/// 0.09 or less.
+pub const UPRIGHT_AT: f64 = 0.5;
 
 fn find_schema() -> Value {
     json!({"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {
@@ -502,13 +527,13 @@ impl Ollama {
         reply["message"]["content"].as_str().map(String::from).ok_or_else(|| anyhow!("Ollama reply has no message"))
     }
 
-    /// A decision model's answer to `questions` about `sent`: per question,
-    /// the probability of each option.
-    fn decide(&self, sent: &[u8], questions: Value) -> Result<Value> {
+    /// A decision model's answer to `questions` about `sent`, given what it
+    /// shows (`state`): per question, the probability of each option.
+    fn decide(&self, sent: &[u8], state: &str, questions: Value) -> Result<Value> {
         let url = format!("{}/v1/systemone", self.s.host.trim_end_matches('/'));
         let reply = self.post(&url, &json!({
             "model": self.s.model,
-            "state": DECIDE_STATE,
+            "state": state,
             "images": [base64::engine::general_purpose::STANDARD.encode(sent)],
             "questions": questions,
         }))?;
@@ -601,7 +626,7 @@ impl Ollama {
         let p = |x: f64, o: i32| ((x - o as f64) * 2.0) as i32;
         imgproc::rectangle_points(&mut z, opencv::core::Point::new(p(r[0], x0), p(r[1], y0)), opencv::core::Point::new(p(r[2], x0), p(r[3], y0)), opencv::core::Scalar::new(0.0, 0.0, 255.0, 0.0), 3, imgproc::LINE_8, 0)?;
         if self.decision {
-            let a = &self.decide(&jpeg(&z)?, decide_questions())?["what"];
+            let a = &self.decide(&jpeg(&z)?, DECIDE_STATE, decide_questions())?["what"];
             let p = |k: &str| a["probabilities"][k].as_f64().unwrap_or(0.0);
             // spots asked about are under 8% black, so a "masked" one can
             // only be crossed by the writer's own stroke: it still shows
@@ -613,6 +638,52 @@ impl Ollama {
             Some(v) => (yes("unmasked_signature", &v), yes("complete_number", &v), v.get("what").and_then(|w| w.as_str()).unwrap_or("").to_string()),
             None => (1.0, 1.0, "unreadable reply".to_string()),
         })
+    }
+
+    /// Which way up a *redacted* page stands, as a decision model (Clef)
+    /// judges it: `img` is asked about as it is shown; if it doesn't look
+    /// upright, also turned a quarter, a half and three quarters clockwise,
+    /// and the answers taken together. The turn (degrees clockwise) that
+    /// shows it upright, confirmed by that turn of it having been judged
+    /// upright; 0 if none was. With the record for the manifest.
+    pub fn orient(&self, img: &Mat) -> Result<(i64, Value)> {
+        let f = (ORIENT_MAX_SIDE / img.cols().max(img.rows()) as f64).min(1.0);
+        let small = if f < 1.0 { util::resize_by(img, f, imgproc::INTER_AREA)? } else { img.clone() };
+        let mut asked: Vec<(usize, [f64; 4], String)> = Vec::new();
+        for q in 0..4 {
+            let sent = jpeg(&match q {
+                0 => small.clone(),
+                _ => {
+                    let mut m = Mat::default();
+                    let code = [opencv::core::ROTATE_90_CLOCKWISE, opencv::core::ROTATE_180, opencv::core::ROTATE_90_COUNTERCLOCKWISE][q - 1];
+                    opencv::core::rotate(&small, &mut m, code)?;
+                    m
+                }
+            })?;
+            let a = &self.decide(&sent, ORIENT_STATE, orient_questions())?["turn"];
+            let p = TURNS.map(|k| a["probabilities"][k].as_f64().unwrap_or(0.0));
+            asked.push((q, p, hex::encode(Sha256::digest(&sent))));
+            if q == 0 && p[0] >= UPRIGHT_AT {
+                break;
+            }
+        }
+        // turned t quarters from upright, and q more when asked, the page
+        // stands at t + q
+        let score = |t: usize| asked.iter().map(|(q, p, _)| p[(t + q) % 4].max(1e-6).ln()).sum::<f64>();
+        let t = (0..4).max_by(|&a, &b| score(a).total_cmp(&score(b))).unwrap_or(0);
+        let fix = (4 - t) % 4;
+        let confirmed = asked.iter().any(|(q, p, _)| *q == fix && p[0] >= UPRIGHT_AT);
+        let turn = if confirmed { 90 * fix as i64 } else { 0 };
+        let question = format!("{}\n{}", ORIENT_STATE, orient_questions());
+        let mut record = json!({"model": self.s.model, "host": hostname(&self.s.host),
+                                "question_sha256": hex::encode(Sha256::digest(question.as_bytes())), "upright_at": UPRIGHT_AT,
+                                "asked": asked.iter().map(|(q, p, sha)| json!({"turned": 90 * q, "image_sent_sha256": sha,
+                                    "p": TURNS.iter().zip(p).map(|(k, v)| (k.to_string(), json!(crate::pyjson::round_n(*v, 4)))).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
+                                "judged": TURNS[t], "turn": turn});
+        if !confirmed {
+            record["undecided"] = json!(true);
+        }
+        Ok((turn, record))
     }
 
     /// Audit a *redacted* page (safe to send anywhere).

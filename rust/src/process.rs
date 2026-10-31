@@ -44,6 +44,9 @@ pub struct Config {
     pub vlm_rounds: usize,
     /// digitally sign the published PDFs with this certificate
     pub pdf_signer: Option<std::sync::Arc<crate::pdfsign::Signer>>,
+    /// a decision model (Clef) asked which way up each published page of a
+    /// photo with no EXIF orientation tag stands
+    pub orient: Option<std::sync::Arc<crate::vlm::Ollama>>,
 }
 
 /// Version and exact code revision, so a scrutineer can run the same code.
@@ -184,8 +187,8 @@ fn on_stamps(f: &Found, protected: &[Value]) -> f64 {
 /// scanned batch of many forms, each page published on its own).
 ///
 /// `replay`: the manifest of an earlier run of this document, whose review
-/// findings and columns hidden whole are applied again instead of asking
-/// any model (a re-run must give the same output).
+/// findings, columns hidden whole and turns are applied again instead of
+/// asking any model (a re-run must give the same output).
 #[allow(clippy::too_many_arguments)]
 pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[Template], cfg: &Config, seed: Option<u64>, data: Option<Vec<u8>>, replay: Option<&Value>) -> Result<Outcome> {
     let data = match data {
@@ -391,16 +394,41 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
         std::fs::create_dir_all(par)?;
     }
     let decoded: Vec<Option<Mat>> = reds.iter().map(|r| if r.kind == "jpeg" { Ok(None) } else { io::decode_bytes(&r.data).map(Some) }).collect::<Result<_>>()?;
+    // A photo with no orientation tag is shown as stored, which may be on
+    // its side: Clef is asked which way up the page stands, as published
+    // (redacted), and the page is turned to show it upright.
+    let mut turns = vec![0i64; pages.len()];
+    for (i, sp) in pages.iter().enumerate() {
+        let rec = match (replay, cfg.orient.as_deref()) {
+            (Some(m), _) => m["pages"][i].get("orientation").cloned(),
+            (None, Some(clef)) if sp.untagged => {
+                let img = match &decoded[i] {
+                    Some(m) => m.clone(),
+                    None => io::decode_bytes(&reds[i].data)?,
+                };
+                Some(clef.orient(&img)?.1)
+            }
+            _ => None,
+        };
+        if let Some(r) = rec {
+            turns[i] = r["turn"].as_i64().unwrap_or(0);
+            if turns[i] != 0 {
+                report["pages"][i]["turned"] = json!(turns[i]);
+            }
+            mpages[i]["orientation"] = r;
+        }
+    }
     let items: Vec<_> = reds
         .iter()
         .zip(&decoded)
         .zip(&pages)
-        .map(|((r, dm), sp)| {
+        .zip(&turns)
+        .map(|(((r, dm), sp), turn)| {
             let img = match dm {
                 Some(m) => PageImage::Pixels(m),
                 None => PageImage::Jpeg(r.data.as_slice()),
             };
-            (img, sp.page_size, sp.place, sp.rotate)
+            (img, sp.page_size, sp.place, (sp.rotate + turn).rem_euclid(360))
         })
         .collect();
     let pdf = io::build_pdf(&items)?;

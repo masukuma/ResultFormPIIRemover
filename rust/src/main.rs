@@ -232,6 +232,14 @@ struct RedactArgs {
     /// VLM-redact pages no template matches, into review/vlm/ for approval
     #[arg(long)]
     vlm_fallback: bool,
+    /// Photos with no EXIF orientation tag: ask a decision model (Clef, on
+    /// Ollama Cloud) which way up each published page stands, and turn the
+    /// page to show it upright. Only redacted pages are sent.
+    #[arg(long)]
+    orient: bool,
+    /// The decision model --orient asks
+    #[arg(long, default_value = "clef")]
+    orient_model: String,
     #[command(flatten)]
     vlm: VlmArgs,
     #[arg(long)]
@@ -437,6 +445,18 @@ fn reviewer(a: &RedactArgs) -> Result<rfpii::vlm::Reviewer> {
     Ok(rfpii::vlm::Reviewer { finder, checker })
 }
 
+/// The decision model `--orient` asks, asked what it is before the run.
+fn orienter(a: &RedactArgs) -> Result<Ollama> {
+    let mut s = a.vlm.settings();
+    s.model = a.orient_model.clone();
+    let mut o = Ollama::new(s)?;
+    o.probe()?;
+    if !o.decision {
+        anyhow::bail!("--orient needs a decision model such as clef; {} at {} is not one", o.s.model, o.s.host);
+    }
+    Ok(o)
+}
+
 fn cmd_redact(a: RedactArgs) -> Result<i32> {
     let mut align = AlignSettings::default();
     align.min_score = a.min_score;
@@ -461,6 +481,7 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
         vlm_rescue: a.vlm_rescue,
         vlm_rounds: a.vlm_rounds,
         pdf_signer: pdf_signer(&a)?.map(std::sync::Arc::new),
+        orient: if a.orient { Some(std::sync::Arc::new(orienter(&a)?)) } else { None },
     };
     if a.vlm_rescue && !a.vlm_audit {
         anyhow::bail!("--vlm-rescue needs --vlm-audit: hiding a column whole is only safe when the review checks the result");

@@ -426,6 +426,32 @@ rotation. Mirrored orientations (EXIF 2, 4, 5 and 7; cameras don't write
 them) are drawn correctly, but their pages can't be matched to a template,
 and they go to review.
 
+**A photo with no orientation tag (`--orient`).** Such a file is shown as
+stored, and many are stored on their side: 32 of the 35 published 2017
+Form 34A photos were. With `--orient`, Clef (a decision model on Ollama
+Cloud) is asked which way up each such page stands. It is shown the page as
+published, redacted and at most 1024 px long. Unredacted pages are never
+sent. It is asked once: upright, on its right side, upside down or on its
+left side. If it isn't judged upright (a probability of 0.5 or more), the
+page is also asked about turned a quarter, a half and three quarters
+clockwise. The four answers are taken together: the page is turned t
+quarters if every answer fits that best (the sum of the log probabilities).
+Asked alone, the two quarter turns are the ones Clef confuses.
+The turn is made only if Clef judged the page upright when shown it turned
+that way; otherwise the page is published as stored and marked undecided.
+The turn goes into the page's `/Rotate`, so the image is untouched. The
+manifest records it per page under `orientation`, with each image sent (its
+SHA-256), the probabilities and the turn. `verify` accepts a recorded turn
+only for an image file with no orientation tag, and `--rerun` applies it
+without asking Clef.
+
+On 13 redacted pages of six printings (2013 to 2022), each in its four
+quarter turns, the four answers together got all 52 right, and one
+question alone got 44. An upright page scored 0.94 or more for "upright",
+and a turned one 0.09 or less, so one question is enough for a page that
+stands upright. On the 2017 photos, Clef was asked 131 times for 35 pages,
+none was undecided, and all 35 were published upright.
+
 Next to each PDF goes its signed manifest (`.manifest.json`), plus the ledger
 and batch roots described below. Documents that fail go to `review/`, each
 with a JSON report of why. `review/report.jsonl` logs every document.
@@ -586,7 +612,8 @@ original, the verifier checks:
 - that no listed block touches a protected region;
 - that each results region decodes to identical pixels in both files;
 - that each page shows its image as the original does (page size, placement
-  and rotation, EXIF orientation included).
+  and rotation, EXIF orientation included), or turned upright as the
+  manifest records for a photo with no orientation tag.
 
 It also writes an overlay showing every changed block. With `--rerun` it
 repeats the redaction from the recorded seed and templates and must

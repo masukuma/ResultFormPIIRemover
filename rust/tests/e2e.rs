@@ -324,6 +324,17 @@ fn what_the_review_finds_is_masked_and_replayed() {
     assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 3);
 }
 
+/// `jpg` with an EXIF orientation tag `o`, right after its SOI.
+fn with_exif(jpg: &[u8], o: u8) -> Vec<u8> {
+    let tiff = [b"MM\0*\0\0\0\x08\0\x01".as_slice(), &[1, 0x12, 0, 3, 0, 0, 0, 1, 0, o, 0, 0], b"\0\0\0\0"].concat();
+    let seg = [b"Exif\0\0".as_slice(), &tiff].concat();
+    let mut tagged = vec![0xff, 0xd8, 0xff, 0xe1];
+    tagged.extend(((seg.len() + 2) as u16).to_be_bytes());
+    tagged.extend(&seg);
+    tagged.extend(&jpg[2..]);
+    tagged
+}
+
 #[test]
 fn a_photo_turned_by_its_exif_tag_is_published_as_it_was_shown() {
     // A phone photo stored sideways, with an EXIF tag telling viewers to turn
@@ -334,14 +345,8 @@ fn a_photo_turned_by_its_exif_tag_is_published_as_it_was_shown() {
     let (scan, _) = simulate_scan(&filled_form(5).unwrap(), 5, 1.0, 1.3).unwrap();
     let mut stored = opencv::core::Mat::default();
     opencv::core::rotate(&scan, &mut stored, opencv::core::ROTATE_90_COUNTERCLOCKWISE).unwrap();
-    let jpg = io::encode(&stored, "jpg", 90).unwrap();
-    // EXIF orientation 6, "turn 90 degrees clockwise to show", after SOI
-    let tiff = [b"MM\0*\0\0\0\x08\0\x01".as_slice(), b"\x01\x12\0\x03\0\0\0\x01\0\x06\0\0", b"\0\0\0\0"].concat();
-    let seg = [b"Exif\0\0".as_slice(), &tiff].concat();
-    let mut tagged = vec![0xff, 0xd8, 0xff, 0xe1];
-    tagged.extend(((seg.len() + 2) as u16).to_be_bytes());
-    tagged.extend(&seg);
-    tagged.extend(&jpg[2..]);
+    // EXIF orientation 6, "turn 90 degrees clockwise to show"
+    let tagged = with_exif(&io::encode(&stored, "jpg", 90).unwrap(), 6);
     assert_eq!(io::exif_orientation(&tagged), 6);
     std::fs::create_dir_all(root.join("in")).unwrap();
     std::fs::write(root.join("in/photo.jpg"), &tagged).unwrap();
@@ -487,4 +492,129 @@ fn a_scanned_batch_is_published_page_by_page() {
     std::fs::write(&opath, serde_json::to_string(&other).unwrap()).unwrap();
     let r = check(&root, &out.join("batch.p003.pdf"), Some(&opath), &orig, &[], None, None);
     assert!(r.checks.iter().any(|(ok, msg)| !*ok && msg.contains("page 1: ") && msg.contains("block")), "{}", r.text());
+}
+
+/// A local stand-in for Clef answering which way a page is turned by
+/// comparing it with `upright` (an encoded image of the page upright) in its
+/// four quarter turns; returns its URL and how many pages it was asked about.
+fn clef_stub(upright: Vec<u8>) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use base64::Engine;
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = count.clone();
+    std::thread::spawn(move || {
+        let reference = io::decode_bytes(&upright).unwrap();
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { break };
+            let mut r = BufReader::new(conn.try_clone().unwrap());
+            let (mut line, mut len) = (String::new(), 0usize);
+            r.read_line(&mut line).unwrap();
+            loop {
+                let mut h = String::new();
+                r.read_line(&mut h).unwrap();
+                if h.trim().is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = h.split_once(':') {
+                    if k.eq_ignore_ascii_case("content-length") {
+                        len = v.trim().parse().unwrap();
+                    }
+                }
+            }
+            let mut body = vec![0u8; len];
+            r.read_exact(&mut body).unwrap();
+            let data = if line.contains("/api/show") {
+                serde_json::json!({"capabilities": ["decision", "vision"]})
+            } else {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                let sent = io::decode_bytes(&base64::engine::general_purpose::STANDARD.decode(body["images"][0].as_str().unwrap()).unwrap()).unwrap();
+                // the reference turned k quarters clockwise that looks most like it
+                let diff = |k: usize| -> f64 {
+                    let mut t = reference.clone();
+                    if k > 0 {
+                        let code = [opencv::core::ROTATE_90_CLOCKWISE, opencv::core::ROTATE_180, opencv::core::ROTATE_90_COUNTERCLOCKWISE][k - 1];
+                        opencv::core::rotate(&reference, &mut t, code).unwrap();
+                    }
+                    if (t.cols() > t.rows()) != (sent.cols() > sent.rows()) {
+                        return f64::INFINITY;
+                    }
+                    let mut small = opencv::core::Mat::default();
+                    opencv::imgproc::resize(&t, &mut small, sent.size().unwrap(), 0.0, 0.0, opencv::imgproc::INTER_AREA).unwrap();
+                    let mut d = opencv::core::Mat::default();
+                    opencv::core::absdiff(&small, &sent, &mut d).unwrap();
+                    opencv::core::mean_def(&d).unwrap()[0]
+                };
+                let k = (0..4).min_by(|&a, &b| diff(a).total_cmp(&diff(b))).unwrap();
+                let names = ["upright", "lying_on_right_side", "upside_down", "lying_on_left_side"];
+                let p: serde_json::Map<String, Value> = names.iter().enumerate().map(|(i, n)| (n.to_string(), serde_json::json!(if i == k { 0.91 } else { 0.03 }))).collect();
+                serde_json::json!({"answers": {"turn": {"type": "choice", "choice": names[k], "probabilities": p}}})
+            };
+            let data = serde_json::to_vec(&data).unwrap();
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", data.len());
+            conn.write_all(head.as_bytes()).unwrap();
+            conn.write_all(&data).unwrap();
+        }
+    });
+    (url, count)
+}
+
+#[test]
+fn a_photo_with_no_orientation_tag_is_turned_upright_as_clef_judges() {
+    // A phone photo stored on its side with no EXIF tag: viewers would show
+    // it sideways. Clef, shown the redacted page, judges it lying on its left
+    // side, and it is published turned a quarter clockwise. A copy carrying
+    // a tag that says "as stored" is published as stored, without asking.
+    let root = tmpdir("orient");
+    write_template(&root.join("templates").join("sample_rs1")).unwrap();
+    let (scan, _) = simulate_scan(&filled_form(6).unwrap(), 6, 1.0, 1.3).unwrap();
+    let mut stored = opencv::core::Mat::default();
+    opencv::core::rotate(&scan, &mut stored, opencv::core::ROTATE_90_COUNTERCLOCKWISE).unwrap();
+    let jpg = io::encode(&stored, "jpg", 90).unwrap();
+    std::fs::create_dir_all(root.join("in")).unwrap();
+    std::fs::write(root.join("in/photo.jpg"), &jpg).unwrap();
+    std::fs::write(root.join("in/tagged.jpg"), with_exif(&jpg, 1)).unwrap();
+    let (url, asked) = clef_stub(io::encode(&scan, "jpg", 90).unwrap());
+    let rc = rfpii(&[
+        "redact", s(&root.join("in")), "--templates", s(&root.join("templates")), "--out", s(&root.join("out")),
+        "--review", s(&root.join("review")), "--workers", "1", "--no-pdf-signature", "--orient", "--vlm-host", &url,
+    ]);
+    assert_eq!(rc, 0, "{}", std::fs::read_to_string(root.join("review/report.jsonl")).unwrap_or_default());
+    // not upright as it is: asked about in all four turns; the tagged copy not at all
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 4);
+    let shown = |name: &str| io::shown(&io::source_pages(name, Some(&std::fs::read(root.join("out").join(name)).unwrap())).unwrap()[0]);
+    let ((w, h), _, rotate) = shown("photo.pdf");
+    assert!(w > h && rotate == 90, "stored landscape, shown turned a quarter clockwise: {w} x {h}, {rotate}");
+    assert_eq!(shown("tagged.pdf").2, 0);
+    let m: Value = serde_json::from_str(&std::fs::read_to_string(root.join("out/photo.manifest.json")).unwrap()).unwrap();
+    let o = &m["pages"][0]["orientation"];
+    assert!(o["turn"] == 90 && o["judged"] == "lying_on_left_side" && o["model"] == "clef" && o["asked"].as_array().unwrap().len() == 4, "{o}");
+    let tagged: Value = serde_json::from_str(&std::fs::read_to_string(root.join("out/tagged.manifest.json")).unwrap()).unwrap();
+    assert!(tagged["pages"][0].get("orientation").is_none());
+    // verified against the original, turn included; the re-run applies the
+    // recorded turn without asking Clef again
+    let check = |manifest: Option<&Path>| {
+        verify(&VerifyArgs {
+            redacted: &root.join("out/photo.pdf"),
+            manifest,
+            original: Some(&root.join("in/photo.jpg")),
+            pubkey: None,
+            ledger: None,
+            overlay_dir: None,
+            rerun_templates: Some(&root.join("templates")),
+            trust: &[],
+        })
+        .unwrap()
+    };
+    let r = check(None);
+    assert!(r.ok() && r.checks.iter().any(|(ok, m)| *ok && m.contains("turned 90° clockwise as recorded")), "{}", r.text());
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 4);
+    // a manifest recording another turn than the page shows fails
+    let mut forged = m.clone();
+    forged["pages"][0]["orientation"]["turn"] = serde_json::json!(270);
+    std::fs::write(root.join("forged.json"), serde_json::to_vec(&forged).unwrap()).unwrap();
+    let r = check(Some(&root.join("forged.json")));
+    assert!(r.checks.iter().any(|(ok, m)| !*ok && m.contains("turned 270°")), "{}", r.text());
 }
