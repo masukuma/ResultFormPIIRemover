@@ -37,6 +37,22 @@ fn finds_a_stamp_and_not_a_table() {
 }
 
 #[test]
+fn lettering_read_with_the_writing_beside_it_is_the_rings() {
+    // Gatundu South p127: "LUJMOFFICER", the name written through the
+    // stamp and then its "OFFICER", boxed far outside the ring
+    let mut page = bgr(1400, 1000, [255, 255, 255]);
+    let (cx, cy, r) = (600, 1000, 90);
+    circle(&mut page, (cx, cy), r, bgr_colour((150.0, 40.0, 110.0)), 5);
+    let read = TextLine { text: "LUJMOFFICER".into(), bbox: [380.0, 1050.0, 690.0, 1090.0] };
+    let found = find(&page, (40.0, 140.0), std::slice::from_ref(&read), None).unwrap();
+    assert_eq!(found.len(), 1);
+    assert!((found[0].cx - cx as f64).abs() < 6.0 && (found[0].r - r as f64).abs() < 8.0, "{:?}", found[0]);
+    // with no ring round it, the lettering still stands for a stamp
+    let found = find(&bgr(1400, 1000, [255, 255, 255]), (40.0, 140.0), &[read], None).unwrap();
+    assert_eq!((found.len(), found[0].how.as_str()), (1, "text"));
+}
+
+#[test]
 fn faint_coloured_stamp_is_found() {
     let mut page = bgr(1200, 900, [235, 235, 235]);
     circle(&mut page, (450, 600), 100, bgr_colour((200.0, 170.0, 205.0)), 3); // pale violet on grey paper

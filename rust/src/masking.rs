@@ -42,12 +42,50 @@ pub struct MaskSettings {
     pub min_glyph_h: f64,
     pub min_glyph_h_out: f64,
     pub empty_ink: f64,
+    /// Stamps are not protected: writing under one is hidden, and the
+    /// masks cover that part of the stamp (`--mask-stamps`)
+    pub mask_stamps: bool,
+    /// Every character of an ID or passport number is hidden, not `hide` of
+    /// them (`--full-ids`)
+    pub full_ids: bool,
+    /// Every digit of a phone number is hidden, its first digits too
+    /// (`--full-phones`)
+    pub full_phones: bool,
 }
 
 impl Default for MaskSettings {
     fn default() -> Self {
-        MaskSettings { hide: 3, phone_tail: 6, vpad: 60.0, mask_vpad: 3.0, min_glyph_h: 0.4, min_glyph_h_out: 0.4, empty_ink: 0.01 }
+        MaskSettings { hide: 3, phone_tail: 6, vpad: 60.0, mask_vpad: 3.0, min_glyph_h: 0.4, min_glyph_h_out: 0.4, empty_ink: 0.01, mask_stamps: false, full_ids: false, full_phones: false }
     }
+}
+
+impl MaskSettings {
+    /// The settings a manifest records (its `settings`); the defaults for
+    /// those it leaves out, as manifests from before they were added do.
+    pub fn from_record(st: &serde_json::Value) -> MaskSettings {
+        let d = MaskSettings::default();
+        let flag = |k: &str| st[k].as_bool().unwrap_or(false);
+        MaskSettings {
+            hide: st["hide"].as_u64().map_or(d.hide, |v| v as usize),
+            phone_tail: st["phone_tail"].as_u64().map_or(d.phone_tail, |v| v as usize),
+            mask_stamps: flag("mask_stamps"),
+            full_ids: flag("full_ids"),
+            full_phones: flag("full_phones"),
+            ..d
+        }
+    }
+
+    /// Numbers of this rule (`phone` or `id`) are hidden whole.
+    pub fn whole(&self, rule: &str) -> bool {
+        if rule == "phone" { self.full_phones } else { self.full_ids }
+    }
+}
+
+/// The band a field's writing runs along: its zone, without the search
+/// above and below it, which reaches the next line's writing (a name).
+pub fn band(z: &Zone) -> [[f64; 2]; 4] {
+    let [x, y, w, h] = z.rect;
+    [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
 }
 
 /// How far a column's search window may reach beyond its cells: its usual
@@ -694,8 +732,12 @@ pub fn pick_hidden(n: usize, k: usize, rng: &mut PyRandom, max_run: usize) -> Ve
 }
 
 /// Which character slots to hide: phone, `hide` of the last `phone_tail`
-/// digits (the prefix stays visible); id, `hide` of all characters.
+/// digits (the prefix stays visible); id, `hide` of all characters; all of
+/// them where the rule's numbers are hidden whole.
 pub fn choose_hidden(n: usize, rule: &str, rng: &mut PyRandom, s: &MaskSettings) -> Vec<usize> {
+    if s.whole(rule) {
+        return (0..n).collect();
+    }
     if rule == "phone" {
         let start = n.saturating_sub(s.phone_tail);
         return pick_hidden(n - start, s.hide, rng, 2).into_iter().map(|i| start + i).collect();
@@ -896,7 +938,10 @@ pub fn partial_column(
 }
 
 /// Independent leak check on the redacted image: re-read the column and look
-/// for `max_run` or more written characters in a row with no mask between.
+/// for 5 or more written characters in a row with no mask between (8 for
+/// phone numbers). Where the rule's numbers are hidden whole, 3 in a row
+/// off the stamps in `keep` (protected: writing on them stays visible) are
+/// a leak too.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_column(
     out: &Mat,
@@ -907,6 +952,7 @@ pub fn verify_column(
     reach: Reach,
     strikes: Option<&[Strike]>,
     exclude: Option<&Mat>,
+    keep: Option<&Mat>,
 ) -> Result<String> {
     let max_run = if cells[0].rule == "phone" { 8 } else { 5 };
     let window = cells[0].search.map(|s| (s[0] + 8.0, s[1] + 8.0)).unwrap_or((60.0, 110.0));
@@ -955,27 +1001,52 @@ pub fn verify_column(
         }
         glyphs.push(Glyph { x0: a, x1: a + b, y0: c, y1: c + d });
     }
-    for line in text_lines(&glyphs, row_h) {
-        let line = merge_glyphs(&line);
-        let top = line.iter().map(|g| g.y0).min().unwrap();
-        let bot = line.iter().map(|g| g.y1).max().unwrap();
-        let (mut run, mut best) = (1, 1);
-        for p in line.windows(2) {
-            let (a, b) = (p[0], p[1]);
-            let xe = (a.x1 + 1).max(b.x0);
-            let mut any = false;
-            'gap: for yy in top.max(0)..bot.min(masked.h as i64) {
-                for xx in a.x1.max(0)..xe.min(masked.w as i64) {
-                    if masked.at(xx as usize, yy as usize) > 0 {
-                        any = true;
-                        break 'gap;
+    // the most written characters side by side with no mask between, in
+    // any line of `glyphs`
+    let longest = |glyphs: &[Glyph]| -> usize {
+        let mut most = 0;
+        for line in text_lines(glyphs, row_h) {
+            let line = merge_glyphs(&line);
+            let top = line.iter().map(|g| g.y0).min().unwrap();
+            let bot = line.iter().map(|g| g.y1).max().unwrap();
+            let (mut run, mut best) = (1, 1);
+            for p in line.windows(2) {
+                let (a, b) = (p[0], p[1]);
+                let xe = (a.x1 + 1).max(b.x0);
+                let mut any = false;
+                'gap: for yy in top.max(0)..bot.min(masked.h as i64) {
+                    for xx in a.x1.max(0)..xe.min(masked.w as i64) {
+                        if masked.at(xx as usize, yy as usize) > 0 {
+                            any = true;
+                            break 'gap;
+                        }
                     }
                 }
+                run = if any { 1 } else { run + 1 };
+                best = best.max(run);
             }
-            run = if any { 1 } else { run + 1 };
-            best = best.max(run);
+            most = most.max(best);
         }
-        if best >= max_run {
+        most
+    };
+    let best = longest(&glyphs);
+    if best >= max_run {
+        return Ok(format!("{}: {} written characters in a row left unmasked", cells[0].key(), best));
+    }
+    if s.whole(&cells[0].rule) {
+        // a number hidden whole: three characters showing are some of it,
+        // unless a protected stamp keeps them visible
+        let on_stamp = match keep {
+            Some(k) => {
+                let mut m = Mat::default();
+                imgproc::remap(k, &mut m, &maps.0, &maps.1, imgproc::INTER_NEAREST, core::BORDER_CONSTANT, Scalar::all(0.0), core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+                Some(Img::from_mat(&m)?)
+            }
+            None => None,
+        };
+        let off: Vec<Glyph> = glyphs.iter().filter(|g| on_stamp.as_ref().is_none_or(|k| k.at(((g.x0 + g.x1) / 2) as usize, ((g.y0 + g.y1) / 2) as usize) == 0)).copied().collect();
+        let best = longest(&off);
+        if best >= 3 {
             return Ok(format!("{}: {} written characters in a row left unmasked", cells[0].key(), best));
         }
     }
@@ -1383,6 +1454,9 @@ pub struct SigOptions<'a> {
     pub centered: bool,
     pub strikes: Option<&'a [Strike]>,
     pub exclude: Option<&'a Mat>,
+    /// px below the cells where writing is still theirs (`centered` only):
+    /// an officer's last line, with no next line's writing under it
+    pub hang: f64,
 }
 
 /// Signature blobs in a column. `o.printed` (template space, nonzero =
@@ -1393,7 +1467,7 @@ pub struct SigOptions<'a> {
 /// the neighbouring lines). Strokes mostly on the next line belong to it; an
 /// underline joins only the strokes crossing it.
 fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, more_below: f64, o: &SigOptions) -> Result<(Vec<SigBlob>, [f64; 2], Vec<(f64, f64)>, Vec<Zone>, Img)> {
-    let (above, below) = sig_window(cells, s, o.reach, more_below);
+    let (above, below) = sig_window(cells, s, o.reach, more_below + o.hang);
     let cs = column_strip(gray, f, cells, above, below, SIG_OVERRUN)?;
     let row_h = median_row_h(&cs.cells);
     let mut ink_m = ink_mask(&cs.strip, row_h, true)?;
@@ -1428,6 +1502,7 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
     }
     let lo = cs.bands[0].0 as i64;
     let hi = cs.bands.last().unwrap().1.ceil() as i64;
+    let hi_on = hi + o.hang.round() as i64;
     let mut bridge: Option<Img> = None;
     if o.centered {
         let rref = match o.reference {
@@ -1488,19 +1563,20 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
         let mut lab2 = Mat::default();
         let n = imgproc::connected_components_def(&util::from_bytes(ink.h as i32, ink.w as i32, &both)?, &mut lab2)? as usize;
         let lab2 = util::labels_vec(&lab2)?;
-        let (mut inside, mut total) = (vec![0usize; n], vec![0usize; n]);
+        let (mut inside, mut total, mut crossing) = (vec![0usize; n], vec![0usize; n], vec![false; n]);
         for (k, &l) in lab2.iter().enumerate() {
+            crossing[l as usize] |= br.d[k] > 0;
             if ink.d[k] > 0 {
                 total[l as usize] += 1;
                 let yy = (k / ink.w) as i64;
-                if yy >= lo.max(0) && yy < hi.max(0) {
+                if yy >= lo.max(0) && yy < hi_on.max(0) {
                     inside[l as usize] += 1;
                 }
             }
         }
         for (k, &l) in lab2.iter().enumerate() {
             let l = l as usize;
-            if l > 0 && (inside[l] as f64) < 0.3 * (total[l].max(1)) as f64 {
+            if l > 0 && !on_line(inside[l], total[l], crossing[l]) {
                 ink.d[k] = 0;
             }
         }
@@ -1515,21 +1591,23 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
     let (end, sh) = (cs.bands.last().unwrap().1, ink.h as i64);
     blobs.retain(|b| !(b.y1 >= sh - 1 && b.y0 as f64 > end + 0.5 * (sh as f64 - end)));
     if o.centered {
+        let br = bridge.as_ref().unwrap();
         let share = |b: &SigBlob| {
-            let (mut inside, mut total) = (0usize, 0usize);
+            let (mut inside, mut total, mut crossing) = (0usize, 0usize, false);
             for yy in b.y0..b.y1 {
                 for xx in b.x0..b.x1 {
+                    crossing |= br.at(xx as usize, yy as usize) > 0;
                     if ink.at(xx as usize, yy as usize) > 0 {
                         total += 1;
-                        if yy >= lo && yy < hi {
+                        if yy >= lo && yy < hi_on {
                             inside += 1;
                         }
                     }
                 }
             }
-            inside as f64 / total.max(1) as f64
+            on_line(inside, total, crossing)
         };
-        blobs.retain(|b| share(b) >= 0.3 && !(b.y0 <= 1 && (b.y1 as f64) < (lo + hi) as f64 / 2.0));
+        blobs.retain(|b| share(b) && !(b.y0 <= 1 && (b.y1 as f64) < (lo + hi) as f64 / 2.0));
     } else if cs.cells.len() <= 2 {
         // signature lines, not a table's rows: writing reaching in from the
         // top of the search and stopping above the first line's middle is
@@ -1538,6 +1616,14 @@ fn find_signatures(gray: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, mor
         blobs.retain(|b| !(b.y0 <= 1 && (b.y1 as f64) < mid));
     }
     Ok((blobs, cs.origin, cs.bands, cs.cells, ink))
+}
+
+/// Writing is a line's when most of it is on the line: 30% of its ink
+/// (strokes mostly on the next line belong to it), or, crossing the line,
+/// a signature's worth of it, however far the rest hangs below: writing
+/// from the next line doesn't cross this one.
+fn on_line(inside: usize, total: usize, crossing: bool) -> bool {
+    inside as f64 >= 0.3 * total.max(1) as f64 || (crossing && inside >= 3 * SIG_MIN_INK)
 }
 
 /// Mask each signature by a band through its middle (whole, down a table
@@ -1568,7 +1654,7 @@ pub fn signature_column(img: &mut Mat, gray: &Mat, f: &Mapper, cells: &[Zone], s
 pub fn verify_signatures(gray: &Mat, out: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, keep: Option<&Mat>, o: &SigOptions) -> Result<String> {
     let (blobs, origin, _, cells2, _) = find_signatures(gray, f, cells, s, SIG_BELOW, o)?;
     let _ = origin;
-    let (above, below) = sig_window(&cells2, s, o.reach, SIG_BELOW);
+    let (above, below) = sig_window(&cells2, s, o.reach, SIG_BELOW + o.hang);
     let og = util::gray(out)?;
     let ostrip = Img::from_mat(&column_strip(&og, f, &cells2, above, below, SIG_OVERRUN)?.strip)?;
     let gstrip = column_strip(gray, f, &cells2, above, below, SIG_OVERRUN)?;

@@ -133,6 +133,54 @@ fn stamp_over_a_signature_is_never_masked() {
 }
 
 #[test]
+fn with_stamps_masked_over_the_officers_box_is_masked_stamp_and_all() {
+    let ts = templates();
+    let form = to_gray(&stamped(&filled_form(3).unwrap()));
+    let (scan, h) = simulate_scan(&form, 3, 2.0, 1.3).unwrap();
+    let ms = MaskSettings { mask_stamps: true, ..MaskSettings::default() };
+    let r = redact_page(&scan, &ts, &AlignSettings::default(), &ms, &mut PyRandom::new(0), &PageOptions::default()).unwrap();
+    assert!(r.ok, "{}", r.reason);
+    assert!(!r.protected.iter().any(|p| p["kind"] == "stamp"), "no stamp is protected");
+    let img = r.image.unwrap();
+    for (name, rect) in ZONES {
+        let px = region(&img, &project(rect.map(|v| v as f64), &h, 0.0));
+        assert!(px.iter().all(|&v| v == 0), "zone {}", name);
+    }
+}
+
+#[test]
+fn with_stamps_masked_over_a_fields_band_across_a_stamp_is_hidden() {
+    let stamp = Stamp::new(500.0, 500.0, 100.0, 1.0, "ring");
+    let ident = masking::homography(util::IDENTITY);
+    let mut id = Zone::new("id@300,480", [300.0, 480.0, 400.0, 40.0], "partial");
+    id.search = Some([10.0, 10.0]);
+    let sig = Zone::new("signature@300,560", [300.0, 560.0, 400.0, 30.0], "signature");
+    let mut bands = gray(1000, 1000, 255);
+    for z in [&id, &sig] {
+        masking::fill(&mut bands, &ident, &masking::band(z)).unwrap();
+    }
+    let mut canvas = gray(1000, 1000, 255);
+    assert!(hide_under_stamps(&mut canvas, &bands, std::slice::from_ref(&stamp)).unwrap() > 0);
+    let px = |c: &Mat, x: i32, y: i32| *c.at_2d::<u8>(y, x).unwrap();
+    // the number's line and the signature's line, across the stamp
+    assert_eq!((px(&canvas, 500, 500), px(&canvas, 450, 575)), (0, 0));
+    // the rest of the stamp (a name on the line above), and the fields
+    // beyond it (theirs to mask), untouched
+    assert_eq!((px(&canvas, 500, 420), px(&canvas, 500, 473), px(&canvas, 500, 545), px(&canvas, 680, 500)), (255, 255, 255, 255));
+
+    // nothing is lifted off the stamp; by default the same mask is
+    let mut lifted = canvas.clone();
+    let page = bgr(1000, 1000, [255, 255, 255]);
+    let ms = MaskSettings { mask_stamps: true, ..MaskSettings::default() };
+    let (found, keep, notes) = protect_stamps(&page, &mut canvas, std::slice::from_ref(&stamp), (60.0, 140.0), None, &ms).unwrap();
+    assert!(found.is_empty() && opencv::core::count_non_zero(&keep).unwrap() == 0);
+    assert_eq!(px(&canvas, 500, 500), 0);
+    assert!(notes.iter().any(|n| n.contains("--mask-stamps")), "{:?}", notes);
+    let (found, _, _) = protect_stamps(&page, &mut lifted, std::slice::from_ref(&stamp), (60.0, 140.0), None, &MaskSettings::default()).unwrap();
+    assert_eq!((found.len(), px(&lifted, 500, 500)), (1, 255));
+}
+
+#[test]
 fn redact_boxes_masks_signature() {
     let mut page = bgr(400, 600, [230, 230, 230]);
     imgproc::put_text(&mut page, "Sig", Point::new(100, 200), imgproc::FONT_HERSHEY_SCRIPT_SIMPLEX, 2.0, Scalar::all(0.0), 3, imgproc::LINE_8, false).unwrap();

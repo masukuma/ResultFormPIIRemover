@@ -14,7 +14,7 @@ const Y: i32 = 200;
 const W: i32 = 220;
 
 fn none() -> SigOptions<'static> {
-    SigOptions { reach: Reach::default(), reference: None, printed: None, centered: false, strikes: None, exclude: None }
+    SigOptions { reach: Reach::default(), reference: None, printed: None, centered: false, strikes: None, exclude: None, hang: 0.0 }
 }
 
 fn centered() -> SigOptions<'static> {
@@ -132,11 +132,62 @@ fn phone_rule_keeps_prefix_and_hides_three_of_last_six() {
 }
 
 #[test]
+fn with_full_ids_or_full_phones_every_character_of_the_number_is_hidden() {
+    let (ids, phones) = (MaskSettings { full_ids: true, ..MaskSettings::default() }, MaskSettings { full_phones: true, ..MaskSettings::default() });
+    let id = table(&[(0, "36676945")], false);
+    let phone = table(&[(1, "0734471897")], false);
+    for seed in 0..5 {
+        let mut canvas = gray(600, 500, 255);
+        let rep = partial(&mut canvas, &id, &cells_rule("c", "id", 8), &ids, seed);
+        assert_eq!(hidden_of(&rep, "c[0]"), (0..8).collect::<Vec<_>>());
+        assert_eq!(hidden_chars(&canvas, &id, 0, "36676945"), (0..8).collect::<Vec<_>>());
+        let mut canvas = gray(600, 500, 255);
+        let rep = partial(&mut canvas, &phone, &cells_rule("c", "phone", 10), &phones, seed);
+        assert_eq!(hidden_of(&rep, "c[1]"), (0..10).collect::<Vec<_>>());
+        assert_eq!(hidden_chars(&canvas, &phone, 1, "0734471897"), (0..10).collect::<Vec<_>>(), "the prefix too");
+        // each flag is for its own kind of number
+        let mut canvas = gray(600, 500, 255);
+        assert_eq!(hidden_of(&partial(&mut canvas, &id, &cells_rule("c", "id", 8), &phones, seed), "c[0]").len(), 3);
+        let mut canvas = gray(600, 500, 255);
+        let hidden = hidden_of(&partial(&mut canvas, &phone, &cells_rule("c", "phone", 10), &ids, seed), "c[1]");
+        assert!(hidden.len() == 3 && *hidden.iter().min().unwrap() >= 4, "{:?}", hidden);
+    }
+}
+
+#[test]
+fn with_numbers_hidden_whole_the_leak_check_flags_three_characters_showing() {
+    let img = table(&[(0, "36676945")], false);
+    let whole = MaskSettings { full_ids: true, ..MaskSettings::default() };
+    let check_kept = |out: &Mat, s: &MaskSettings, keep: Option<&Mat>| verify_column(out, &identity(), &cells(8), None, s, Reach::default(), None, None, keep).unwrap();
+    let check = |out: &Mat, s: &MaskSettings| check_kept(out, s, None);
+    let mut out = to_bgr(&img);
+    partial(&mut out, &img, &cells(8), &whole, 0);
+    assert_eq!(check(&out, &whole), "");
+    // the first four characters hidden, the last four showing: a number
+    // with characters hidden by the default rule, half shown hidden whole
+    let g = img_of(&img);
+    let ink: Vec<i32> = (X + 4..X + W - 4).filter(|&x| (Y + 4..Y + ROW_H - 4).any(|y| g.at(x as usize, y as usize) < 120)).collect();
+    let starts: Vec<i32> = ink.iter().zip(ink.iter().skip(1)).filter(|(a, b)| **b > **a + 1).map(|(_, b)| *b).collect();
+    let mut half = img.clone();
+    fill_rect(&mut half, X + 2, Y + 2, starts[3] - 1, Y + ROW_H - 2, 0);
+    let half = to_bgr(&half);
+    assert_eq!(check(&half, &MaskSettings::default()), "");
+    assert!(check(&half, &whole).contains("4 written characters in a row"), "{}", check(&half, &whole));
+    // the four showing lie on a protected stamp: writing there stays visible
+    let mut stamp = gray(600, 500, 0);
+    fill_rect(&mut stamp, starts[3] - 1, Y - 30, X + W + 30, Y + ROW_H + 30, 255);
+    assert_eq!(check_kept(&half, &whole, Some(&stamp)), "");
+    // ... but a number shown whole is a leak, stamp or not, as by default
+    let shown = to_bgr(&img);
+    assert!(check_kept(&shown, &whole, Some(&gray(600, 500, 255))).contains("8 written characters"));
+}
+
+#[test]
 fn partial_masks_pass_the_leak_check() {
     let img = table(&[(0, "36676945"), (2, "0719108076")], false);
     let mut out = to_bgr(&img);
     partial(&mut out, &img, &cells(8), &MaskSettings::default(), 1);
-    assert_eq!(verify_column(&out, &identity(), &cells(8), None, &MaskSettings::default(), Reach::default(), None, None).unwrap(), "");
+    assert_eq!(verify_column(&out, &identity(), &cells(8), None, &MaskSettings::default(), Reach::default(), None, None, None).unwrap(), "");
 }
 
 #[test]
@@ -177,7 +228,7 @@ fn img_channel0(out: &Mat) -> Img {
 fn verify_flags_unmasked_number() {
     let img = table(&[(1, "0719108076")], false);
     let out = to_bgr(&img); // nothing masked
-    assert!(verify_column(&out, &identity(), &cells(10), None, &MaskSettings::default(), Reach::default(), None, None).unwrap().contains("unmasked"));
+    assert!(verify_column(&out, &identity(), &cells(10), None, &MaskSettings::default(), Reach::default(), None, None, None).unwrap().contains("unmasked"));
 }
 
 #[test]
@@ -355,6 +406,54 @@ fn the_date_below_an_underlined_signature_stays_visible() {
     }
 }
 
+#[test]
+fn a_signature_hanging_below_its_line_is_still_its_lines() {
+    // Kiambaa p29: a short scrawl on the line and loops hanging well below
+    // it, most of the ink under the line. Writing from the next line doesn't
+    // cross this one: crossing it, with a signature's worth of ink above,
+    // it is this line's signature.
+    let mut img = gray(320, 900, 235);
+    line(&mut img, (60, 200), (780, 200), colour(60.0), 2);
+    let above: Vec<(i32, i32)> = linspace(150.0, 260.0, 60).iter().map(|&x| (x as i32, (188.0 + 7.0 * ((x - 150.0) / 4.0).sin()) as i32)).collect();
+    polyline(&mut img, &above, colour(20.0), 2);
+    for x in (160..340).step_by(30) {
+        polyline(&mut img, &[(x, 190), (x + 6, 244), (x + 14, 246), (x + 18, 192)], colour(20.0), 2);
+    }
+    polyline(&mut img, &[(150, 236), (250, 240), (360, 234)], colour(20.0), 2); // a flourish under it all
+    let field = [Zone { search: Some([0.0, 10.0]), ..zone("ro_signature", [100, 150, 600, 55], "signature") }];
+    let gi = crate::testutil::img(&img);
+    let own: Vec<bool> = (0..320 * 900).map(|i| { let (x, y) = (i % 900, i / 900); gi.at(x, y) < 120 && (140..370).contains(&x) && y > 150 && !(198..203).contains(&y) }).collect();
+    let mut canvas = gray(320, 900, 255);
+    let rep = sigs(&mut canvas, &img, &field, &centered());
+    assert_eq!(modes(&rep), ["signature"]);
+    assert!(covered(&canvas, &own) > 0.3, "{}", covered(&canvas, &own));
+    assert_eq!(verify_sig(&img, &apply(&canvas, &img), &field, &centered()), "");
+    // the same loops alone under the line, crossing nothing: the next line's
+    let mut img = gray(320, 900, 235);
+    line(&mut img, (60, 200), (780, 200), colour(60.0), 2);
+    for x in (160..340).step_by(30) {
+        polyline(&mut img, &[(x, 208), (x + 6, 244), (x + 14, 246), (x + 18, 208)], colour(20.0), 2);
+    }
+    let mut canvas = gray(320, 900, 255);
+    assert_eq!(modes(&sigs(&mut canvas, &img, &field, &centered())), ["empty"]);
+    // ... unless nothing is written under the line (an officer's last line)
+    let last = SigOptions { hang: 45.0, ..centered() };
+    let mut canvas = gray(320, 900, 255);
+    assert_eq!(modes(&sigs(&mut canvas, &img, &field, &last)), ["signature"]);
+    assert_eq!(verify_sig(&img, &apply(&canvas, &img), &field, &last), "");
+    // hanging lower than the search reaches without it: checked there too
+    let mut img = gray(360, 900, 235);
+    line(&mut img, (60, 200), (780, 200), colour(60.0), 2);
+    for x in (160..340).step_by(30) {
+        polyline(&mut img, &[(x, 236), (x + 6, 284), (x + 14, 286), (x + 18, 236)], colour(20.0), 2);
+    }
+    let last = SigOptions { hang: 90.0, ..centered() };
+    let mut canvas = gray(360, 900, 255);
+    assert_eq!(modes(&sigs(&mut canvas, &img, &field, &last)), ["signature"]);
+    assert_eq!(verify_sig(&img, &apply(&canvas, &img), &field, &last), "");
+    assert!(verify_sig(&img, &to_bgr(&img), &field, &last).contains("not masked through the middle"));
+}
+
 /// A signature on its line, 150-400 px; `draw` draws the line. Returns the
 /// image, the signature's own ink and the field.
 fn underlined_signature(draw: impl Fn(&mut Mat)) -> (Mat, Vec<bool>, Vec<Zone>) {
@@ -483,7 +582,7 @@ fn the_name_above_reaching_into_an_id_field_is_not_part_of_the_id() {
     let rep = partial(&mut canvas, &img, &field, &s, 3);
     assert!(rep[0]["mode"] == "partial" && rep[0]["lines"][0]["slots"] == 7, "{:?}", rep);
     assert!(all_eq(&canvas, 410, 100, 560, 150, 255)); // the name stays visible
-    assert_eq!(verify_column(&apply(&canvas, &img), &identity(), &field, None, &s, Reach::default(), None, None).unwrap(), "");
+    assert_eq!(verify_column(&apply(&canvas, &img), &identity(), &field, None, &s, Reach::default(), None, None, None).unwrap(), "");
 }
 
 #[test]
@@ -653,7 +752,7 @@ fn a_widened_search_stops_at_the_label_below_the_table() {
     assert!(!comment(&canvas));
     assert!(rep[0]["lines"][0]["hidden"].as_array().unwrap().len() == 3 && rep[5]["lines"][0]["hidden"].as_array().unwrap().len() == 3);
     assert_eq!(hidden_chars(&canvas, &img, 5, "24571109").len(), 3);
-    assert_eq!(verify_column(&apply(&canvas, &img), &identity(), &cs, None, &MaskSettings::default(), fenced, None, None).unwrap(), "");
+    assert_eq!(verify_column(&apply(&canvas, &img), &identity(), &cs, None, &MaskSettings::default(), fenced, None, None, None).unwrap(), "");
     // the signatures' search stops there too
     let mut sig = signature_table(&[(5, 20)]);
     text(&mut sig, "WRONG", (X + 8, bottom + 80), 0.85, colour(20.0), 2, true);

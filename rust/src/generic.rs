@@ -61,7 +61,10 @@ fn re(p: &str) -> Regex {
 }
 
 pub(crate) static ID_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)passp[a-z]{0,4}|(?<![a-z])[I1l]\s?\.?\s?D\s*\.?\s*(?:/|no\b|no\.|num|number)|national\s*id"));
-pub(crate) static TEL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)(?<![a-z])tel(?![a-z])|telephone|contact|phone|mobile"));
+// "Mobile" heads a label ("Mobile No.:") but also ends polling stations'
+// names ("LOMUKE MOBILE (039)", read "LOMUKEMOBILE(039)"): there the code
+// after it is the station's
+pub(crate) static TEL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)(?<![a-z])tel(?![a-z])|telephone|contact|phone|^\W*mobile|mobile\s*(?:no\b|no\.|num|:)"));
 pub(crate) static SIG_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)signature|(?<![a-z])sign(?![a-z])"));
 static DATE_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)(?<!di)date"));
 pub(crate) static REFUSAL_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)refus"));
@@ -75,7 +78,7 @@ static FREE_ID_RE: Lazy<Regex> = Lazy::new(|| re(r"(?<![\d/-])((?:\d\s?){6,8}\d)
 static ID_PREFIX_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)(?<![a-z])(?:[I1l|]\s?\.?\s?D|ID\s*no|ID\s*number)\s*\.?\s*[:.,;#-]?\s*(\S.{4,15})"));
 static FREE_PHONE_RE: Lazy<Regex> = Lazy::new(|| re(r"(?<!\d)((?:\+\s?254|0)\s?[17](?:\s?\d){8})(?!\d)"));
 static PRINTED_LINE: Lazy<Regex> = Lazy::new(|| {
-    re(r"(?i)^[\s.:,/()_-]*(?:no|name\s*of\s*candidate(?:\s*or\s*agent)?|or\s*agent|agent|id\s*/?\s*passport(?:\s*no)?|passport|party\s*name|independent(?:\s*candidate)?|candidate|tel\.?(?:\s*contact)?|contact|signature|date)[\s.:,/()_-]*$")
+    re(r"(?i)^[\s.:,/()_-]*(?:no|name\s*of\s*candidate(?:\s*or\s*agent)?|or\s*agent|agent|id\s*/?\s*passport(?:\s*no)?|i\.?\s*d\.?\s*no\.?\s*/?\s*passp[a-z]{0,4}|passport|party\s*name|independent(?:\s*candidate)?|candidate|tel\.?(?:\s*contact)?|contact|signature|date)[\s.:,/()_-]*$")
 });
 static FREE_LABEL: Lazy<Regex> = Lazy::new(|| {
     re(r"(?i)presiding\s*officer'?s?\s*comments?\s*:?|reasons?\s*for\s*refus[ae]l\s*to\s*sign(?:\s*\(?\s*if\s*any\s*\)?)?")
@@ -673,7 +676,15 @@ fn declaration(l: &mut Layout, top: f64, bottom: f64) -> BTreeSet<usize> {
             let k = row(&mut rws, ln.cy(), h);
             rws[k].misread.push(ln.span(a, b).0);
         }
-        if has(&OFFICER_RE, &ln.text) && !stamps::is_stamp_text(&ln.text) {
+        // a stamp's "PRESIDING OFFICER" read into the name written under
+        // it ("PRESiDINGNSOZOGZ") names no officer; the printed label, in
+        // small letters, does even under a stamp
+        let printed = matches(&OFFICER_RE, &ln.text).into_iter().any(|(a, b)| {
+            let (x0, x1) = ln.span(a, b);
+            let caps = ln.chars[a..b].iter().filter(|c| c.is_uppercase()).count() as f64 >= 0.8 * (b - a) as f64;
+            !caps || !l.stamps.iter().any(|s| (0.5 * (x0 + x1) - s.cx).hypot(ln.cy() - s.cy) < s.r)
+        });
+        if printed && !stamps::is_stamp_text(&ln.text) {
             let k = row(&mut rws, ln.cy(), h);
             rws[k].officer = true;
         }
@@ -829,17 +840,20 @@ fn headings_read(l: &Layout, hs: &[Line], vs: &[Line], cy: f64, kinds: &BTreeSet
 /// A page that opens with an officer's lines, no declaration above them:
 /// it goes on with the declaration of the page before (a 2013 Form 34's
 /// back: the deputy's lines, the agents, comments), and has no results on
-/// it if no count is printed on it either. A word of results anywhere above
-/// the comments (a blurred front page whose labels OCR garbled) says
-/// otherwise.
+/// it if no count is printed on it either. The deputy's label may be
+/// garbled ("DeputyPresigingOfficer") or unread, his 'ID No. / Passport'
+/// read, or the page open with the agents (the deputy signed on the
+/// front). A word of results anywhere above the comments (a blurred front
+/// page whose labels OCR garbled) says otherwise.
 fn goes_on_with_declaration(lines: &[OLine], page_h: f64) -> bool {
-    lines.iter().any(|ln| ln.cy() < 0.2 * page_h && has(&ROLE_RE, &ln.text) && !stamps::is_stamp_text(&ln.text))
+    lines.iter().any(|ln| ln.cy() < 0.2 * page_h && has(&OPENER_RE, &ln.text) && !stamps::is_stamp_text(&ln.text))
         && !lines.iter().any(|ln| ln.cy() < 0.7 * page_h && has(&RESULTS_WORD_RE, &ln.text))
 }
 
-// an officer's role, not "presidential"
-static ROLE_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)deputy\s*presid|presiding\s*officer"));
-static RESULTS_WORD_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)vot|ballot|regist|reject|disput|result"));
+// an officer's role (not "presidential"), his ID line, the agents' heading
+static OPENER_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)deputy|presiding\s*officer|id\s*no\W*passport|candidates?\W*or\W*candidates?\W*agents"));
+// "vote", not a name written "VOTU"
+static RESULTS_WORD_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)vote|ballot|regist|reject|disput|result"));
 
 static AGENTS_RE: Lazy<Regex> = Lazy::new(|| re(r"(?i)agent"));
 
@@ -869,12 +883,42 @@ fn officer_lines_end(lines: &[OLine], from: f64) -> f64 {
     }
 }
 
+/// How far below an officer's signature line writing is still the line's:
+/// a printed line where nothing is written under it but a stamp's lettering
+/// (a 2013 Form 34's last line, over the security stripe), there being no
+/// next line's writing to tell it from.
+fn hang(l: &Layout, fl: &Field) -> f64 {
+    if fl.source != "declaration" {
+        return 0.0;
+    }
+    let (x0, y0, x1, y1) = fl.label_box;
+    let (cy, h) = ((y0 + y1) / 2.0, y1 - y0);
+    let under = l.lines.iter().any(|o| {
+        let (ox0, oy0, ox1, oy1) = o.bbox();
+        let in_stamp = l.stamps.iter().any(|s| ((ox0 + ox1) / 2.0 - s.cx).hypot((oy0 + oy1) / 2.0 - s.cy) < s.r);
+        oy0 > cy + 0.5 * h && oy0 < cy + 2.0 * h && ox1 > x0 && ox0 < x1 && !in_stamp
+    });
+    if under { 0.0 } else { h }
+}
+
 // --- labelled fields outside tables -------------------------------------------------------------
 
-fn next_label_x(l: &Layout, ln: &OLine, after: f64) -> Option<f64> {
+/// The same words read twice: the officers' lines are read again, zoomed
+/// in, and both reads are kept.
+fn twins(a: &OLine, b: &OLine) -> bool {
+    let (a, b) = (a.bbox(), b.bbox());
+    let w = a.2.min(b.2) - a.0.max(b.0);
+    let h = a.3.min(b.3) - a.1.max(b.1);
+    let area = |r: (f64, f64, f64, f64)| (r.2 - r.0) * (r.3 - r.1);
+    w > 0.0 && h > 0.0 && w * h >= 0.6 * area(a).min(area(b))
+}
+
+fn next_label_x(l: &Layout, i: usize, after: f64) -> Option<f64> {
+    let ln = &l.lines[i];
     let mut best: Option<f64> = None;
-    for o in &l.lines {
-        if (o.cy() - ln.cy()).abs() > 0.6 * ln.height() {
+    for (j, o) in l.lines.iter().enumerate() {
+        // the other read of this line has this line's own label further on
+        if (o.cy() - ln.cy()).abs() > 0.6 * ln.height() || (j != i && twins(ln, o)) {
             continue;
         }
         for (a, b) in matches(&LABEL_RE, &o.text) {
@@ -889,6 +933,55 @@ fn next_label_x(l: &Layout, ln: &OLine, after: f64) -> Option<f64> {
 
 static FIVE_DIGITS: Lazy<Regex> = Lazy::new(|| re(r"\d{5}"));
 static JOIN_RE: Lazy<Regex> = Lazy::new(|| re(r"^[\s/.:,-]*$"));
+// "Passport:" after "ID No." as OCR reads it, with the slash before it
+// read as a letter or digit ("ID No. ypassport:", "IDNo.1Passport:") or the
+// word itself misread ("Rassport:", "Passoort:"): two letters off at most,
+// so an ID read as letters is never taken for it
+static PASSPORT_TAIL: Lazy<Regex> = Lazy::new(|| re(r"^[\s/.:,|\\-]*(?:[A-Za-z0-9]\s*)?([PpRr][A-Za-z0-9&]{4,8})\s*:"));
+
+/// Letters to change, add or remove to make `a` into `b`.
+fn edits(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for j in 0..b.len() {
+            let cur = row[j + 1];
+            row[j + 1] = (prev + (ca != b[j]) as usize).min(row[j] + 1).min(cur + 1);
+            prev = cur;
+        }
+    }
+    row[b.len()]
+}
+
+/// Where a label of this kind on the line ends, unless a number follows it
+/// on the line (a station's code, read as part of a heading).
+fn label_end(ln: &OLine, kind: &str, rx: &Regex) -> Option<f64> {
+    if kind == "signature" && has(&REFUSAL_RE, &ln.text) {
+        return None;
+    }
+    let m = rx.find(&ln.text).ok().flatten()?;
+    // a label of several words ("ID No. / Passport:") ends after the last
+    let mut end = m.end();
+    for n in rx.find_iter(&ln.text).filter_map(|n| n.ok()).filter(|n| n.start() >= m.end()) {
+        if !has(&JOIN_RE, &ln.text[end..n.start()]) {
+            break;
+        }
+        end = n.end();
+    }
+    if kind == "id" && !ln.text[m.start()..end].to_lowercase().contains("passp") {
+        if let Some(c) = PASSPORT_TAIL.captures(&ln.text[end..]).ok().flatten() {
+            if edits(&c[1].to_lowercase(), "passport") <= 2 {
+                end += c.get(0).unwrap().end();
+            }
+        }
+    }
+    if kind != "signature" && has(&FIVE_DIGITS, &ln.text[end..]) {
+        return None;
+    }
+    Some(ln.span(char_index(&ln.text, m.start()), char_index(&ln.text, end)).1)
+}
 
 fn labels(l: &mut Layout, used: &BTreeSet<usize>, top: f64) {
     let right = l.lines.iter().map(|ln| ln.bbox().2).reduce(f64::max).unwrap_or(l.frame.size.0 as f64);
@@ -898,24 +991,20 @@ fn labels(l: &mut Layout, used: &BTreeSet<usize>, top: f64) {
             continue;
         }
         for (kind, rx) in [("signature", &*SIG_RE), ("id", &*ID_RE), ("phone", &*TEL_RE)] {
-            if kind == "signature" && has(&REFUSAL_RE, &ln.text) {
+            let Some(x1) = label_end(&ln, kind, rx) else { continue };
+            // a label read twice makes one field, from the read that reads
+            // more of it ("ID No. / Rassport:" ends at "No.")
+            let better = l.lines.iter().enumerate().any(|(j, o)| {
+                j != i && !used.contains(&j) && o.cy() >= top && twins(&ln, o) && label_end(o, kind, rx).is_some_and(|x| x > x1 || (x == x1 && j < i))
+            });
+            if better {
                 continue;
             }
-            let Some(m) = rx.find(&ln.text).ok().flatten() else { continue };
-            // a label of several words ("ID No. / Passport:") ends after the last
-            let mut end = m.end();
-            for n in rx.find_iter(&ln.text).filter_map(|n| n.ok()).filter(|n| n.start() >= m.end()) {
-                if !has(&JOIN_RE, &ln.text[end..n.start()]) {
-                    break;
-                }
-                end = n.end();
-            }
-            if kind != "signature" && has(&FIVE_DIGITS, &ln.text[end..]) {
-                continue;
-            }
-            let (_, x1) = ln.span(char_index(&ln.text, m.start()), char_index(&ln.text, end));
-            let h = ln.height();
-            let end = next_label_x(l, &ln, x1);
+            // a line taller than print has the writing after the label in its
+            // box ("ID No. / Passport: 28' @rs0&n?"): a field that tall would
+            // reach the next line's "Date:"
+            let h = ln.height().min(TEXT_H);
+            let end = next_label_x(l, i, x1);
             let fx0 = x1 + 0.15 * h;
             let fx1 = match end {
                 Some(e) => e - 0.15 * h,
@@ -1362,14 +1451,27 @@ fn x_fill(text: &str) -> bool {
 /// What OCR shows to be print where a field could reach it: (mask, reference).
 pub fn printed(l: &Layout) -> Result<(Mat, Mat)> {
     let mut mask = util::zeros_u8(l.gray.rows(), l.gray.cols())?;
+    // nothing is printed on an officer's line between 'Signature' and
+    // 'Date': a word read there was written ("No", for a signature)
+    let written: Vec<[f64; 4]> = l.fields.iter().filter(|fl| fl.source == "declaration").map(|fl| fl.zones[0].rect).collect();
     for ln in &l.lines {
-        if x_fill(&ln.text) || has(&PRINTED_LINE, &ln.text) {
-            let d = [[-2.0f32, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]];
-            let pts: Vector<Point> = (0..4).map(|k| Point::new(round_even((ln.quad[k][0] + d[k][0]) as f64) as i32, round_even((ln.quad[k][1] + d[k][1]) as f64) as i32)).collect();
-            let polys: Vector<Vector<Point>> = vec![pts].into_iter().collect();
-            imgproc::fill_poly_def(&mut mask, &polys, Scalar::all(255.0))?;
-        }
         let lb = ln.bbox();
+        let (cx, cy) = (0.5 * (lb.0 + lb.2), ln.cy());
+        if written.iter().any(|&[x, y, w, h]| cx > x && cx < x + w && cy > y && cy < y + h) {
+            continue;
+        }
+        if x_fill(&ln.text) || has(&PRINTED_LINE, &ln.text) {
+            // the characters read, not the whole box: OCR may box a label
+            // with the signature written after it and read the label alone
+            // ("Signature: " over 290 px, the label 130 of them), or with
+            // the signature's first stroke for a stop or a bracket
+            // ("signature:)")
+            let ink: Vec<usize> = (0..ln.chars.len()).filter(|&i| ln.chars[i].is_alphanumeric() || ln.chars[i] == ':').collect();
+            if let (Some(&a), Some(&b)) = (ink.first(), ink.last()) {
+                let (x0, x1) = ln.span(a, b + 1);
+                imgproc::rectangle_points(&mut mask, Point::new(x0 as i32 - 2, lb.1 as i32 - 2), Point::new(x1 as i32 + 2, lb.3 as i32 + 2), Scalar::all(255.0), -1, imgproc::LINE_8, 0)?;
+            }
+        }
         for (a, b) in matches(&FREE_LABEL, &ln.text) {
             let (x0, x1) = ln.span(a, b);
             imgproc::rectangle_points(&mut mask, Point::new(x0 as i32 - 2, lb.1 as i32 - 2), Point::new(x1 as i32 + 2, lb.3 as i32 + 2), Scalar::all(255.0), -1, imgproc::LINE_8, 0)?;
@@ -1719,14 +1821,28 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
             masking::fill(&mut canvas, &f, &[[x, y], [x + w, y], [x + w, y + h], [x, y + h]])?;
             report.push(json!({"zone": fl.zones[0].name, "mode": "signature", "signatures": 1}));
         } else if fl.kind == "signature" {
-            let opts = SigOptions { reach: masking::Reach::default(), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref() };
+            let opts = SigOptions { reach: masking::Reach::default(), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref(), hang: hang(&l, fl) };
             report.extend(masking::signature_column(&mut canvas, &gray, &f, &fl.zones, ms, &opts)?);
         } else {
             report.extend(masking::partial_column(&mut canvas, &gray, &f, &fl.zones, &field_settings(fl), rng, masking::Reach::default(), Some(&print_ref), struck(fl), stamp_ink.as_ref())?);
         }
     }
     let found_zones = crate::pipeline::mask_found(&mut canvas, &gray, extra, ms, rng, stamp_ink.as_ref(), &mut report)?;
-    let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &on_page, r_range, None)?;
+    if ms.mask_stamps && !on_page.is_empty() {
+        let mut bands = util::full_u8(gray.rows(), gray.cols(), 255)?;
+        for z in l.fields.iter().flat_map(|fl| fl.zones.iter()) {
+            masking::fill(&mut bands, &f, &masking::band(z))?;
+        }
+        let ident = masking::homography(util::IDENTITY);
+        for z in &found_zones {
+            masking::fill(&mut bands, &ident, &masking::band(z))?;
+        }
+        let n = crate::pipeline::hide_under_stamps(&mut canvas, &bands, &on_page)?;
+        if n > 0 {
+            notes.push(format!("fields' bands across stamps hidden whole: {} px", n));
+        }
+    }
+    let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &on_page, r_range, None, ms)?;
     notes.extend(stamp_notes);
     let (blocks, out) = apply(img, &canvas, Some(&keep))?;
     let mut protected: Vec<Value> = found.iter().map(|s| s.record()).collect();
@@ -1747,16 +1863,16 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
                 continue; // masked whole, box and all
             }
             let r = if fl.kind == "signature" {
-                let opts = SigOptions { reach: masking::Reach::default(), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref() };
+                let opts = SigOptions { reach: masking::Reach::default(), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref(), hang: hang(&l, fl) };
                 masking::verify_signatures(&gray, &out, &f, &fl.zones, ms, Some(&keep), &opts)?
             } else {
-                masking::verify_column(&out, &f, &fl.zones, Some(&print_ref), &field_settings(fl), masking::Reach::default(), struck(fl), stamp_ink.as_ref())?
+                masking::verify_column(&out, &f, &fl.zones, Some(&print_ref), &field_settings(fl), masking::Reach::default(), struck(fl), stamp_ink.as_ref(), Some(&keep))?
             };
             if !r.is_empty() {
                 leaks.push(r);
             }
         }
-        leaks.extend(crate::pipeline::verify_found(&out, &found_zones, ms, stamp_ink.as_ref())?);
+        leaks.extend(crate::pipeline::verify_found(&out, &found_zones, ms, stamp_ink.as_ref(), Some(&keep))?);
     }
     if !leaks.is_empty() {
         return Ok(fail(t0, &prefix, format!("leak check: {}", leaks.join("; ")), report, notes, Some(layout)));
