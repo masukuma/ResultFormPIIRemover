@@ -236,18 +236,35 @@ heading, the vision review is the backstop here too.
 The 2013 Forms 34 are flatbed scans, clean and upright, read by the
 structural reader alone (no template, nothing learned):
 
-| Scans | Pages | Published | Sent to review |
-|---|---|---|---|
-| Diaspora (5 forms, front and back) | 10 | 10 | 0 |
-| Baringo North, first file, page by page | 153 | 146 | 7 |
+| Scans | Files | Pages | Published | Sent to review |
+|---|---|---|---|---|
+| Baringo | 15 | 1,733 | 1,704 | 29 |
+| Diaspora | 1 | 10 | 10 | 0 |
+| Isiolo | 3 | 326 | 321 | 5 |
+| Kiambu | 16 | 3,044 | 2,822 | 222 |
+| Lamu | 2 | 276 | 267 | 9 |
+| Marsabit | 6 | 666 | 647 | 19 |
+| Tana River | 3 | 550 | 539 | 11 |
+| Vihiga | 5 | 379 | 298 | 81 |
+| All | 51 | 6,984 | 6,608 (94.6%) | 376 |
 
-Of the seven, four have a stamp near the deputy's line that OCR read as a
-second officer; of the others, a back page wasn't recognised as one, an
-agents' heading row wasn't read whole, and an ID label was misread. On the pages checked by eye the masks are
-right; an officer's ID or signature under the stamp stays visible, as
-everywhere. The scans come a constituency to a PDF (up to 160 pages of
-many forms), and a PDF is redacted as one document: one page that fails
-holds back the whole file. They were measured page by page.
+The scans come a constituency to a PDF (up to 284 pages of many forms),
+redacted with `--per-page`: a page that fails holds back only itself. Most
+of the held pages are in a few files. Kiambaa's 70 are tally sheets, not
+Forms 34, with no declaration. Emuhaya's 67 are scanned turned and cut
+off, with no labels read. Lari's 20 are too faint for OCR to read the
+declaration. Across the set, 104 agents' tables weren't read whole or
+their ID column wasn't placed. On 37 pages the officers named and the
+signature lines found don't agree, 15 pages have no printed text to turn
+upright by, and 5 were held by the leak check. On the 6,608 published
+pages, every officer's signature line judged empty was measured for
+writing outside the stamps; the 44 with the most were checked by eye and
+have none. A random page from each county, front and back, and the
+officer blocks of 35 more were checked by eye, and six pages pass
+`verify --rerun` against their originals. An officer's ID or signature
+under a stamp stays visible, as everywhere: on 560 published pages half
+or more of an officer's ID line lies inside a stamp. `--mask-stamps`
+hides those.
 
 The by-election samples have one page per printing: too few to learn
 from. They are the structural reader's (milestone 3).
