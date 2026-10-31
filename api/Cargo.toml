@@ -1,0 +1,46 @@
+[package]
+name = "rfpii-api"
+version = "0.1.0"
+edition = "2024"
+description = "An HTTP API that runs rfpii redaction jobs as a paid product"
+publish = false
+
+# The API calls the `rfpii` binary as a subprocess; it does not link the
+# `rfpii` crate (which needs OpenCV).
+
+[dependencies]
+anyhow = "1.0.104"
+axum = { version = "0.8.9", features = ["multipart"] }
+base64 = "0.23.1"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+getrandom = "0.4"
+hmac = "0.13.0"
+http-body-util = "0.1"
+libc = "0.2"
+reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "json", "form"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+serde_yaml = "0.9.34"
+sha2 = "0.11.1"
+subtle = "2.6"
+thiserror = "2.0.21"
+time = { version = "0.3.55", features = ["formatting", "parsing", "macros"] }
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "net", "signal", "process", "fs", "time", "sync", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower = "0.5"
+tower-http = { version = "0.6.11", features = ["limit", "timeout", "trace", "request-id", "catch-panic", "cors"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter", "fmt"] }
+uuid = { version = "1.29", features = ["v7"] }
+zip = { version = "9.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "multipart"] }
+
+# The build machine's disk is small: no debug info in test builds.
+[profile.dev]
+debug = 0
+
+[profile.release]
+strip = true

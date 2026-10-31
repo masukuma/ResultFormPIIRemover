@@ -16,3 +16,7 @@ _rerun/
 
 # Rust build output
 rust/target/
+api/target/
+
+# what the API's image is built from (api/Dockerfile)
+dist/

@@ -1,0 +1,317 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "rfpii API",
+    "version": "1.0.0",
+    "summary": "Verifiable PII removal for Kenyan election result forms, as a paid HTTP API.",
+    "description": "Upload result forms, start a redaction job (rfpii job, HARNESS.md), and download what the release gate let out, with a manifest and ledger entry for each form. Errors are RFC 9457 problem details. Responses carry the RateLimit and RateLimit-Policy fields of draft-ietf-httpapi-ratelimit-headers-11. Webhooks follow Standard Webhooks. See API.md.",
+    "license": {"name": "See the repository", "url": "https://github.com/masukuma/ResultFormPIIRemover"}
+  },
+  "servers": [{"url": "/"}],
+  "security": [{"apiKey": []}],
+  "tags": [
+    {"name": "files", "description": "Uploads. Originals are never served back."},
+    {"name": "jobs", "description": "Redaction jobs: long-running operations."},
+    {"name": "account", "description": "Plan, legal records and settings."},
+    {"name": "keys", "description": "API keys."},
+    {"name": "billing", "description": "Pricing, usage and Stripe."},
+    {"name": "verify", "description": "Public verification of a published form."},
+    {"name": "admin", "description": "Operator routes (ADMIN_TOKEN)."},
+    {"name": "ops", "description": "Health, readiness, metrics, this description."}
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {"tags": ["ops"], "summary": "Liveness: the process answers", "operationId": "healthz", "security": [],
+        "responses": {"200": {"description": "Alive", "content": {"application/json": {"schema": {"type": "object", "properties": {"status": {"const": "ok"}}}}}}}}
+    },
+    "/readyz": {
+      "get": {"tags": ["ops"], "summary": "Readiness: database, data folder and rfpii binary", "operationId": "readyz", "security": [],
+        "responses": {
+          "200": {"description": "Ready", "content": {"application/json": {"schema": {"type": "object", "properties": {"status": {"const": "ready"}, "checks": {"type": "object"}, "rfpii_version": {"type": "string"}}}}}},
+          "503": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/metrics": {
+      "get": {"tags": ["ops"], "summary": "Prometheus metrics", "operationId": "metrics", "security": [{}, {"metricsToken": []}],
+        "description": "Requests by route and status, latency, jobs by status, queue depth, forms released, model tokens. With METRICS_TOKEN set, a bearer of that token only.",
+        "responses": {"200": {"description": "Prometheus text format", "content": {"text/plain": {"schema": {"type": "string"}}}}, "401": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/openapi.json": {
+      "get": {"tags": ["ops"], "summary": "This description", "operationId": "openapi", "security": [],
+        "responses": {"200": {"description": "OpenAPI 3.1", "content": {"application/json": {"schema": {"type": "object"}}}}, "429": {"$ref": "#/components/responses/TooManyRequests"}}}
+    },
+    "/v1/pricing": {
+      "get": {"tags": ["billing"], "summary": "The plans and the price per form (public)", "operationId": "getPricing", "security": [],
+        "responses": {"200": {"description": "Pricing", "headers": {"RateLimit": {"$ref": "#/components/headers/RateLimit"}, "RateLimit-Policy": {"$ref": "#/components/headers/RateLimitPolicy"}},
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pricing"}}}}, "429": {"$ref": "#/components/responses/TooManyRequests"}}}
+    },
+    "/v1/verify": {
+      "post": {"tags": ["verify"], "summary": "Verify a published form with rfpii verify (public, free, limited per IP)", "operationId": "verify", "security": [],
+        "requestBody": {"required": true, "content": {"multipart/form-data": {"schema": {"type": "object", "required": ["pdf", "manifest"],
+          "properties": {"pdf": {"type": "string", "contentMediaType": "application/pdf", "description": "The published (redacted) PDF"},
+                         "manifest": {"type": "string", "description": "Its .manifest.json"},
+                         "original": {"type": "string", "description": "The original (PDF, JPEG, PNG or TIFF), e.g. from the IEBC portal"},
+                         "pubkey": {"type": "string", "description": "The publisher's public key (signing_key.pub.pem)"},
+                         "ledger": {"type": "string", "description": "The published ledger.jsonl"}}}}}},
+        "responses": {
+          "200": {"description": "What rfpii verify found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Verification"}}}},
+          "413": {"$ref": "#/components/responses/Problem"}, "415": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"},
+          "429": {"$ref": "#/components/responses/TooManyRequests"}}}
+    },
+    "/v1/files": {
+      "post": {"tags": ["files"], "summary": "Upload a file (PDF, JPEG, PNG, TIFF or zip)", "operationId": "createFile",
+        "description": "Multipart (field `file`), or the raw body with `?name=`. The kind is told by the first bytes; zips are checked (entries, expanded size, paths). Stored by id under the account. Scope jobs:write.",
+        "parameters": [{"name": "name", "in": "query", "required": false, "description": "The file's name, for a raw upload", "schema": {"type": "string"}}],
+        "requestBody": {"required": true, "content": {
+          "multipart/form-data": {"schema": {"type": "object", "required": ["file"], "properties": {"file": {"type": "string", "contentMediaType": "application/octet-stream"}}}},
+          "application/octet-stream": {"schema": {"type": "string"}}}},
+        "responses": {
+          "201": {"description": "Stored", "headers": {"Location": {"$ref": "#/components/headers/Location"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/File"}}}},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/Problem"},
+          "413": {"$ref": "#/components/responses/Problem"}, "415": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"},
+          "429": {"$ref": "#/components/responses/TooManyRequests"}}},
+      "get": {"tags": ["files"], "summary": "List the account's files, newest first", "operationId": "listFiles",
+        "parameters": [{"$ref": "#/components/parameters/Limit"}, {"$ref": "#/components/parameters/After"}],
+        "responses": {"200": {"description": "A page", "headers": {"Link": {"$ref": "#/components/headers/Link"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FileList"}}}},
+          "401": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/TooManyRequests"}}}
+    },
+    "/v1/files/{id}": {
+      "parameters": [{"$ref": "#/components/parameters/Id"}],
+      "get": {"tags": ["files"], "summary": "Describe a file (its content is never served)", "operationId": "getFile",
+        "responses": {"200": {"description": "The file", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/File"}}}}, "404": {"$ref": "#/components/responses/Problem"}}},
+      "delete": {"tags": ["files"], "summary": "Delete a file", "operationId": "deleteFile",
+        "responses": {"200": {"description": "Deleted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/File"}}}},
+          "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/jobs": {
+      "post": {"tags": ["jobs"], "summary": "Start a redaction job", "operationId": "createJob",
+        "description": "Counts the forms with rfpii inventory and reserves them against the plan (402 when a free account's month has too few left, or a paid account's spend cap would be passed). 422 until the account has a controller record and a DPIA. Returns 202 Accepted with the job's Location (RFC 9110 §15.3.3). With an Idempotency-Key, the same key and body return the same job; the same key with another body is 422. Scope jobs:write.",
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/JobRequest"}}}},
+        "responses": {
+          "202": {"description": "Queued", "headers": {"Location": {"$ref": "#/components/headers/Location"}, "Idempotent-Replayed": {"description": "true when this is the job an earlier request with the same key created", "schema": {"type": "string"}}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Job"}}}},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "402": {"$ref": "#/components/responses/Problem"},
+          "403": {"$ref": "#/components/responses/Problem"}, "415": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"},
+          "429": {"$ref": "#/components/responses/TooManyRequests"}}},
+      "get": {"tags": ["jobs"], "summary": "List jobs, newest first (cursor pagination)", "operationId": "listJobs",
+        "parameters": [{"$ref": "#/components/parameters/Limit"}, {"$ref": "#/components/parameters/After"}],
+        "responses": {"200": {"description": "A page", "headers": {"Link": {"$ref": "#/components/headers/Link"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/JobList"}}}},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/jobs/{id}": {
+      "parameters": [{"$ref": "#/components/parameters/Id"}],
+      "get": {"tags": ["jobs"], "summary": "Read a job", "operationId": "getJob",
+        "responses": {"200": {"description": "The job", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Job"}}}}, "404": {"$ref": "#/components/responses/Problem"}}},
+      "delete": {"tags": ["jobs"], "summary": "Erase a job's files and outputs (its billing record is kept)", "operationId": "deleteJob",
+        "responses": {"200": {"description": "Erased", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Job"}}}},
+          "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/jobs/{id}/cancel": {
+      "parameters": [{"$ref": "#/components/parameters/Id"}],
+      "post": {"tags": ["jobs"], "summary": "Cancel a job (a running one has its process killed)", "operationId": "cancelJob",
+        "responses": {"200": {"description": "Canceled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Job"}}}},
+          "202": {"description": "Being stopped by its worker", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Job"}}}},
+          "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/jobs/{id}/report": {
+      "parameters": [{"$ref": "#/components/parameters/Id"}],
+      "get": {"tags": ["jobs"], "summary": "The job's report.json (HARNESS.md §10)", "operationId": "getJobReport",
+        "responses": {"200": {"description": "report.json", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}, "410": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/jobs/{id}/outputs": {
+      "parameters": [{"$ref": "#/components/parameters/Id"}],
+      "get": {"tags": ["jobs"], "summary": "List what the job released (public/ and the transfers record)", "operationId": "listJobOutputs",
+        "responses": {"200": {"description": "The released files", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OutputList"}}}},
+          "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}, "410": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/jobs/{id}/outputs/{path}": {
+      "parameters": [{"$ref": "#/components/parameters/Id"},
+                     {"name": "path", "in": "path", "required": true, "description": "A path the outputs listing gives (it may hold slashes, e.g. batches/batch-1.json)", "schema": {"type": "string"}}],
+      "get": {"tags": ["jobs"], "summary": "Download one released file", "operationId": "getJobOutput",
+        "responses": {"200": {"description": "The file", "content": {"application/pdf": {}, "application/json": {}, "application/x-ndjson": {}, "application/x-pem-file": {}}},
+          "400": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}, "410": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/jobs/{id}/archive": {
+      "parameters": [{"$ref": "#/components/parameters/Id"}],
+      "get": {"tags": ["jobs"], "summary": "A zip of what the job released and its report", "operationId": "getJobArchive",
+        "responses": {"200": {"description": "public/… and report.json, report.md", "content": {"application/zip": {}}},
+          "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}, "410": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/account": {
+      "get": {"tags": ["account"], "summary": "The plan, this month's forms, the free forms left, the price and the spend", "operationId": "getAccount",
+        "responses": {"200": {"description": "The account", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Account"}}}}, "401": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/account/controller": {
+      "put": {"tags": ["account"], "summary": "Set the controller record (the customer is the controller, the platform its processor)", "operationId": "putController",
+        "description": "Checked as rfpii checks controller.json (rust/src/legal.rs). operator_role is set to processor; the platform and the model host (when pages go to it) are added as processors. Scope account:admin.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ControllerRecord"}}}},
+        "responses": {"200": {"description": "The account", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Account"}}}}, "403": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/account/dpia": {
+      "put": {"tags": ["account"], "summary": "Set the DPIA the processing rests on (Data Protection Act s.31)", "operationId": "putDpia",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Dpia"}}}},
+        "responses": {"200": {"description": "The account", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Account"}}}}, "403": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/account/settings": {
+      "patch": {"tags": ["account"], "summary": "Change settings: held pages to the cloud (opt-in), the webhook URL", "operationId": "patchSettings",
+        "description": "Setting a webhook_url when the account has no signing secret creates one and returns it once, as webhook_secret.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Settings"}}}},
+        "responses": {"200": {"description": "The account", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Account"}}}}, "403": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/account/webhook-secret": {
+      "post": {"tags": ["account"], "summary": "Rotate the webhook signing secret (returned once)", "operationId": "rotateWebhookSecret",
+        "responses": {"200": {"description": "The new secret", "content": {"application/json": {"schema": {"type": "object", "properties": {"secret": {"type": "string", "pattern": "^whsec_"}}}}}}, "403": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/keys": {
+      "get": {"tags": ["keys"], "summary": "List the account's API keys (never their secrets)", "operationId": "listKeys",
+        "responses": {"200": {"description": "The keys", "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "array", "items": {"$ref": "#/components/schemas/ApiKey"}}}}}}}, "403": {"$ref": "#/components/responses/Problem"}}},
+      "post": {"tags": ["keys"], "summary": "Create an API key (its secret is returned once)", "operationId": "createKey",
+        "requestBody": {"required": false, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false,
+          "properties": {"name": {"type": "string", "maxLength": 100}, "scopes": {"type": "array", "items": {"$ref": "#/components/schemas/Scope"}}}}}}},
+        "responses": {"201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiKeyWithSecret"}}}}, "403": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/keys/{id}": {
+      "parameters": [{"$ref": "#/components/parameters/Id"}],
+      "delete": {"tags": ["keys"], "summary": "Revoke an API key", "operationId": "revokeKey",
+        "responses": {"200": {"description": "Revoked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiKey"}}}}, "404": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/usage": {
+      "get": {"tags": ["billing"], "summary": "Usage records, forms and the amount due for a month", "operationId": "getUsage",
+        "parameters": [{"name": "period", "in": "query", "required": false, "description": "The month, YYYY-MM (UTC); the current one if left out", "schema": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}$"}}],
+        "responses": {"200": {"description": "Usage", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Usage"}}}}, "400": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/billing/checkout": {
+      "post": {"tags": ["billing"], "summary": "A Stripe Checkout Session for the paid plan", "operationId": "createCheckout",
+        "requestBody": {"required": false, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false,
+          "properties": {"success_url": {"type": "string", "format": "uri", "description": "The client's page Checkout returns to (https)"}, "cancel_url": {"type": "string", "format": "uri"}}}}}},
+        "responses": {"200": {"description": "The session", "content": {"application/json": {"schema": {"type": "object", "properties": {"id": {"type": "string"}, "url": {"type": "string", "format": "uri"}}}}}},
+          "501": {"$ref": "#/components/responses/Problem"}, "502": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/billing/stripe-webhook": {
+      "post": {"tags": ["billing"], "summary": "Stripe events (verified by Stripe-Signature)", "operationId": "stripeWebhook", "security": [],
+        "description": "checkout.session.completed, customer.subscription.updated and customer.subscription.deleted set the account's plan. Each event is handled once.",
+        "parameters": [{"name": "Stripe-Signature", "in": "header", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object"}}}},
+        "responses": {"200": {"description": "Received", "content": {"application/json": {"schema": {"type": "object", "properties": {"received": {"type": "boolean"}, "changed": {"type": "boolean"}}}}}},
+          "400": {"$ref": "#/components/responses/Problem"}, "501": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/admin/accounts": {
+      "get": {"tags": ["admin"], "summary": "List accounts", "operationId": "adminListAccounts", "security": [{"adminToken": []}],
+        "responses": {"200": {"description": "Accounts", "content": {"application/json": {"schema": {"type": "object"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}},
+      "post": {"tags": ["admin"], "summary": "Create an account", "operationId": "adminCreateAccount", "security": [{"adminToken": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["name"], "additionalProperties": false,
+          "properties": {"name": {"type": "string"}, "email": {"type": "string"}, "plan": {"$ref": "#/components/schemas/Plan"}}}}}},
+        "responses": {"201": {"description": "Created", "content": {"application/json": {"schema": {"type": "object"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/admin/accounts/{id}/plan": {
+      "parameters": [{"$ref": "#/components/parameters/Id"}],
+      "put": {"tags": ["admin"], "summary": "Set an account's plan and monthly spend cap", "operationId": "adminSetPlan", "security": [{"adminToken": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["plan"], "additionalProperties": false,
+          "properties": {"plan": {"$ref": "#/components/schemas/Plan"}, "spend_cap_microusd": {"type": ["integer", "null"], "minimum": 0}}}}}},
+        "responses": {"200": {"description": "The account", "content": {"application/json": {"schema": {"type": "object"}}}}, "404": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/admin/accounts/{id}/keys": {
+      "parameters": [{"$ref": "#/components/parameters/Id"}],
+      "post": {"tags": ["admin"], "summary": "Create an API key for an account (secret returned once)", "operationId": "adminCreateKey", "security": [{"adminToken": []}],
+        "requestBody": {"required": false, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false,
+          "properties": {"name": {"type": "string"}, "scopes": {"type": "array", "items": {"$ref": "#/components/schemas/Scope"}}}}}}},
+        "responses": {"201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiKeyWithSecret"}}}}, "404": {"$ref": "#/components/responses/Problem"}}}
+    }
+  },
+  "webhooks": {
+    "jobEvent": {
+      "post": {"summary": "job.succeeded, job.failed or job.canceled (Standard Webhooks)",
+        "description": "Signed with the account's secret: webhook-signature is v1,<base64 HMAC-SHA256 of \"webhook-id.webhook-timestamp.body\"> keyed with the base64-decoded secret after whsec_. Retried with backoff; the webhook-id stays the same. Answer 2xx.",
+        "parameters": [
+          {"name": "webhook-id", "in": "header", "required": true, "schema": {"type": "string"}},
+          {"name": "webhook-timestamp", "in": "header", "required": true, "schema": {"type": "string"}},
+          {"name": "webhook-signature", "in": "header", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"type": {"enum": ["job.succeeded", "job.failed", "job.canceled"]}, "timestamp": {"type": "string", "format": "date-time"}, "data": {"$ref": "#/components/schemas/Job"}}}}}},
+        "responses": {"200": {"description": "Received"}}}
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKey": {"type": "http", "scheme": "bearer", "description": "Authorization: Bearer rfpii_live_<43 base62 characters>. Scopes: jobs:write, jobs:read, account:admin."},
+      "adminToken": {"type": "http", "scheme": "bearer", "description": "ADMIN_TOKEN"},
+      "metricsToken": {"type": "http", "scheme": "bearer", "description": "METRICS_TOKEN"}
+    },
+    "parameters": {
+      "Id": {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}},
+      "Limit": {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}},
+      "After": {"name": "after", "in": "query", "required": false, "description": "The next_after of the previous page", "schema": {"type": "string"}},
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": false, "description": "1 to 255 visible ASCII characters; kept 24 hours", "schema": {"type": "string", "maxLength": 255}}
+    },
+    "headers": {
+      "Location": {"description": "The resource's URL", "schema": {"type": "string"}},
+      "Link": {"description": "rel=\"next\": the next page (RFC 8288)", "schema": {"type": "string"}},
+      "RateLimit": {"description": "draft-ietf-httpapi-ratelimit-headers-11: \"policy\";r=<remaining>;t=<seconds to full>", "schema": {"type": "string"}},
+      "RateLimitPolicy": {"description": "draft-ietf-httpapi-ratelimit-headers-11: \"policy\";q=<quota>;w=<window seconds>", "schema": {"type": "string"}},
+      "RetryAfter": {"description": "Seconds to wait (RFC 9110 §10.2.3)", "schema": {"type": "integer"}}
+    },
+    "responses": {
+      "Problem": {"description": "An error, as problem details (RFC 9457)", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "TooManyRequests": {"description": "Over the rate limit", "headers": {"Retry-After": {"$ref": "#/components/headers/RetryAfter"}, "RateLimit": {"$ref": "#/components/headers/RateLimit"}, "RateLimit-Policy": {"$ref": "#/components/headers/RateLimitPolicy"}},
+        "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}}
+    },
+    "schemas": {
+      "Problem": {"type": "object", "required": ["type", "title", "status"],
+        "properties": {"type": {"type": "string", "description": "A URI naming the problem type (API.md#problem-…), or about:blank"}, "title": {"type": "string"}, "status": {"type": "integer"},
+                       "detail": {"type": "string"}, "instance": {"type": "string", "description": "urn:rfpii:request:<X-Request-Id>"}, "request_id": {"type": "string"}},
+        "additionalProperties": true},
+      "Plan": {"enum": ["free", "paid"]},
+      "Scope": {"enum": ["jobs:write", "jobs:read", "account:admin"]},
+      "File": {"type": "object", "properties": {"id": {"type": "string"}, "object": {"const": "file"}, "name": {"type": ["string", "null"]}, "kind": {"enum": ["pdf", "jpeg", "png", "tiff", "zip"]},
+        "bytes": {"type": "integer"}, "sha256": {"type": "string"}, "status": {"enum": ["available", "deleted"]}, "created_at": {"type": "string", "format": "date-time"},
+        "delete_unused_after": {"type": "string", "format": "date-time"}, "deleted_at": {"type": ["string", "null"]}, "deleted_why": {"type": ["string", "null"]}}},
+      "FileList": {"type": "object", "properties": {"data": {"type": "array", "items": {"$ref": "#/components/schemas/File"}}, "has_more": {"type": "boolean"}, "next_after": {"type": ["string", "null"]}}},
+      "JobRequest": {"type": "object", "required": ["file_ids"], "additionalProperties": false,
+        "properties": {
+          "file_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+          "instructions": {"type": "string", "maxLength": 20000, "description": "Free text, compiled into the policy by the orchestrator model (HARNESS.md §3)"},
+          "policy": {"type": "object", "additionalProperties": false, "properties": {"full_ids": {"type": "boolean"}, "full_phones": {"type": "boolean"}, "keep_stamps": {"type": "boolean"}}},
+          "per_page": {"oneOf": [{"enum": ["auto", "yes", "no"]}, {"type": "boolean"}]},
+          "webhook_url": {"type": "string", "format": "uri"},
+          "metadata": {"type": "object", "description": "Kept with the job, at most 8 KiB"}}},
+      "Job": {"type": "object", "properties": {
+          "id": {"type": "string"}, "object": {"const": "job"}, "status": {"enum": ["queued", "running", "succeeded", "failed", "canceled"]},
+          "cancel_requested": {"type": "boolean"}, "file_ids": {"type": "array", "items": {"type": "string"}}, "instructions": {"type": ["string", "null"]},
+          "policy": {"type": ["object", "null"]}, "per_page": {"type": ["string", "null"]},
+          "held_pages": {"enum": ["none", "cloud"], "description": "The account's setting when the job was created: whether held pages may go to the cloud vision model"}, "webhook_url": {"type": ["string", "null"]}, "metadata": {"type": ["object", "null"]},
+          "forms_requested": {"type": "integer"}, "forms_released": {"type": ["integer", "null"]}, "forms_held": {"type": ["integer", "null"]},
+          "inventory": {"type": ["object", "null"]},
+          "price": {"type": "object", "properties": {"currency": {"const": "usd"}, "plan": {"$ref": "#/components/schemas/Plan"}, "unit_microusd": {"type": "integer"}, "estimate_microusd": {"type": "integer"},
+                    "forms_charged": {"type": ["integer", "null"]}, "amount_microusd": {"type": ["integer", "null"]}, "amount_usd": {"type": ["string", "null"]}}},
+          "cost": {"type": ["object", "null"], "description": "What the job cost the operator: CPU time and model tokens at the configured prices (PRICING.md)"},
+          "exit_code": {"type": ["integer", "null"]}, "error": {"type": ["string", "null"]}, "attempts": {"type": "integer"},
+          "created_at": {"type": "string", "format": "date-time"}, "started_at": {"type": ["string", "null"]}, "finished_at": {"type": ["string", "null"]},
+          "inputs_deleted_at": {"type": ["string", "null"]}, "outputs_expire_at": {"type": ["string", "null"]}, "outputs_deleted_at": {"type": ["string", "null"]}, "deleted_at": {"type": ["string", "null"]},
+          "warnings": {"type": "array", "items": {"type": "string"}, "description": "On creation only: why the release gate will hold everything"},
+          "links": {"type": "object"}}},
+      "JobList": {"type": "object", "properties": {"data": {"type": "array", "items": {"$ref": "#/components/schemas/Job"}}, "has_more": {"type": "boolean"}, "next_after": {"type": ["string", "null"]}}},
+      "OutputList": {"type": "object", "properties": {"data": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "bytes": {"type": "integer"}, "content_type": {"type": "string"}, "url": {"type": "string"}}}}}},
+      "ControllerRecord": {"type": "object", "required": ["controller", "legal_basis", "purpose", "commercial"],
+        "properties": {"controller": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "registration_no": {"type": "string"}}},
+          "legal_basis": {"type": "string"}, "purpose": {"type": "string"}, "commercial": {"type": "boolean"}, "statutory_authority": {"type": "string", "description": "Required when commercial is true (Data Protection Act s.37)"},
+          "operator_role": {"const": "processor"},
+          "processors": {"type": "array", "items": {"type": "object", "required": ["name", "country", "service"], "properties": {"name": {"type": "string"}, "country": {"type": "string"}, "service": {"type": "string"}}}}}},
+      "Dpia": {"type": "object", "required": ["reference"], "additionalProperties": false,
+        "properties": {"reference": {"type": "string"}, "submitted_on": {"type": "string", "format": "date"}, "status": {"type": "string", "examples": ["submitted", "approved", "deemed approved"]}}},
+      "Settings": {"type": "object", "additionalProperties": false, "properties": {"held_pages": {"enum": ["none", "cloud"]}, "webhook_url": {"type": ["string", "null"], "format": "uri"}}},
+      "Account": {"type": "object", "properties": {"id": {"type": "string"}, "plan": {"$ref": "#/components/schemas/Plan"}, "period": {"type": "string"},
+        "forms_released_this_month": {"type": "integer"}, "forms_reserved": {"type": "integer"}, "free_forms_per_month": {"type": "integer"}, "free_forms_left": {"type": "integer"},
+        "price": {"type": "object"}, "spend_this_month_microusd": {"type": "integer"}, "spend_cap_microusd": {"type": ["integer", "null"]},
+        "settings": {"type": "object"}, "controller": {"type": ["object", "null"]}, "dpia": {"type": ["object", "null"]}, "ready_for_jobs": {"type": "boolean"},
+        "missing": {"type": "array", "items": {"enum": ["controller", "dpia"]}}, "webhook_secret": {"type": "string", "description": "Only when PATCH settings just created it"}}},
+      "ApiKey": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": ["string", "null"]}, "prefix": {"type": "string"}, "scopes": {"type": "array", "items": {"$ref": "#/components/schemas/Scope"}},
+        "created_at": {"type": "string"}, "last_used_at": {"type": ["string", "null"]}, "revoked_at": {"type": ["string", "null"]}}},
+      "ApiKeyWithSecret": {"allOf": [{"$ref": "#/components/schemas/ApiKey"}, {"type": "object", "properties": {"secret": {"type": "string", "pattern": "^rfpii_live_[0-9A-Za-z]{43}$"}}}]},
+      "Usage": {"type": "object", "properties": {"period": {"type": "string"}, "records": {"type": "array", "items": {"type": "object"}}, "forms": {"type": "integer"}, "free_forms": {"type": "integer"},
+        "paid_forms": {"type": "integer"}, "free_forms_left": {"type": "integer"}, "reserved_forms": {"type": "integer"}, "amount_due_microusd": {"type": "integer"}, "amount_due_usd": {"type": "string"}}},
+      "Pricing": {"type": "object", "properties": {"currency": {"const": "usd"}, "unit": {"const": "form"}, "plans": {"type": "array", "items": {"type": "object"}}, "how_the_price_was_set": {"type": "string", "format": "uri"}}},
+      "Verification": {"type": "object", "properties": {"verified": {"type": "boolean"}, "checks": {"type": "array", "items": {"type": "object", "properties": {"ok": {"type": "boolean"}, "text": {"type": "string"}}}},
+        "notes": {"type": "array", "items": {"type": "string"}}, "result": {"type": ["string", "null"]}}}
+    }
+  }
+}
