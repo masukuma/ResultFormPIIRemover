@@ -132,6 +132,49 @@ fn phone_rule_keeps_prefix_and_hides_three_of_last_six() {
 }
 
 #[test]
+fn with_full_ids_or_full_phones_every_character_of_the_number_is_hidden() {
+    let (ids, phones) = (MaskSettings { full_ids: true, ..MaskSettings::default() }, MaskSettings { full_phones: true, ..MaskSettings::default() });
+    let id = table(&[(0, "36676945")], false);
+    let phone = table(&[(1, "0734471897")], false);
+    for seed in 0..5 {
+        let mut canvas = gray(600, 500, 255);
+        let rep = partial(&mut canvas, &id, &cells_rule("c", "id", 8), &ids, seed);
+        assert_eq!(hidden_of(&rep, "c[0]"), (0..8).collect::<Vec<_>>());
+        assert_eq!(hidden_chars(&canvas, &id, 0, "36676945"), (0..8).collect::<Vec<_>>());
+        let mut canvas = gray(600, 500, 255);
+        let rep = partial(&mut canvas, &phone, &cells_rule("c", "phone", 10), &phones, seed);
+        assert_eq!(hidden_of(&rep, "c[1]"), (0..10).collect::<Vec<_>>());
+        assert_eq!(hidden_chars(&canvas, &phone, 1, "0734471897"), (0..10).collect::<Vec<_>>(), "the prefix too");
+        // each flag is for its own kind of number
+        let mut canvas = gray(600, 500, 255);
+        assert_eq!(hidden_of(&partial(&mut canvas, &id, &cells_rule("c", "id", 8), &phones, seed), "c[0]").len(), 3);
+        let mut canvas = gray(600, 500, 255);
+        let hidden = hidden_of(&partial(&mut canvas, &phone, &cells_rule("c", "phone", 10), &ids, seed), "c[1]");
+        assert!(hidden.len() == 3 && *hidden.iter().min().unwrap() >= 4, "{:?}", hidden);
+    }
+}
+
+#[test]
+fn with_numbers_hidden_whole_the_leak_check_flags_three_characters_showing() {
+    let img = table(&[(0, "36676945")], false);
+    let whole = MaskSettings { full_ids: true, ..MaskSettings::default() };
+    let check = |out: &Mat, s: &MaskSettings| verify_column(out, &identity(), &cells(8), None, s, Reach::default(), None, None).unwrap();
+    let mut out = to_bgr(&img);
+    partial(&mut out, &img, &cells(8), &whole, 0);
+    assert_eq!(check(&out, &whole), "");
+    // the first four characters hidden, the last four showing: a number
+    // with characters hidden by the default rule, half shown hidden whole
+    let g = img_of(&img);
+    let ink: Vec<i32> = (X + 4..X + W - 4).filter(|&x| (Y + 4..Y + ROW_H - 4).any(|y| g.at(x as usize, y as usize) < 120)).collect();
+    let starts: Vec<i32> = ink.iter().zip(ink.iter().skip(1)).filter(|(a, b)| **b > **a + 1).map(|(_, b)| *b).collect();
+    let mut half = img.clone();
+    fill_rect(&mut half, X + 2, Y + 2, starts[3] - 1, Y + ROW_H - 2, 0);
+    let half = to_bgr(&half);
+    assert_eq!(check(&half, &MaskSettings::default()), "");
+    assert!(check(&half, &whole).contains("4 written characters in a row"), "{}", check(&half, &whole));
+}
+
+#[test]
 fn partial_masks_pass_the_leak_check() {
     let img = table(&[(0, "36676945"), (2, "0719108076")], false);
     let mut out = to_bgr(&img);

@@ -11,8 +11,8 @@ personal data gets a different treatment:
 | Field | Treatment |
 |---|---|
 | Signatures (officers, agents) | **Masked through the middle**: a black band along each signature; the tops and bottoms of its strokes show that it was signed |
-| National ID / passport numbers | **3 random characters hidden** |
-| Phone numbers | **First digits kept, 3 of the last 6 hidden**: `0734471897` keeps `0734` and hides 3 of `471897` |
+| National ID / passport numbers | **3 random characters hidden** (all of them with `--full-ids`) |
+| Phone numbers | **First digits kept, 3 of the last 6 hidden**: `0734471897` keeps `0734` and hides 3 of `471897` (all of them with `--full-phones`) |
 | Names | Left visible |
 | QR code, station codes, votes | Left visible: these are what make the form verifiable |
 | Stamps | **Never masked**, even where a stamp lies over a signature, an ID or a phone number (unless `--mask-stamps`, see "Stamps") |
@@ -355,6 +355,20 @@ checks alike, and the page notes say how many there were.
    visible together. The seed is drawn per document and recorded in the
    manifest, so the redaction can be reproduced.
 
+   **`--full-ids` and `--full-phones`** hide every character instead: each
+   ID or passport number, or each phone number with its prefix, is covered
+   from its first character to its last. Each flag is for its own rule, so
+   with only one of them the other numbers keep theirs. The line is still
+   segmented into characters and every slot hidden, so the mask has the
+   same height and reach as a hidden character's; a line that can't be
+   segmented was hidden whole already. The leak check then looks for 3
+   written characters in a row instead of 5 (or 8 for phones): the default
+   rule leaves runs of up to two visible, a whole number none, so three
+   showing are part of a number that should be hidden. The settings are
+   recorded in the manifest (`settings.full_ids`, `settings.full_phones`)
+   and `verify --rerun` repeats them; the VLM review is told that those
+   numbers must be hidden entirely.
+
    A hidden character is covered from the midpoint with its left neighbour to
    the midpoint with its right, from the line's top to its bottom (the
    median over its characters) or the character's own extent where that is
@@ -377,7 +391,7 @@ A document is published only if every page passes:
 | Reading without a template | a column of the agents table not found; officers named in the declaration but no signature line found; no PII fields at all |
 | QR code vs file name | form uploaded under the wrong station |
 | **Column edge check** | table matched one rule off. The straightened column must have its printed rules at its own edges, not a stronger rule somewhere else. This compares the mapping against the paper, because comparing the masks against the same mapping can't detect it |
-| **Leak check** | the redacted column is re-read over a wider window; 5 or more written characters in a row with no mask between them means something was missed |
+| **Leak check** | the redacted column is re-read over a wider window; 5 or more written characters in a row with no mask between them means something was missed (8 for phone numbers, 3 for numbers hidden whole) |
 | VLM audit (optional) | anything still readable anywhere: free-text comments, signatures outside the boxes |
 
 The edge check and the leak check were both added after reviewing real outputs

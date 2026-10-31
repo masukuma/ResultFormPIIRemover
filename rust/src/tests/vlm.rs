@@ -72,10 +72,20 @@ fn page(h: i32, w: i32) -> Mat {
 
 #[test]
 fn with_stamps_masked_over_the_review_is_told_stamps_shield_nothing() {
-    assert_eq!(find_prompt(false), FIND_PROMPT);
-    let masked = find_prompt(true);
+    assert_eq!(find_prompt(&MaskSettings::default()), FIND_PROMPT);
+    let masked = find_prompt(&MaskSettings { mask_stamps: true, ..MaskSettings::default() });
     assert!(!masked.contains("writing inside the round official stamp are allowed to show"), "{}", masked);
     assert!(masked.contains("inside the round official stamp follows the same rules"));
+}
+
+#[test]
+fn with_numbers_hidden_whole_the_review_is_told_no_digit_may_show() {
+    let ids = find_prompt(&MaskSettings { full_ids: true, ..MaskSettings::default() });
+    assert!(ids.contains("every national ID / passport number must be hidden under black entirely;"), "{}", ids);
+    assert!(ids.contains("3 of its last 6 digits hidden"), "phones keep their rule: {}", ids);
+    assert!(ids.contains("showing more of its digits than the rules allow") && !ids.contains("whose digits are all readable"));
+    let both = find_prompt(&MaskSettings { full_ids: true, full_phones: true, ..MaskSettings::default() });
+    assert!(both.contains("every phone number must be hidden under black entirely;") && !both.contains("first 4 digits may show"), "{}", both);
 }
 
 #[test]
@@ -163,7 +173,7 @@ fn find_asks_about_each_spot_except_what_is_already_black() {
         json!({"unmasked_signature": true, "complete_number": false, "what": "a scribble"}),
     ]);
     let client = Ollama::new(settings(&s.url, "gemma4:31b")).unwrap();
-    let r = client.find(&img, [0, 100, 400, 500], &client, false).unwrap();
+    let r = client.find(&img, [0, 100, 400, 500], &client, &MaskSettings::default()).unwrap();
     assert_eq!(r.found, vec![crate::pipeline::Found { label: "signature".into(), rect: [40.0, 150.0, 120.0, 190.0] }]);
     let req = s.requests.lock().unwrap();
     assert_eq!(req.len(), 2); // the spot over the black box isn't asked about; the date isn't a spot
@@ -185,7 +195,7 @@ fn a_decision_checker_scores_each_spot_and_the_score_is_recorded() {
     let mut checker = Ollama::new(settings(&s.url, "clef")).unwrap();
     checker.probe().unwrap();
     assert!(checker.decision && checker.s.check_threshold == 0.5);
-    let r = finder.find(&page(600, 400), [0, 100, 400, 500], &checker, false).unwrap();
+    let r = finder.find(&page(600, 400), [0, 100, 400, 500], &checker, &MaskSettings::default()).unwrap();
     // a signature crossed by its writer's own stroke still shows: 0.3 + 0.25;
     // the phone number's 0.4 is under the threshold
     assert_eq!(r.found, vec![crate::pipeline::Found { label: "signature".into(), rect: [40.0, 150.0, 120.0, 190.0] }]);

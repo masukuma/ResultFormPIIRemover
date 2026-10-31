@@ -23,6 +23,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
+use crate::masking::MaskSettings;
 use crate::util;
 
 pub const CLOUD_HOST: &str = "https://ollama.com";
@@ -78,16 +79,27 @@ or a handwritten signature (in tables, next to names, in the comments, anywhere)
 Return one item per problem with its label (id_number, phone_number or signature) and a tight bounding box
 [x1, y1, x2, y2] in pixels of this image. Return an empty list if nothing breaks the rules.";
 
-/// `FIND_PROMPT` when stamps are masked over (`--mask-stamps`): writing
-/// inside a stamp follows the rules like any other.
-pub fn find_prompt(stamps_masked: bool) -> String {
-    if !stamps_masked {
-        return FIND_PROMPT.to_string();
+/// `FIND_PROMPT` with the rules in force: writing inside a stamp follows
+/// them like any other (`--mask-stamps`); IDs or phone numbers are hidden
+/// whole (`--full-ids`, `--full-phones`).
+pub fn find_prompt(ms: &MaskSettings) -> String {
+    let mut p = FIND_PROMPT.to_string();
+    if ms.mask_stamps {
+        p = p.replace(
+            "Names, party names, dates, vote counts, printed text and writing inside the round official stamp are allowed to show.",
+            "Names, party names, dates, vote counts and printed text are allowed to show. Writing inside the round official stamp follows the same rules, and black boxes over part of a stamp are intended.",
+        );
     }
-    FIND_PROMPT.replace(
-        "Names, party names, dates, vote counts, printed text and writing inside the round official stamp are allowed to show.",
-        "Names, party names, dates, vote counts and printed text are allowed to show. Writing inside the round official stamp follows the same rules, and black boxes over part of a stamp are intended.",
-    )
+    if ms.full_ids {
+        p = p.replace("must have at least 3 of its characters hidden under black;", "must be hidden under black entirely;");
+    }
+    if ms.full_phones {
+        p = p.replace("must have 3 of its last 6 digits hidden under black (the first 4 digits may show);", "must be hidden under black entirely;");
+    }
+    if ms.full_ids || ms.full_phones {
+        p = p.replace("an ID or phone number whose digits are all readable", "an ID or phone number showing more of its digits than the rules allow");
+    }
+    p
 }
 
 /// Asked of a zoomed crop around each spot `FIND_PROMPT` returned.
@@ -512,15 +524,15 @@ impl Ollama {
     /// w, h) that the rules hide: spots this model finds, each confirmed by
     /// `checker` on a zoomed crop (the spot boxed in red). Boxes in image px.
     /// A reply that can't be read confirms the spot: masking more is the
-    /// safe side. `stamps_masked`: writing on a stamp is to be hidden too.
-    pub fn find(&self, redacted: &Mat, area: [i32; 4], checker: &Ollama, stamps_masked: bool) -> Result<FindResult> {
+    /// safe side. `ms`: the rules in force (`find_prompt`).
+    pub fn find(&self, redacted: &Mat, area: [i32; 4], checker: &Ollama, ms: &MaskSettings) -> Result<FindResult> {
         let [ax, ay, aw, ah] = area;
         let crop = Mat::roi(redacted, opencv::core::Rect::new(ax, ay, aw, ah))?.try_clone()?;
         let f = (FIND_MAX_SIDE / aw.max(ah) as f64).min(1.0);
         let small = if f < 1.0 { util::resize_by(&crop, f, imgproc::INTER_AREA)? } else { crop.clone() };
         let (w, h) = (small.cols() as f64, small.rows() as f64);
         let sent = jpeg(&small)?;
-        let rules = find_prompt(stamps_masked);
+        let rules = find_prompt(ms);
         let prompt = rules.replace("{w}", &format!("{}", w as i64)).replace("{h}", &format!("{}", h as i64));
         let reply = self.chat(&prompt, &sent, find_schema())?;
         let spots = match loose_json(&reply) {

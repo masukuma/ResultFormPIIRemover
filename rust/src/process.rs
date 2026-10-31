@@ -272,7 +272,7 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
                 let mut fresh = false;
                 for (i, p) in doc.iter().enumerate() {
                     let img = p.image.as_ref().unwrap();
-                    let r = rv.finder.find(img, review_area(p, templates, img.cols(), img.rows()), &rv.checker, cfg.mask.mask_stamps)?;
+                    let r = rv.finder.find(img, review_area(p, templates, img.cols(), img.rows()), &rv.checker, &cfg.mask)?;
                     let mut rec = json!({"page": i + 1, "round": round + 1});
                     for (k, x) in r.record.as_object().unwrap() {
                         rec[k] = x.clone();
@@ -437,6 +437,7 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
         "output": {"file": out_rel.to_string_lossy(), "pdf_sha256": proof::sha256(&pdf)},
         "seed": format!("{:x}", seed),
         "settings": {"hide": cfg.mask.hide, "phone_tail": cfg.mask.phone_tail, "mask_stamps": cfg.mask.mask_stamps,
+                     "full_ids": cfg.mask.full_ids, "full_phones": cfg.mask.full_phones,
                      "strict_structure": cfg.strict_structure, "generic": cfg.generic,
                      "align": cfg.align.to_json()},
         "templates": tmap,

@@ -331,10 +331,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
         // the re-run's own output is a redacted copy of the form: it goes to
         // a folder of its own, removed afterwards, never next to the user's files
         let work = std::env::temp_dir().join(format!("rfpii-rerun-{}", std::process::id()));
-        let mut ms = MaskSettings::default();
-        ms.hide = st["hide"].as_u64().unwrap_or(3) as usize;
-        ms.phone_tail = st["phone_tail"].as_u64().unwrap_or(6) as usize;
-        ms.mask_stamps = st["mask_stamps"].as_bool().unwrap_or(false);
+        let ms = MaskSettings::from_record(st);
         let cfg = Config {
             templates: tdir.to_string_lossy().into_owned(),
             out: work.join("out").to_string_lossy().into_owned(),

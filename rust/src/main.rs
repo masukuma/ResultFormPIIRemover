@@ -186,6 +186,13 @@ struct RedactArgs {
     /// stamps are never masked, and writing under one stays visible.
     #[arg(long)]
     mask_stamps: bool,
+    /// Hide every character of each ID or passport number, not `--hide` of
+    /// them
+    #[arg(long)]
+    full_ids: bool,
+    /// Hide every digit of each phone number, its first digits too
+    #[arg(long)]
+    full_phones: bool,
     #[arg(long, default_value_t = 0.35)]
     min_score: f64,
     #[arg(long, default_value_t = 40)]
@@ -438,6 +445,8 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
     mask.hide = a.hide;
     mask.phone_tail = a.phone_tail;
     mask.mask_stamps = a.mask_stamps;
+    mask.full_ids = a.full_ids;
+    mask.full_phones = a.full_phones;
     let cfg = Config {
         templates: a.templates.clone().unwrap_or_default(),
         out: a.out.clone(),

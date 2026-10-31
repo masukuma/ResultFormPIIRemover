@@ -45,11 +45,39 @@ pub struct MaskSettings {
     /// Stamps are not protected: writing under one is hidden, and the
     /// masks cover that part of the stamp (`--mask-stamps`)
     pub mask_stamps: bool,
+    /// Every character of an ID or passport number is hidden, not `hide` of
+    /// them (`--full-ids`)
+    pub full_ids: bool,
+    /// Every digit of a phone number is hidden, its first digits too
+    /// (`--full-phones`)
+    pub full_phones: bool,
 }
 
 impl Default for MaskSettings {
     fn default() -> Self {
-        MaskSettings { hide: 3, phone_tail: 6, vpad: 60.0, mask_vpad: 3.0, min_glyph_h: 0.4, min_glyph_h_out: 0.4, empty_ink: 0.01, mask_stamps: false }
+        MaskSettings { hide: 3, phone_tail: 6, vpad: 60.0, mask_vpad: 3.0, min_glyph_h: 0.4, min_glyph_h_out: 0.4, empty_ink: 0.01, mask_stamps: false, full_ids: false, full_phones: false }
+    }
+}
+
+impl MaskSettings {
+    /// The settings a manifest records (its `settings`); the defaults for
+    /// those it leaves out, as manifests from before they were added do.
+    pub fn from_record(st: &serde_json::Value) -> MaskSettings {
+        let d = MaskSettings::default();
+        let flag = |k: &str| st[k].as_bool().unwrap_or(false);
+        MaskSettings {
+            hide: st["hide"].as_u64().map_or(d.hide, |v| v as usize),
+            phone_tail: st["phone_tail"].as_u64().map_or(d.phone_tail, |v| v as usize),
+            mask_stamps: flag("mask_stamps"),
+            full_ids: flag("full_ids"),
+            full_phones: flag("full_phones"),
+            ..d
+        }
+    }
+
+    /// Numbers of this rule (`phone` or `id`) are hidden whole.
+    pub fn whole(&self, rule: &str) -> bool {
+        if rule == "phone" { self.full_phones } else { self.full_ids }
     }
 }
 
@@ -704,8 +732,12 @@ pub fn pick_hidden(n: usize, k: usize, rng: &mut PyRandom, max_run: usize) -> Ve
 }
 
 /// Which character slots to hide: phone, `hide` of the last `phone_tail`
-/// digits (the prefix stays visible); id, `hide` of all characters.
+/// digits (the prefix stays visible); id, `hide` of all characters; all of
+/// them where the rule's numbers are hidden whole.
 pub fn choose_hidden(n: usize, rule: &str, rng: &mut PyRandom, s: &MaskSettings) -> Vec<usize> {
+    if s.whole(rule) {
+        return (0..n).collect();
+    }
     if rule == "phone" {
         let start = n.saturating_sub(s.phone_tail);
         return pick_hidden(n - start, s.hide, rng, 2).into_iter().map(|i| start + i).collect();
@@ -906,7 +938,8 @@ pub fn partial_column(
 }
 
 /// Independent leak check on the redacted image: re-read the column and look
-/// for `max_run` or more written characters in a row with no mask between.
+/// for `max_run` or more written characters in a row with no mask between
+/// (3 where the rule's numbers are hidden whole).
 #[allow(clippy::too_many_arguments)]
 pub fn verify_column(
     out: &Mat,
@@ -918,7 +951,8 @@ pub fn verify_column(
     strikes: Option<&[Strike]>,
     exclude: Option<&Mat>,
 ) -> Result<String> {
-    let max_run = if cells[0].rule == "phone" { 8 } else { 5 };
+    // a number hidden whole: three characters showing are some of it
+    let max_run = if s.whole(&cells[0].rule) { 3 } else if cells[0].rule == "phone" { 8 } else { 5 };
     let window = cells[0].search.map(|s| (s[0] + 8.0, s[1] + 8.0)).unwrap_or((60.0, 110.0));
     let cells = sorted_cells(cells);
     let [x, y, w, _] = cells[0].rect;
