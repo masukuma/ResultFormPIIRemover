@@ -62,6 +62,16 @@ pub fn list_inputs(paths: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// The folder an input's files are taken relative to: the input itself if
+/// it is a folder, else the folder of the file (or zip) given.
+pub fn base_of(input: &str) -> std::path::PathBuf {
+    let file = input.split_once(ZIP_SEP).map(|(a, _)| a).unwrap_or(input);
+    if Path::new(file).is_dir() {
+        return Path::new(file).to_path_buf();
+    }
+    Path::new(file).parent().map(Path::to_path_buf).unwrap_or_default()
+}
+
 /// (source, path under the output folder) for every input: each file's path
 /// relative to `base`, or else to the input it was found under (a folder,
 /// or the folder of a file given). A zip's members go under the zip's name
@@ -69,13 +79,9 @@ pub fn list_inputs(paths: &[String]) -> Result<Vec<String>> {
 /// zips don't collide. A file outside `base` keeps only its name.
 pub fn sources(inputs: &[String], base: Option<&Path>) -> Result<Vec<(String, String)>> {
     let mut out = Vec::new();
+    let file_of = |s: &str| s.split_once(ZIP_SEP).map(|(a, _)| a.to_string()).unwrap_or_else(|| s.to_string());
     for root in inputs {
-        let file_of = |s: &str| s.split_once(ZIP_SEP).map(|(a, _)| a.to_string()).unwrap_or_else(|| s.to_string());
-        let under = match base {
-            Some(b) => b.to_path_buf(),
-            None if Path::new(root).is_dir() => Path::new(root).to_path_buf(),
-            None => Path::new(&file_of(root)).parent().map(Path::to_path_buf).unwrap_or_default(),
-        };
+        let under = base.map(Path::to_path_buf).unwrap_or_else(|| base_of(root));
         for src in list_inputs(std::slice::from_ref(root))? {
             let file = file_of(&src);
             let fp = Path::new(&file);

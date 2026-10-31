@@ -8,7 +8,17 @@
 //! triage, release and report.
 
 pub mod diagnose;
+pub mod exec;
+pub mod gate;
+pub mod incident;
 pub mod inventory;
+pub mod journal;
+pub mod plan;
+pub mod policy;
+pub mod report;
+pub mod run;
+pub mod sample;
+pub mod spec;
 pub mod stats;
 pub mod view;
 
@@ -23,6 +33,24 @@ pub fn templates(dir: &Path) -> Result<Vec<crate::templates::Template>> {
         crate::align::prepare(t, &crate::align::AlignSettings::default())?;
     }
     Ok(ts)
+}
+
+/// Seconds since 1970 of a time as `process::utc_now` writes it, or of a
+/// date (YYYY-MM-DD, at midnight UTC).
+pub fn epoch_of(t: &str) -> Option<i64> {
+    let num = |a: usize, b: usize| t.get(a..b)?.parse::<i64>().ok();
+    let (y, m, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || t.get(4..5) != Some("-") || t.get(7..8) != Some("-") {
+        return None;
+    }
+    let (hh, mm, ss) = if t.len() > 10 { (num(11, 13)?, num(14, 16)?, num(17, 19)?) } else { (0, 0, 0) };
+    // days from civil (H. Hinnant)
+    let y2 = if m <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some((era * 146097 + doe - 719468) * 86400 + hh * 3600 + mm * 60 + ss)
 }
 
 /// Pages from a list such as "3,7-9" (from 1).
@@ -63,6 +91,16 @@ pub fn format_pages(pages: &[usize]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn times_read_back_as_written() {
+        for secs in [0, 1_700_000_000, 1_790_000_123] {
+            assert_eq!(epoch_of(&crate::process::utc_at(secs)), Some(secs));
+        }
+        assert_eq!(epoch_of("2026-09-01"), epoch_of("2026-09-01T00:00:00+00:00"));
+        assert_eq!(epoch_of("2026-10-31").unwrap() - epoch_of("2026-09-01").unwrap(), 60 * 86400);
+        assert!(epoch_of("31/10/2026").is_none() && epoch_of("2026-13-01").is_none());
+    }
 
     #[test]
     fn page_lists_read_and_write_alike() {

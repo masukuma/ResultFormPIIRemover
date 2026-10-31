@@ -156,3 +156,89 @@ fn the_tools_count_rank_and_show_only_what_was_published() {
     let d = json_of(&["diagnose", &blank, "--templates", s(&root.join("templates")), "--json"]);
     assert_eq!((d["ink"].as_f64(), d["read"]["ok"].as_bool()), (Some(0.0), Some(false)));
 }
+
+/// A job folder: three synthetic forms in two folders, a blank page, a copy
+/// of a form, a key, a controller record and a job file with `extra` lines;
+/// the job file's path.
+fn job_setup(root: &Path, extra: &str) -> PathBuf {
+    write_template(&root.join("templates/sample_rs1")).unwrap();
+    for (dir, k) in [("North", 1u64), ("North", 2), ("South", 3)] {
+        std::fs::create_dir_all(root.join("in").join(dir)).unwrap();
+        std::fs::write(root.join("in").join(dir).join(format!("f{}.jpg", k)), form_jpeg(k, 90)).unwrap();
+    }
+    std::fs::write(root.join("in/South/blank.jpg"), blank_jpeg()).unwrap();
+    std::fs::copy(root.join("in/North/f1.jpg"), root.join("in/South/copy.jpg")).unwrap();
+    assert_eq!(rfpii(&["keygen", s(&root.join("keys"))]).0, 0);
+    let controller = json!({"controller": {"name": "Example Observer Group"}, "operator_role": "processor", "legal_basis": "s.30(1)(b)(vii)",
+                            "purpose": "republishing results forms", "commercial": false, "processors": [{"name": "Stub", "country": "US", "service": "vision models"}]});
+    std::fs::write(root.join("controller.json"), controller.to_string()).unwrap();
+    let job = format!("inputs: [in/]\noutputs: out\nsign_key: keys/signing_key.pem\ncontroller: controller.json\ntemplates: templates\n{}", extra);
+    std::fs::write(root.join("job.yaml"), job).unwrap();
+    root.join("job.yaml")
+}
+
+/// The journal's events of `kind`.
+fn events(root: &Path, kind: &str) -> Vec<Value> {
+    std::fs::read_to_string(root.join("out/journal.jsonl")).unwrap().lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).filter(|e| e["kind"] == kind).collect()
+}
+
+#[test]
+fn a_job_without_models_runs_to_its_report_and_releases_nothing() {
+    let root = tmpdir("job-no-model");
+    let job = job_setup(&root, "instructions: \"\"\ndpia: {reference: ODPC/DPIA/2026/1, submitted_on: 2026-10-20, status: submitted}\n");
+    let (rc, out) = rfpii(&["job", s(&job)]);
+    assert_eq!(rc, 2, "{}", out);
+    let o = root.join("out");
+    for f in ["plan.json", "journal.jsonl", "report.md", "report.json", "staging", "public", "review", "quarantine", "defects"] {
+        assert!(o.join(f).exists(), "{} missing", f);
+    }
+    // everything redacted into staging, nothing released
+    assert!(o.join("staging/North/f1.pdf").exists() && o.join("staging/South/f3.pdf").exists());
+    assert!(!o.join("public/ledger.jsonl").exists() && std::fs::read_dir(o.join("public")).unwrap().count() == 0);
+    let r = read(&o.join("report.json"));
+    let g = &r["groups"][0];
+    assert_eq!((g["published"].as_u64(), g["held"].as_u64(), g["released"].as_u64(), g["verified"].as_u64()), (Some(3), Some(1), Some(0), Some(3)));
+    let failed: Vec<String> = g["gate"].as_array().unwrap().iter().filter(|c| c["ok"] == false).map(|c| c["condition"].as_str().unwrap().to_string()).collect();
+    // no vision model: the leak rate can't be bounded; the DPIA is too recent
+    assert!(failed.iter().any(|c| c.starts_with("4.")) && failed.iter().any(|c| c.starts_with("DPIA")), "{:?}", failed);
+    assert!(std::fs::read_to_string(o.join("report.md")).unwrap().contains("processing may start 60 days after submission"));
+    // the copy is left out, the blank page triaged from its diagnostics
+    assert_eq!(r["plan"]["left_out"][0]["path"], "South/copy.jpg");
+    assert_eq!(r["held"]["categories"], json!({"blank": 1}));
+    assert!(o.join("review/triage/South/blank.json").exists());
+    // the journal holds every tool call and decision, and no model call
+    let tools: Vec<String> = events(&root, "tool").iter().map(|e| e["tool"].as_str().unwrap().to_string()).collect();
+    for t in ["inventory", "redact", "verify", "stats", "diagnose", "report"] {
+        assert!(tools.iter().any(|x| x == t), "no {} in the journal", t);
+    }
+    assert!(events(&root, "model").is_empty());
+    let plan = read(&o.join("plan.json"));
+    assert_eq!(plan["held_pages"], "none");
+    // run again: nothing redone, the same decisions
+    let before = std::fs::read(o.join("staging/North/f1.manifest.json")).unwrap();
+    assert_eq!(rfpii(&["job", s(&job)]).0, 2);
+    assert_eq!(std::fs::read(o.join("staging/North/f1.manifest.json")).unwrap(), before);
+    let choices = |es: Vec<Value>| -> Vec<String> { es.iter().map(|e| format!("{} {}", e["phase"], e["choice"])).collect() };
+    let all = choices(events(&root, "decision"));
+    assert_eq!(all[..all.len() / 2], all[all.len() / 2..]);
+    // a held page of a job that doesn't allow it is never shown
+    let blank = s(&root.join("in/South/blank.jpg")).to_string();
+    let (rc, text) = rfpii(&["held-view", &blank, "--mode", "triage", "--job", s(&o)]);
+    assert!(rc != 0 && text.contains("does not let held pages go to the cloud model"), "{}", text);
+}
+
+#[test]
+fn a_job_without_a_dpia_stops_at_staging_and_says_why() {
+    let root = tmpdir("job-no-dpia");
+    let job = job_setup(&root, "policy: {ids: whole}\n");
+    assert_eq!(rfpii(&["job", s(&job)]).0, 2);
+    let r = read(&root.join("out/report.json"));
+    let gate = &r["groups"][0]["gate"];
+    let dpia = gate.as_array().unwrap().iter().find(|c| c["condition"].as_str().unwrap().starts_with("DPIA")).unwrap();
+    assert!(dpia["ok"] == false && dpia["why"].as_str().unwrap().contains("names no DPIA"));
+    // the policy given ran: its flag on every redact call, its setting in every manifest
+    let m = read(&root.join("out/staging/North/f2.manifest.json"));
+    assert_eq!(m["settings"]["full_ids"], true);
+    assert!(events(&root, "tool").iter().filter(|e| e["tool"] == "redact").all(|e| e["args"]["argv"].as_array().unwrap().iter().any(|a| a == "--full-ids")));
+    assert_eq!(r["policy"]["flags"], json!(["--full-ids"]));
+}

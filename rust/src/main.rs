@@ -6,6 +6,7 @@
 //!     rfpii verify public/x.pdf --original x.PDF --pubkey keys/signing_key.pub.pem --ledger public/ledger.jsonl
 //!     rfpii preview templates/form34a_2022 -o preview.png
 //!     rfpii inventory Forms/ --json
+//!     rfpii job job.yaml
 
 mod cli_job;
 mod cli_legal;
@@ -73,6 +74,10 @@ enum Cmd {
     HeldView(cli_job::HeldViewArgs),
     /// Text diagnostics of a held page: numbers and printed words only
     Diagnose(cli_job::DiagnoseArgs),
+    /// Run a whole redaction job, in phases, to a report (HARNESS.md)
+    Job(cli_job::JobArgs),
+    /// A leak on a job's released form: withdraw it and record the incident
+    JobIncident(cli_job::IncidentArgs),
     /// Create a self-signed certificate for digitally signing the PDFs
     Certgen(CertgenArgs),
     /// Render template zones and protected regions for a visual check
@@ -979,6 +984,8 @@ fn main() {
         Cmd::Crop(a) => cli_job::crop(a),
         Cmd::HeldView(a) => cli_job::held_view(a),
         Cmd::Diagnose(a) => cli_job::diagnose(a),
+        Cmd::Job(a) => cli_job::run_job(a),
+        Cmd::JobIncident(a) => cli_job::incident(a),
         Cmd::Certgen(a) => cmd_certgen(a),
         Cmd::Preview { template, output } => cmd_preview(&template, &output),
         Cmd::Propose(a) => cmd_propose(a),

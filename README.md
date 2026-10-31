@@ -123,6 +123,16 @@ rfpii retain --policy retention.yaml --apply --sign-key keys/signing_key.pem
 rfpii bundle public/x.pdf public/y.pdf --out bundle/ --public public \
     --pubkey signing_key.pub.pem --originals originals/
 
+# A whole job, in phases, to a report (HARNESS.md): intake, plan, pilot,
+# run, QA, remediation, triage, release through a gate, report. job.yaml
+# names the inputs, the instructions (or a structured policy), the output
+# folder, the signing key, the controller record, the DPIA and the
+# templates; nothing is released unless every condition of the gate holds
+rfpii job job.yaml
+# A leak found on a released form: withdrawn, the incident recorded with
+# whose data it holds by class, the s.43 deadlines and a notice drafted
+rfpii job-incident jobs/2013-34 jobs/2013-34/public/x.pdf --reason "ID readable in row 3" --kind id_number
+
 # The harness's tools (HARNESS.md §6), each giving JSON (--json): what a
 # job is given; what a run published and held, and its pages by risk; a
 # verified region of a published page, and a held page's diagnostics

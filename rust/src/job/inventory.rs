@@ -46,6 +46,7 @@ pub fn folder(rel: &str) -> String {
 }
 
 /// One file: its record, with the reason it can't be read if it can't.
+/// (`base`, the folder its path is relative to, is added by the caller.)
 fn file_record(src: &str, rel: &str) -> Value {
     let mut rec = json!({"source": src, "path": rel, "folder": folder(rel)});
     let data = match io::read_bytes(src) {
@@ -87,7 +88,15 @@ fn file_record(src: &str, rel: &str) -> Value {
 /// (`broken`), and the PDFs that open only repaired; groups of the files
 /// that can be read, each file counted once, with pages per folder.
 pub fn inventory(inputs: &[String]) -> Result<Value> {
-    let mut files: Vec<Value> = io::sources(inputs, None)?.iter().map(|(src, rel)| file_record(src, rel)).collect();
+    let mut files: Vec<Value> = Vec::new();
+    for root in inputs {
+        let base = io::base_of(root);
+        for (src, rel) in io::sources(std::slice::from_ref(root), None)? {
+            let mut f = file_record(&src, &rel);
+            f["base"] = json!(base.to_string_lossy());
+            files.push(f);
+        }
+    }
     let mut first: BTreeMap<String, String> = BTreeMap::new();
     for f in files.iter_mut().filter(|f| f["sha256"].is_string()) {
         let sha = f["sha256"].as_str().unwrap_or("").to_string();

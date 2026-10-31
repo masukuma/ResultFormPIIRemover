@@ -149,7 +149,11 @@ pub struct Outcome {
 
 /// `datetime.now(timezone.utc).isoformat(timespec="seconds")`.
 pub fn utc_now() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    utc_at(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0))
+}
+
+/// Seconds since 1970 as `utc_now` writes a time.
+pub fn utc_at(secs: i64) -> String {
     let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
     // civil from days (H. Hinnant)
     let z = days + 719468;

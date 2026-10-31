@@ -174,3 +174,69 @@ pub fn diagnose(a: DiagnoseArgs) -> Result<i32> {
     }
     Ok(0)
 }
+
+#[derive(Args)]
+pub struct JobArgs {
+    /// The job file (JOB.yaml: inputs, instructions, outputs, sign_key,
+    /// controller, dpia, templates, held_pages, models, budget)
+    pub job: PathBuf,
+}
+
+pub fn run_job(a: JobArgs) -> Result<i32> {
+    let code = job::run::run(&a.job, &std::env::current_exe()?)?;
+    let spec = job::spec::JobFile::load(&a.job)?;
+    println!("report: {}", spec.outputs.join("report.md").display());
+    Ok(code)
+}
+
+#[derive(Args)]
+pub struct IncidentArgs {
+    /// The job's folder
+    pub job: PathBuf,
+    /// The released form found leaking (in the job's public/)
+    pub pdf: PathBuf,
+    /// What was found showing
+    #[arg(long)]
+    pub reason: String,
+    /// What kind of data showed
+    #[arg(long, value_parser = ["signature", "id_number", "phone_number", "other"])]
+    pub kind: String,
+    /// When the leak became known (default: now), e.g. 2026-10-31T09:00:00+00:00
+    #[arg(long)]
+    pub aware_at: Option<String>,
+    /// Whether the IEBC portal showed the same form then (reg. 37(3)(a))
+    #[arg(long)]
+    pub portal_online: Option<bool>,
+}
+
+/// A leak on a released form: withdrawn, and the incident recorded with
+/// its deadlines and a notice drafted.
+pub fn incident(a: IncidentArgs) -> Result<i32> {
+    let plan = rfpii::manifest::read_json(&a.job.join("plan.json"))?;
+    let manifest = rfpii::manifest::read_json(&a.pdf.with_extension("manifest.json"))?;
+    let ledger = a.job.join("public").join("ledger.jsonl");
+    crate::cli_legal::withdraw(crate::cli_legal::WithdrawArgs {
+        pdf: a.pdf.clone(),
+        reason: a.reason.clone(),
+        sign_key: PathBuf::from(plan["sign_key"].as_str().unwrap_or("")),
+        ledger: Some(ledger.clone()),
+    })?;
+    let digest = rfpii::manifest::digest(&manifest);
+    let (_, _, entries) = rfpii::manifest::ledger_check(&ledger)?;
+    let withdrawal = entries.iter().rev().find(|e| e["type"] == "withdrawal" && e["manifest_sha256"].as_str() == Some(digest.as_str())).cloned().unwrap_or_default();
+    let now = rfpii::process::utc_now();
+    let r = job::incident::record(&job::incident::Incident {
+        job: &a.job,
+        manifest: &manifest,
+        reason: &a.reason,
+        kind: &a.kind,
+        aware_at: a.aware_at.as_deref().unwrap_or(&now),
+        portal_online: a.portal_online,
+        withdrawal: &withdrawal,
+    })?;
+    println!("incident recorded: notify the Data Commissioner by {}{}", r["deadlines"]["commissioner"].as_str().unwrap_or(""), r["deadlines"]["controller"].as_str().map(|d| format!("; as processor, the controller by {}", d)).unwrap_or_default());
+    if let Some(g) = r["reopened"].as_str() {
+        println!("group {} re-opened: its third leak of this kind since release", g);
+    }
+    Ok(0)
+}
