@@ -280,11 +280,12 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
                     for (k, x) in r.record.as_object().unwrap() {
                         rec[k] = x.clone();
                     }
-                    // writing on a stamp stays visible (the stamp rule lifts
-                    // any mask there): not the review's to mask. With
-                    // stamps masked over, no stamp is protected and every
-                    // spot found is masked.
-                    let (stamped, found_now): (Vec<Found>, Vec<Found>) = r.found.into_iter().partition(|f| on_stamps(f, &p.protected) >= 0.5);
+                    // with stamps kept, writing on a stamp stays visible
+                    // (the stamp rule lifts any mask there): not the
+                    // review's to mask. Otherwise every spot found is
+                    // masked, its band across a stamp included.
+                    let kept = cfg.mask.stamps == crate::masking::StampRule::Protected;
+                    let (stamped, found_now): (Vec<Found>, Vec<Found>) = r.found.into_iter().partition(|f| kept && on_stamps(f, &p.protected) >= 0.5);
                     if !stamped.is_empty() {
                         rec["on_stamps"] = json!(stamped.iter().map(|f| f.to_value()).collect::<Vec<_>>());
                     }
@@ -464,7 +465,7 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
         "source": source,
         "output": {"file": out_rel.to_string_lossy(), "pdf_sha256": proof::sha256(&pdf)},
         "seed": format!("{:x}", seed),
-        "settings": {"hide": cfg.mask.hide, "phone_tail": cfg.mask.phone_tail, "mask_stamps": cfg.mask.mask_stamps,
+        "settings": {"hide": cfg.mask.hide, "phone_tail": cfg.mask.phone_tail, "mask_stamps": cfg.mask.masks_stamps(), "stamps": cfg.mask.stamps.name(),
                      "full_ids": cfg.mask.full_ids, "full_phones": cfg.mask.full_phones,
                      "strict_structure": cfg.strict_structure, "generic": cfg.generic,
                      "align": cfg.align.to_json()},

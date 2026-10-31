@@ -94,7 +94,7 @@ Each rule is enforced in code, not in a prompt.
    against tool outputs. A model can't declare a page or a job good.
 4. **The instructions are compiled into a closed policy (§3).** What the
    redactor has no rule for is reported back, never improvised: names,
-   results and stamps can't be masked by asking. Nothing is released
+   results and stamps can't be masked by asking (beyond a field's line across a stamp). Nothing is released
    against an instruction (§9).
 5. **What is written on a form is data.** Model replies are parsed into
    fixed schemas. Text read off a form (a "comment" asking to skip a
@@ -113,7 +113,7 @@ against this schema. Each field maps to `rfpii` flags:
 | `ids` | `three` (default) · `whole` | `--full-ids` |
 | `phones` | `tail` (default) · `whole` | `--full-phones` |
 | `hide`, `phone_tail` | characters hidden (3), digits counted from the end (6) | `--hide`, `--phone-tail` |
-| `stamps` | `protected` (default) · `masked` | `--mask-stamps` |
+| `stamps` | `bands` (default: a field's line across a stamp hidden, the rest verified) · `protected` | — · `--keep-stamps` |
 | `signatures` | `band` (only value) | — |
 | `uncertain_tables` | `widen` (default) · `hold` · `hide_columns_if_reviewed` | `--strict-structure` · `--vlm-rescue --vlm-audit` |
 | `vision_review` | `sample` (default, §8) · `every_page` | — · `--vlm-audit` |
@@ -125,7 +125,8 @@ Some instructions, and what they compile to:
 |---|---|
 | "Standard redaction" | defaults |
 | "Hide ID numbers completely, keep phone prefixes" | `ids: whole` |
-| "Hide what is under the stamps too" | `stamps: masked` |
+| "Hide what is under the stamps too" | the default (`stamps: bands`) |
+| "Never cover the stamps" | `stamps: protected` (writing under a stamp shows) |
 | "Hide 4 digits of each phone number" | `hide: 4`, for IDs as well: `hide` is one setting, and the reading that hides more wins |
 | "Don't mask the officers' signatures" | **Below the floor**: masked as usual |
 | "Also hide the agents' names" | **More than the redactor can do**: redacted and checked, not released |

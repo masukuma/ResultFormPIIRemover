@@ -86,7 +86,7 @@ Return one item per problem with its label (id_number, phone_number or signature
 /// whole (`--full-ids`, `--full-phones`).
 pub fn find_prompt(ms: &MaskSettings) -> String {
     let mut p = FIND_PROMPT.to_string();
-    if ms.mask_stamps {
+    if ms.masks_stamps() {
         p = p.replace(
             "Names, party names, dates, vote counts, printed text and writing inside the round official stamp are allowed to show.",
             "Names, party names, dates, vote counts and printed text are allowed to show. Writing inside the round official stamp follows the same rules, and black boxes over part of a stamp are intended.",

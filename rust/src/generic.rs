@@ -1828,7 +1828,8 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
         }
     }
     let found_zones = crate::pipeline::mask_found(&mut canvas, &gray, extra, ms, rng, stamp_ink.as_ref(), &mut report)?;
-    if ms.mask_stamps && !on_page.is_empty() {
+    // the fields' bands, where writing under a stamp is hidden
+    let bands = if ms.masks_stamps() {
         let mut bands = util::full_u8(gray.rows(), gray.cols(), 255)?;
         for z in l.fields.iter().flat_map(|fl| fl.zones.iter()) {
             masking::fill(&mut bands, &f, &masking::band(z))?;
@@ -1837,15 +1838,20 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
         for z in &found_zones {
             masking::fill(&mut bands, &ident, &masking::band(z))?;
         }
-        let n = crate::pipeline::hide_under_stamps(&mut canvas, &bands, &on_page)?;
+        Some(bands)
+    } else {
+        None
+    };
+    if let (masking::StampRule::Masked, Some(b)) = (ms.stamps, &bands) {
+        let n = crate::pipeline::hide_under_stamps(&mut canvas, b, &on_page)?;
         if n > 0 {
             notes.push(format!("fields' bands across stamps hidden whole: {} px", n));
         }
     }
-    let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &on_page, r_range, None, ms)?;
+    let (_, keep, stamp_notes, stamp_records) = protect_stamps(img, &mut canvas, &on_page, r_range, None, ms, bands.as_ref())?;
     notes.extend(stamp_notes);
     let (blocks, out) = apply(img, &canvas, Some(&keep))?;
-    let mut protected: Vec<Value> = found.iter().map(|s| s.record()).collect();
+    let mut protected: Vec<Value> = stamp_records;
     let mut prot_mask = util::zeros_u8(gray.rows(), gray.cols())?;
     for (name, poly) in &l.protected {
         let quad = f(poly);

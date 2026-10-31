@@ -180,10 +180,14 @@ struct RedactArgs {
     /// Phone numbers: hide only within the last N digits
     #[arg(long, default_value_t = 6)]
     phone_tail: usize,
-    /// Mask writing under stamps too: an ID, phone number or signature a
-    /// stamp lies over is hidden, and the masks cover that part of the stamp
-    /// (its field's band across the stamp is blacked whole). By default
-    /// stamps are never masked, and writing under one stays visible.
+    /// Never mask a stamp: an ID, phone number or signature a stamp lies
+    /// over stays visible. By default each field's band across a stamp is
+    /// blacked whole, and the rest of the stamp is protected and verified
+    /// unchanged.
+    #[arg(long, conflicts_with = "mask_stamps")]
+    keep_stamps: bool,
+    /// Hide writing under stamps along each field's band (the default;
+    /// accepted for older scripts)
     #[arg(long)]
     mask_stamps: bool,
     /// Hide every character of each ID or passport number, not `--hide` of
@@ -464,7 +468,7 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
     let mut mask = MaskSettings::default();
     mask.hide = a.hide;
     mask.phone_tail = a.phone_tail;
-    mask.mask_stamps = a.mask_stamps;
+    mask.stamps = if a.keep_stamps { rfpii::masking::StampRule::Protected } else { rfpii::masking::StampRule::Bands };
     mask.full_ids = a.full_ids;
     mask.full_phones = a.full_phones;
     let cfg = Config {

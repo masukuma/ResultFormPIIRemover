@@ -42,9 +42,8 @@ pub struct MaskSettings {
     pub min_glyph_h: f64,
     pub min_glyph_h_out: f64,
     pub empty_ink: f64,
-    /// Stamps are not protected: writing under one is hidden, and the
-    /// masks cover that part of the stamp (`--mask-stamps`)
-    pub mask_stamps: bool,
+    /// What happens to writing under a stamp
+    pub stamps: StampRule,
     /// Every character of an ID or passport number is hidden, not `hide` of
     /// them (`--full-ids`)
     pub full_ids: bool,
@@ -55,7 +54,31 @@ pub struct MaskSettings {
 
 impl Default for MaskSettings {
     fn default() -> Self {
-        MaskSettings { hide: 3, phone_tail: 6, vpad: 60.0, mask_vpad: 3.0, min_glyph_h: 0.4, min_glyph_h_out: 0.4, empty_ink: 0.01, mask_stamps: false, full_ids: false, full_phones: false }
+        MaskSettings { hide: 3, phone_tail: 6, vpad: 60.0, mask_vpad: 3.0, min_glyph_h: 0.4, min_glyph_h_out: 0.4, empty_ink: 0.01, stamps: StampRule::Bands, full_ids: false, full_phones: false }
+    }
+}
+
+/// What happens to writing under a stamp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StampRule {
+    /// Each field's band across a stamp is hidden; the rest of the stamp is
+    /// protected, and `verify` checks it unchanged (the default)
+    Bands,
+    /// Stamps are never masked: writing under one stays visible
+    /// (`--keep-stamps`; the default before October 2026)
+    Protected,
+    /// Bands hidden and no stamp protected: `--mask-stamps` before the
+    /// default changed, kept to re-run the manifests it made
+    Masked,
+}
+
+impl StampRule {
+    pub fn name(self) -> &'static str {
+        match self {
+            StampRule::Bands => "bands",
+            StampRule::Protected => "protected",
+            StampRule::Masked => "masked",
+        }
     }
 }
 
@@ -65,14 +88,28 @@ impl MaskSettings {
     pub fn from_record(st: &serde_json::Value) -> MaskSettings {
         let d = MaskSettings::default();
         let flag = |k: &str| st[k].as_bool().unwrap_or(false);
+        // before `stamps` was recorded: stamps protected, or masked over
+        // with `mask_stamps`
+        let stamps = match st["stamps"].as_str() {
+            Some("bands") => StampRule::Bands,
+            Some("masked") => StampRule::Masked,
+            Some(_) => StampRule::Protected,
+            None if flag("mask_stamps") => StampRule::Masked,
+            None => StampRule::Protected,
+        };
         MaskSettings {
             hide: st["hide"].as_u64().map_or(d.hide, |v| v as usize),
             phone_tail: st["phone_tail"].as_u64().map_or(d.phone_tail, |v| v as usize),
-            mask_stamps: flag("mask_stamps"),
+            stamps,
             full_ids: flag("full_ids"),
             full_phones: flag("full_phones"),
             ..d
         }
+    }
+
+    /// Writing under stamps is hidden.
+    pub fn masks_stamps(&self) -> bool {
+        self.stamps != StampRule::Protected
     }
 
     /// Numbers of this rule (`phone` or `id`) are hidden whole.

@@ -447,10 +447,15 @@ fn numbers_hidden_whole_are_recorded_and_the_rerun_reads_them() {
     let mpath = root.join("out").join(NAME.replace(".PDF", ".manifest.json"));
     assert!(rerun_check(&root, &mpath, &root.join("in").join(NAME), &published(&root)));
     let ms = rfpii::masking::MaskSettings::from_record(&m["settings"]);
-    assert!(ms.full_ids && ms.full_phones && !ms.mask_stamps && (ms.hide, ms.phone_tail) == (3, 6));
-    // manifests from before the flags: numbers hidden as by default
+    use rfpii::masking::StampRule;
+    assert!(ms.full_ids && ms.full_phones && ms.stamps == StampRule::Bands && (ms.hide, ms.phone_tail) == (3, 6));
+    assert_eq!(m["settings"]["stamps"], "bands");
+    // manifests from before the flags: numbers hidden as by default, and
+    // stamps as they were recorded then
     let old = rfpii::masking::MaskSettings::from_record(&serde_json::json!({"hide": 4, "phone_tail": 6, "mask_stamps": true}));
-    assert!(!old.full_ids && !old.full_phones && old.mask_stamps && old.hide == 4);
+    assert!(!old.full_ids && !old.full_phones && old.stamps == StampRule::Masked && old.hide == 4);
+    let older = rfpii::masking::MaskSettings::from_record(&serde_json::json!({"hide": 3, "phone_tail": 6, "mask_stamps": false}));
+    assert_eq!(older.stamps, StampRule::Protected);
 }
 
 #[test]

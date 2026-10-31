@@ -98,9 +98,31 @@ fn decode_gray(data: &[u8]) -> Result<Mat> {
 }
 
 /// Pixels of `a` and `b` (same size) inside a polygon are identical.
-fn same_inside(a: &Mat, b: &Mat, poly: &[[f64; 2]]) -> Result<bool> {
-    let mut region = util::zeros_u8(a.rows(), a.cols())?;
-    util::fill_poly(&mut region, poly, 255.0)?;
+/// A protected region's pixels: its polygon, less the blocks of the fields'
+/// bands hidden across it (a stamp's `except_blocks`).
+fn region_mask(p: &Value, rows: i32, cols: i32) -> Result<Mat> {
+    let mut m = util::zeros_u8(rows, cols)?;
+    util::fill_poly(&mut m, &polygon(p), 255.0)?;
+    if let Some(ex) = p["except_blocks"].as_array() {
+        let w = cols as usize;
+        let d = m.data_bytes_mut()?;
+        for r in ex {
+            let v: Vec<usize> = r.as_array().map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as usize).collect()).unwrap_or_default();
+            if v.len() != 4 {
+                continue;
+            }
+            for y in v[1]..(v[1] + v[3]).min(rows as usize) {
+                for x in v[0]..(v[0] + v[2]).min(w) {
+                    d[y * w + x] = 0;
+                }
+            }
+        }
+    }
+    Ok(m)
+}
+
+fn same_inside(a: &Mat, b: &Mat, p: &Value) -> Result<bool> {
+    let region = region_mask(p, a.rows(), a.cols())?;
     let (r, av, bv) = (util::bytes(&region)?, util::bytes(a)?, util::bytes(b)?);
     let ch = a.channels() as usize;
     Ok(r.iter().enumerate().all(|(i, &v)| v == 0 || av[i * ch..(i + 1) * ch] == bv[i * ch..(i + 1) * ch]))
@@ -269,7 +291,8 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
         let protected = pm["protected"].as_array().cloned().unwrap_or_default();
         let mut prot = util::zeros_u8(red_px.rows(), red_px.cols())?;
         for p in &protected {
-            util::fill_poly(&mut prot, &polygon(p), 255.0)?;
+            let m = region_mask(p, red_px.rows(), red_px.cols())?;
+            core::bitwise_or_def(&prot.clone(), &m, &mut prot)?;
         }
         let pb = proof::to_blocks(&prot)?;
         let hits = if pb.rows == declared.rows && pb.cols == declared.cols { declared.and(&pb).count() } else { declared.count() };
@@ -326,7 +349,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
             if !same {
                 break;
             }
-            same = same_inside(&ia, &ib, &polygon(p))?;
+            same = same_inside(&ia, &ib, p)?;
         }
         r.add(
             same,

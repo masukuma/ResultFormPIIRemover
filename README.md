@@ -11,8 +11,10 @@ that **nothing but the personal data was touched**.
   them with `--full-ids`.
 - **Phone numbers** keep their first digits; 3 of the last 6 are hidden, or
   every digit with `--full-phones`.
-- **Names, results, stamps and QR codes** stay readable. A stamp is never
-  masked, even where it lies over a signature or a number.
+- **Names, results, stamps and QR codes** stay readable. Where a stamp lies
+  over a signature or a number, only that field's line across the stamp is
+  blacked; the rest of the stamp is kept, and checked unchanged.
+  `--keep-stamps` never masks a stamp at all.
 
 The only edit ever made is replacing 8×8 blocks with solid black. On KIEMS
 JPEGs this is done at coefficient level, so every other block is the same
@@ -153,11 +155,12 @@ Useful flags:
   too. Both are recorded in the manifest and repeated by `verify --rerun`;
   with them the leak check withholds a page showing 3 written characters in
   a row of such a number outside a stamp.
-- `--mask-stamps`: the stamp isn't sacred. An ID, phone number or signature
-  a stamp lies over is hidden: each field's band across the stamp is
-  blacked whole, covering that part of the stamp. By default stamps are
-  never masked and writing under one stays visible. Recorded in the
-  manifest, and repeated by `verify --rerun`.
+- `--keep-stamps`: never mask a stamp; an ID, phone number or signature a
+  stamp lies over stays visible. By default each field's band across a
+  stamp is blacked whole, covering that part of the stamp, and the rest of
+  the stamp is listed as protected and checked unchanged by `verify`
+  (`--mask-stamps` asks for that default, for older scripts). Recorded in
+  the manifest (`settings.stamps`), and repeated by `verify --rerun`.
 - `--workers`: number of documents processed at once. With `--vlm-audit`,
   use about three per core: most of a document's time is spent waiting for
   the models.
