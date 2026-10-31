@@ -938,8 +938,10 @@ pub fn partial_column(
 }
 
 /// Independent leak check on the redacted image: re-read the column and look
-/// for `max_run` or more written characters in a row with no mask between
-/// (3 where the rule's numbers are hidden whole).
+/// for 5 or more written characters in a row with no mask between (8 for
+/// phone numbers). Where the rule's numbers are hidden whole, 3 in a row
+/// off the stamps in `keep` (protected: writing on them stays visible) are
+/// a leak too.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_column(
     out: &Mat,
@@ -950,9 +952,9 @@ pub fn verify_column(
     reach: Reach,
     strikes: Option<&[Strike]>,
     exclude: Option<&Mat>,
+    keep: Option<&Mat>,
 ) -> Result<String> {
-    // a number hidden whole: three characters showing are some of it
-    let max_run = if s.whole(&cells[0].rule) { 3 } else if cells[0].rule == "phone" { 8 } else { 5 };
+    let max_run = if cells[0].rule == "phone" { 8 } else { 5 };
     let window = cells[0].search.map(|s| (s[0] + 8.0, s[1] + 8.0)).unwrap_or((60.0, 110.0));
     let cells = sorted_cells(cells);
     let [x, y, w, _] = cells[0].rect;
@@ -999,27 +1001,52 @@ pub fn verify_column(
         }
         glyphs.push(Glyph { x0: a, x1: a + b, y0: c, y1: c + d });
     }
-    for line in text_lines(&glyphs, row_h) {
-        let line = merge_glyphs(&line);
-        let top = line.iter().map(|g| g.y0).min().unwrap();
-        let bot = line.iter().map(|g| g.y1).max().unwrap();
-        let (mut run, mut best) = (1, 1);
-        for p in line.windows(2) {
-            let (a, b) = (p[0], p[1]);
-            let xe = (a.x1 + 1).max(b.x0);
-            let mut any = false;
-            'gap: for yy in top.max(0)..bot.min(masked.h as i64) {
-                for xx in a.x1.max(0)..xe.min(masked.w as i64) {
-                    if masked.at(xx as usize, yy as usize) > 0 {
-                        any = true;
-                        break 'gap;
+    // the most written characters side by side with no mask between, in
+    // any line of `glyphs`
+    let longest = |glyphs: &[Glyph]| -> usize {
+        let mut most = 0;
+        for line in text_lines(glyphs, row_h) {
+            let line = merge_glyphs(&line);
+            let top = line.iter().map(|g| g.y0).min().unwrap();
+            let bot = line.iter().map(|g| g.y1).max().unwrap();
+            let (mut run, mut best) = (1, 1);
+            for p in line.windows(2) {
+                let (a, b) = (p[0], p[1]);
+                let xe = (a.x1 + 1).max(b.x0);
+                let mut any = false;
+                'gap: for yy in top.max(0)..bot.min(masked.h as i64) {
+                    for xx in a.x1.max(0)..xe.min(masked.w as i64) {
+                        if masked.at(xx as usize, yy as usize) > 0 {
+                            any = true;
+                            break 'gap;
+                        }
                     }
                 }
+                run = if any { 1 } else { run + 1 };
+                best = best.max(run);
             }
-            run = if any { 1 } else { run + 1 };
-            best = best.max(run);
+            most = most.max(best);
         }
-        if best >= max_run {
+        most
+    };
+    let best = longest(&glyphs);
+    if best >= max_run {
+        return Ok(format!("{}: {} written characters in a row left unmasked", cells[0].key(), best));
+    }
+    if s.whole(&cells[0].rule) {
+        // a number hidden whole: three characters showing are some of it,
+        // unless a protected stamp keeps them visible
+        let on_stamp = match keep {
+            Some(k) => {
+                let mut m = Mat::default();
+                imgproc::remap(k, &mut m, &maps.0, &maps.1, imgproc::INTER_NEAREST, core::BORDER_CONSTANT, Scalar::all(0.0), core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+                Some(Img::from_mat(&m)?)
+            }
+            None => None,
+        };
+        let off: Vec<Glyph> = glyphs.iter().filter(|g| on_stamp.as_ref().is_none_or(|k| k.at(((g.x0 + g.x1) / 2) as usize, ((g.y0 + g.y1) / 2) as usize) == 0)).copied().collect();
+        let best = longest(&off);
+        if best >= 3 {
             return Ok(format!("{}: {} written characters in a row left unmasked", cells[0].key(), best));
         }
     }

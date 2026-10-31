@@ -158,7 +158,8 @@ fn with_full_ids_or_full_phones_every_character_of_the_number_is_hidden() {
 fn with_numbers_hidden_whole_the_leak_check_flags_three_characters_showing() {
     let img = table(&[(0, "36676945")], false);
     let whole = MaskSettings { full_ids: true, ..MaskSettings::default() };
-    let check = |out: &Mat, s: &MaskSettings| verify_column(out, &identity(), &cells(8), None, s, Reach::default(), None, None).unwrap();
+    let check_kept = |out: &Mat, s: &MaskSettings, keep: Option<&Mat>| verify_column(out, &identity(), &cells(8), None, s, Reach::default(), None, None, keep).unwrap();
+    let check = |out: &Mat, s: &MaskSettings| check_kept(out, s, None);
     let mut out = to_bgr(&img);
     partial(&mut out, &img, &cells(8), &whole, 0);
     assert_eq!(check(&out, &whole), "");
@@ -172,6 +173,13 @@ fn with_numbers_hidden_whole_the_leak_check_flags_three_characters_showing() {
     let half = to_bgr(&half);
     assert_eq!(check(&half, &MaskSettings::default()), "");
     assert!(check(&half, &whole).contains("4 written characters in a row"), "{}", check(&half, &whole));
+    // the four showing lie on a protected stamp: writing there stays visible
+    let mut stamp = gray(600, 500, 0);
+    fill_rect(&mut stamp, starts[3] - 1, Y - 30, X + W + 30, Y + ROW_H + 30, 255);
+    assert_eq!(check_kept(&half, &whole, Some(&stamp)), "");
+    // ... but a number shown whole is a leak, stamp or not, as by default
+    let shown = to_bgr(&img);
+    assert!(check_kept(&shown, &whole, Some(&gray(600, 500, 255))).contains("8 written characters"));
 }
 
 #[test]
@@ -179,7 +187,7 @@ fn partial_masks_pass_the_leak_check() {
     let img = table(&[(0, "36676945"), (2, "0719108076")], false);
     let mut out = to_bgr(&img);
     partial(&mut out, &img, &cells(8), &MaskSettings::default(), 1);
-    assert_eq!(verify_column(&out, &identity(), &cells(8), None, &MaskSettings::default(), Reach::default(), None, None).unwrap(), "");
+    assert_eq!(verify_column(&out, &identity(), &cells(8), None, &MaskSettings::default(), Reach::default(), None, None, None).unwrap(), "");
 }
 
 #[test]
@@ -220,7 +228,7 @@ fn img_channel0(out: &Mat) -> Img {
 fn verify_flags_unmasked_number() {
     let img = table(&[(1, "0719108076")], false);
     let out = to_bgr(&img); // nothing masked
-    assert!(verify_column(&out, &identity(), &cells(10), None, &MaskSettings::default(), Reach::default(), None, None).unwrap().contains("unmasked"));
+    assert!(verify_column(&out, &identity(), &cells(10), None, &MaskSettings::default(), Reach::default(), None, None, None).unwrap().contains("unmasked"));
 }
 
 #[test]
@@ -574,7 +582,7 @@ fn the_name_above_reaching_into_an_id_field_is_not_part_of_the_id() {
     let rep = partial(&mut canvas, &img, &field, &s, 3);
     assert!(rep[0]["mode"] == "partial" && rep[0]["lines"][0]["slots"] == 7, "{:?}", rep);
     assert!(all_eq(&canvas, 410, 100, 560, 150, 255)); // the name stays visible
-    assert_eq!(verify_column(&apply(&canvas, &img), &identity(), &field, None, &s, Reach::default(), None, None).unwrap(), "");
+    assert_eq!(verify_column(&apply(&canvas, &img), &identity(), &field, None, &s, Reach::default(), None, None, None).unwrap(), "");
 }
 
 #[test]
@@ -744,7 +752,7 @@ fn a_widened_search_stops_at_the_label_below_the_table() {
     assert!(!comment(&canvas));
     assert!(rep[0]["lines"][0]["hidden"].as_array().unwrap().len() == 3 && rep[5]["lines"][0]["hidden"].as_array().unwrap().len() == 3);
     assert_eq!(hidden_chars(&canvas, &img, 5, "24571109").len(), 3);
-    assert_eq!(verify_column(&apply(&canvas, &img), &identity(), &cs, None, &MaskSettings::default(), fenced, None, None).unwrap(), "");
+    assert_eq!(verify_column(&apply(&canvas, &img), &identity(), &cs, None, &MaskSettings::default(), fenced, None, None, None).unwrap(), "");
     // the signatures' search stops there too
     let mut sig = signature_table(&[(5, 20)]);
     text(&mut sig, "WRONG", (X + 8, bottom + 80), 0.85, colour(20.0), 2, true);

@@ -795,7 +795,7 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
                 continue;
             }
             let st = struck(cells);
-            let r = masking::verify_column(&out, &mapper(cells)?, cells, Some(&t.image), &zms(cells), reach(cells), Some(st.as_slice()), stamp_ink.as_ref())?;
+            let r = masking::verify_column(&out, &mapper(cells)?, cells, Some(&t.image), &zms(cells), reach(cells), Some(st.as_slice()), stamp_ink.as_ref(), Some(&keep))?;
             if !r.is_empty() {
                 leaks.push(r);
                 unsure.push(key.clone());
@@ -815,13 +815,13 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
         }
         for (_, ft) in &free {
             for fl in ft.layout.fields.iter().filter(|fl| fl.kind != "signature") {
-                let r = masking::verify_column(&out, &ft.mapper(), &fl.zones, Some(&ft.print_ref), &crate::generic::field_settings(ms, fl), Reach::default(), None, stamp_ink.as_ref())?;
+                let r = masking::verify_column(&out, &ft.mapper(), &fl.zones, Some(&ft.print_ref), &crate::generic::field_settings(ms, fl), Reach::default(), None, stamp_ink.as_ref(), Some(&keep))?;
                 if !r.is_empty() {
                     leaks.push(r);
                 }
             }
         }
-        leaks.extend(verify_found(&out, &found_zones, &zms(&[]), stamp_ink.as_ref())?);
+        leaks.extend(verify_found(&out, &found_zones, &zms(&[]), stamp_ink.as_ref(), Some(&keep))?);
     }
     if !leaks.is_empty() {
         return Ok(PageResult { unsure, ..fail(format!("leak check: {}", leaks.join("; ")), report, notes) });
@@ -870,11 +870,11 @@ pub fn mask_found(canvas: &mut Mat, gray: &Mat, extra: &[Found], ms: &MaskSettin
 }
 
 /// The leak check, over the numbers `mask_found` masked.
-pub fn verify_found(out: &Mat, zones: &[Zone], ms: &MaskSettings, stamp_ink: Option<&Mat>) -> Result<Vec<String>> {
+pub fn verify_found(out: &Mat, zones: &[Zone], ms: &MaskSettings, stamp_ink: Option<&Mat>, keep: Option<&Mat>) -> Result<Vec<String>> {
     let ident = masking::homography(util::IDENTITY);
     let mut leaks = Vec::new();
     for z in zones {
-        let r = masking::verify_column(out, &ident, std::slice::from_ref(z), None, ms, Reach::default(), None, stamp_ink)?;
+        let r = masking::verify_column(out, &ident, std::slice::from_ref(z), None, ms, Reach::default(), None, stamp_ink, keep)?;
         if !r.is_empty() {
             leaks.push(r);
         }

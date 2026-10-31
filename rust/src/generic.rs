@@ -1866,13 +1866,13 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
                 let opts = SigOptions { reach: masking::Reach::default(), reference: None, printed: Some(&print_mask), centered: fl.source != "table", strikes: struck(fl), exclude: stamp_ink.as_ref(), hang: hang(&l, fl) };
                 masking::verify_signatures(&gray, &out, &f, &fl.zones, ms, Some(&keep), &opts)?
             } else {
-                masking::verify_column(&out, &f, &fl.zones, Some(&print_ref), &field_settings(fl), masking::Reach::default(), struck(fl), stamp_ink.as_ref())?
+                masking::verify_column(&out, &f, &fl.zones, Some(&print_ref), &field_settings(fl), masking::Reach::default(), struck(fl), stamp_ink.as_ref(), Some(&keep))?
             };
             if !r.is_empty() {
                 leaks.push(r);
             }
         }
-        leaks.extend(crate::pipeline::verify_found(&out, &found_zones, ms, stamp_ink.as_ref())?);
+        leaks.extend(crate::pipeline::verify_found(&out, &found_zones, ms, stamp_ink.as_ref(), Some(&keep))?);
     }
     if !leaks.is_empty() {
         return Ok(fail(t0, &prefix, format!("leak check: {}", leaks.join("; ")), report, notes, Some(layout)));

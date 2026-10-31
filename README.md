@@ -141,7 +141,7 @@ Useful flags:
 - `--full-phones`: hide every digit of each phone number, its first digits
   too. Both are recorded in the manifest and repeated by `verify --rerun`;
   with them the leak check withholds a page showing 3 written characters in
-  a row of such a number.
+  a row of such a number outside a stamp.
 - `--mask-stamps`: the stamp isn't sacred. An ID, phone number or signature
   a stamp lies over is hidden: each field's band across the stamp is
   blacked whole, covering that part of the stamp. By default stamps are

@@ -361,13 +361,19 @@ checks alike, and the page notes say how many there were.
    with only one of them the other numbers keep theirs. The line is still
    segmented into characters and every slot hidden, so the mask has the
    same height and reach as a hidden character's; a line that can't be
-   segmented was hidden whole already. The leak check then looks for 3
-   written characters in a row instead of 5 (or 8 for phones): the default
-   rule leaves runs of up to two visible, a whole number none, so three
-   showing are part of a number that should be hidden. The settings are
-   recorded in the manifest (`settings.full_ids`, `settings.full_phones`)
-   and `verify --rerun` repeats them; the VLM review is told that those
-   numbers must be hidden entirely.
+   segmented was hidden whole already. The leak check still looks for 5
+   written characters in a row (8 for phones), and also for 3 off the
+   protected stamps: the default rule leaves runs of up to two visible, a
+   whole number none, so three showing are part of a number that should be
+   hidden. Writing on a protected stamp stays visible by the stamp rule. On
+   one 2022 Lamu form the stamp's edge lay over the first three digits of
+   two phone numbers. Counted, they held the page, and so would every
+   number a stamp touches; `--mask-stamps` hides them instead. On 225 pages
+   (two 2022 Form 34A zips, the 2013 Diaspora scan), the same pages were
+   published and held as with the default rule. The settings are recorded
+   in the manifest (`settings.full_ids`, `settings.full_phones`) and
+   `verify --rerun` repeats them; the VLM review is told that those numbers
+   must be hidden entirely.
 
    A hidden character is covered from the midpoint with its left neighbour to
    the midpoint with its right, from the line's top to its bottom (the
@@ -391,7 +397,7 @@ A document is published only if every page passes:
 | Reading without a template | a column of the agents table not found; officers named in the declaration but no signature line found; no PII fields at all |
 | QR code vs file name | form uploaded under the wrong station |
 | **Column edge check** | table matched one rule off. The straightened column must have its printed rules at its own edges, not a stronger rule somewhere else. This compares the mapping against the paper, because comparing the masks against the same mapping can't detect it |
-| **Leak check** | the redacted column is re-read over a wider window; 5 or more written characters in a row with no mask between them means something was missed (8 for phone numbers, 3 for numbers hidden whole) |
+| **Leak check** | the redacted column is re-read over a wider window; 5 or more written characters in a row with no mask between them means something was missed (8 for phone numbers; for numbers hidden whole, 3 off the stamps) |
 | VLM audit (optional) | anything still readable anywhere: free-text comments, signatures outside the boxes |
 
 The edge check and the leak check were both added after reviewing real outputs
