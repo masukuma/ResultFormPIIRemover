@@ -62,6 +62,34 @@ pub fn list_inputs(paths: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// (source, path under the output folder) for every input: each file's path
+/// relative to `base`, or else to the input it was found under (a folder,
+/// or the folder of a file given). A zip's members go under the zip's name
+/// without its extension, so same-named files from different folders or
+/// zips don't collide. A file outside `base` keeps only its name.
+pub fn sources(inputs: &[String], base: Option<&Path>) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for root in inputs {
+        let file_of = |s: &str| s.split_once(ZIP_SEP).map(|(a, _)| a.to_string()).unwrap_or_else(|| s.to_string());
+        let under = match base {
+            Some(b) => b.to_path_buf(),
+            None if Path::new(root).is_dir() => Path::new(root).to_path_buf(),
+            None => Path::new(&file_of(root)).parent().map(Path::to_path_buf).unwrap_or_default(),
+        };
+        for src in list_inputs(std::slice::from_ref(root))? {
+            let file = file_of(&src);
+            let fp = Path::new(&file);
+            let rel = fp.strip_prefix(&under).map(Path::to_path_buf).unwrap_or_else(|_| fp.file_name().map(std::path::PathBuf::from).unwrap_or_default());
+            let rel = match src.split_once(ZIP_SEP) {
+                Some((_, member)) => crate::process::with_suffix(&rel.to_string_lossy(), "").join(member),
+                None => rel,
+            };
+            out.push((src.clone(), rel.to_string_lossy().into_owned()));
+        }
+    }
+    Ok(out)
+}
+
 fn walk(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(dir)? {
@@ -972,5 +1000,27 @@ mod tests {
             assert_eq!((corner(o, 0.0, 0.0), corner(o, 1.0, 0.0)), (tl, tr), "orientation {}", o);
         }
         assert_eq!(exif_page(6, (300, 200)).0, (96.0, 144.0)); // turned: portrait
+    }
+
+    #[test]
+    fn sources_keep_their_folders_whichever_way_they_are_given() {
+        let d = crate::testutil::tmpdir("sources");
+        std::fs::create_dir_all(d.join("Nyeri")).unwrap();
+        std::fs::write(d.join("Nyeri/a.pdf"), b"x").unwrap();
+        let mut z = zip::ZipWriter::new(std::fs::File::create(d.join("Nyeri/K.zip")).unwrap());
+        z.start_file("in/b.pdf", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(b"y").unwrap();
+        z.finish().unwrap();
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let all = sources(&[s(&d)], None).unwrap();
+        let rels: Vec<&str> = all.iter().map(|(_, r)| r.as_str()).collect();
+        assert_eq!(rels, vec!["Nyeri/K/in/b.pdf", "Nyeri/a.pdf"]);
+        // one file, or one zip member, at a time: the same paths under `base`
+        for (src, rel) in &all {
+            assert_eq!(sources(std::slice::from_ref(src), Some(&d)).unwrap(), vec![(src.clone(), rel.clone())]);
+        }
+        // given alone, a file goes by its name, a zip member under its zip's
+        assert_eq!(sources(&[s(&d.join("Nyeri/a.pdf"))], None).unwrap()[0].1, "a.pdf");
+        assert_eq!(sources(&[all[0].0.clone()], None).unwrap()[0].1, "K/in/b.pdf");
     }
 }

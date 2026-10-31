@@ -10,6 +10,7 @@ pub mod annex;
 pub mod bundle;
 pub mod generic;
 pub mod io;
+pub mod job;
 pub mod kiems;
 pub mod legal;
 pub mod learn;

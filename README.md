@@ -123,6 +123,15 @@ rfpii retain --policy retention.yaml --apply --sign-key keys/signing_key.pem
 rfpii bundle public/x.pdf public/y.pdf --out bundle/ --public public \
     --pubkey signing_key.pub.pem --originals originals/
 
+# The harness's tools (HARNESS.md §6), each giving JSON (--json): what a
+# job is given; what a run published and held, and its pages by risk; a
+# verified region of a published page, and a held page's diagnostics
+# (numbers and printed words only), for a model
+rfpii inventory Forms/ --json
+rfpii stats public --review review --risk
+rfpii crop public/x.manifest.json --region declaration --templates templates --out x.png
+rfpii diagnose Scans/k.pdf --page 12 --templates templates --json
+
 # Anyone, later: prove a published form against its original
 rfpii verify public/x.pdf --original x.PDF --pubkey signing_key.pub.pem \
     --ledger public/ledger.jsonl --overlay changes/ --trust signer.crt
@@ -200,6 +209,15 @@ Useful flags:
   records.
 - `--supersedes MANIFEST`: the manifest of a withdrawn form this run
   republishes; the new manifest names it.
+- `--resume`: skip a document whose output and manifest exist from a run
+  with the same settings and spot masks, and redo one whose differ.
+- `--pages 3,7-9`: with `--per-page`, only these pages of each file.
+- `--base DIR`: output paths are the inputs' paths relative to `DIR`, so
+  files redacted one at a time land where a run over their folder puts them.
+- `--spot-masks FILE`: boxes to mask as well (a JSON list: each box's source
+  SHA-256, page, label, box, and where it came from), masked as the vision
+  review's finds are, recorded in the manifest (`spot_masks`) and replayed by
+  `verify --rerun`.
 - `--kenya-host HOST`: a model host in Kenya. Every call that sends a page to
   any other remote host (the review, `--orient`, `--vlm-fallback`) is a
   transfer of personal data abroad, recorded in `<out>/transfers.jsonl` with
