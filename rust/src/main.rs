@@ -55,6 +55,12 @@ enum Cmd {
     RevokeKey(cli_legal::RevokeKeyArgs),
     /// Take a published form down (a leak found), recorded in the ledger
     Withdraw(cli_legal::WithdrawArgs),
+    /// Write the technical annex of a DPIA from a run's records
+    DpiaAnnex(cli_legal::DpiaAnnexArgs),
+    /// Report, or delete, files kept past their retention schedule
+    Retain(cli_legal::RetainArgs),
+    /// Bundle published forms, their proofs and verify logs for scrutiny
+    Bundle(cli_legal::BundleCli),
     /// Create a self-signed certificate for digitally signing the PDFs
     Certgen(CertgenArgs),
     /// Render template zones and protected regions for a visual check
@@ -934,6 +940,9 @@ fn main() {
         Cmd::RotateKey(a) => cli_legal::rotate_key(a),
         Cmd::RevokeKey(a) => cli_legal::revoke_key(a),
         Cmd::Withdraw(a) => cli_legal::withdraw(a),
+        Cmd::DpiaAnnex(a) => cli_legal::dpia_annex(a),
+        Cmd::Retain(a) => cli_legal::retain(a),
+        Cmd::Bundle(a) => cli_legal::bundle(a),
         Cmd::Certgen(a) => cmd_certgen(a),
         Cmd::Preview { template, output } => cmd_preview(&template, &output),
         Cmd::Propose(a) => cmd_propose(a),

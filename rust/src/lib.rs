@@ -6,6 +6,8 @@
 //! See DESIGN.md.
 
 pub mod align;
+pub mod annex;
+pub mod bundle;
 pub mod generic;
 pub mod io;
 pub mod kiems;
@@ -21,6 +23,7 @@ pub mod process;
 pub mod proof;
 pub mod pyjson;
 pub mod pyrand;
+pub mod retain;
 pub mod stamps;
 pub mod structure;
 pub mod synthetic;

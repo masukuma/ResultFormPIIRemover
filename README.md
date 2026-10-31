@@ -107,6 +107,22 @@ rfpii redact Forms/ --templates templates --out public --review review \
 rfpii redact Photos/ --learn learned --out public --review review \
     --sign-key keys/signing_key.pem --orient
 
+# Towards the DPIA (Data Protection Act s.31): the technical annex, from
+# what the run recorded: the processing, residual-risk figures, measures,
+# transfers abroad, retention
+rfpii dpia-annex public --review review --controller controller.json \
+    --retention retention.yaml -o dpia-annex.md
+
+# Keep files no longer than their schedule (s.39): report what is due, or
+# delete it, recording each disposal in the ledger by hash
+rfpii retain --policy retention.yaml --apply --sign-key keys/signing_key.pem
+
+# For a court, a petitioner or agents: the forms asked for, their manifests,
+# each one's verify log against the original, the ledger, batch roots, key,
+# a cover sheet and SHA256SUMS (originals only with --include-originals)
+rfpii bundle public/x.pdf public/y.pdf --out bundle/ --public public \
+    --pubkey signing_key.pub.pem --originals originals/
+
 # Anyone, later: prove a published form against its original
 rfpii verify public/x.pdf --original x.PDF --pubkey signing_key.pub.pem \
     --ledger public/ledger.jsonl --overlay changes/ --trust signer.crt

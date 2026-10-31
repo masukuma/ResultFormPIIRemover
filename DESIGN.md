@@ -632,6 +632,19 @@ altered, only obscured, and the manifest records where.
   the page reads back with the size and placement of the original and the
   image is untouched. The text is in the manifest (`output.notice`) and
   `verify` checks every page carries it.
+- **Toward the publisher's duties.** `rfpii dpia-annex` writes the
+  technical annex of a DPIA from a run's manifests, review report,
+  transfers record and ledger, in the order of s.31(2) and the Third
+  Schedule: the processing (settings, masks by role and field, software),
+  residual-risk figures (candidates left per number, writing left on
+  stamps, pages held and why, withdrawals), measures, transfers abroad and
+  retention; necessity and proportionality are left for the controller to
+  write, with the points it must answer. `rfpii retain` applies a retention
+  schedule (`retention.yaml`: classes of file, folders, days kept),
+  recording each disposal in the ledger by file name and hash. `rfpii
+  bundle` packs forms for scrutiny with their manifests, verify logs, the
+  ledger, batch roots, key, a cover sheet and SHA256SUMS
+  (`legal/C-recommendations.md` §2.8, §2.10, §2.13).
 - **Transfers abroad.** Every call that sends a page to a model host
   outside Kenya (anything not on this machine nor named with
   `--kenya-host`) appends a line to `transfers.jsonl`, the record reg.

@@ -159,3 +159,119 @@ pub fn withdraw(a: WithdrawArgs) -> Result<i32> {
     println!("Republish it corrected with: rfpii redact <original> ... --supersedes {}", mpath.display());
     Ok(0)
 }
+
+#[derive(Args)]
+pub struct DpiaAnnexArgs {
+    /// A run's output folder (manifests, transfers.jsonl, ledger.jsonl)
+    pub out: PathBuf,
+    /// Its review folder, for the pages held and why
+    #[arg(long)]
+    pub review: Option<PathBuf>,
+    /// The controller record (controller.json)
+    #[arg(long)]
+    pub controller: Option<PathBuf>,
+    /// The retention schedule (retention.yaml)
+    #[arg(long)]
+    pub retention: Option<PathBuf>,
+    /// Where to write the annex (Markdown)
+    #[arg(short, long, default_value = "dpia-annex.md")]
+    pub output: PathBuf,
+    /// Also write its figures as JSON here
+    #[arg(long)]
+    pub json: Option<PathBuf>,
+}
+
+pub fn dpia_annex(a: DpiaAnnexArgs) -> Result<i32> {
+    let f = rfpii::annex::figures(&a.out, a.review.as_deref())?;
+    let c = match &a.controller {
+        Some(p) => Some(rfpii::legal::Controller::load(p)?),
+        None => None,
+    };
+    let r = match &a.retention {
+        Some(p) => Some(rfpii::retain::load(p)?.text),
+        None => None,
+    };
+    std::fs::write(&a.output, rfpii::annex::markdown(&f, c.as_ref(), r.as_deref()))?;
+    if let Some(j) = &a.json {
+        std::fs::write(j, serde_json::to_string_pretty(&f)?)?;
+    }
+    println!("wrote {} ({} documents, {} pages published, {} held, {} transfers abroad)", a.output.display(), f["documents"], f["pages_published"], f["pages_held"], f["transfers_abroad"]);
+    Ok(0)
+}
+
+#[derive(Args)]
+pub struct RetainArgs {
+    /// The retention schedule (retention.yaml)
+    #[arg(long)]
+    pub policy: PathBuf,
+    /// Delete what is due (by default only report it), recording each
+    /// class's disposal in the schedule's ledger
+    #[arg(long)]
+    pub apply: bool,
+    /// Key that signs the disposal records
+    #[arg(long)]
+    pub sign_key: Option<PathBuf>,
+}
+
+pub fn retain(a: RetainArgs) -> Result<i32> {
+    let p = rfpii::retain::load(&a.policy)?;
+    let now = std::time::SystemTime::now();
+    for row in rfpii::retain::audit(&p, now).as_array().cloned().unwrap_or_default() {
+        println!(
+            "{:<20} {:>6} files  {:>6} due  keep {}  {}",
+            row["class"].as_str().unwrap_or(""),
+            row["files"],
+            row["due"],
+            row["keep_days"].as_u64().map(|d| format!("{} days", d)).unwrap_or_else(|| "indefinitely".into()),
+            row["path"].as_str().unwrap_or("")
+        );
+    }
+    if a.apply {
+        let key = match &a.sign_key {
+            Some(k) => Some(mf::load_private(k)?),
+            None => None,
+        };
+        let gone = rfpii::retain::apply(&p, now, key.as_ref())?;
+        println!("deleted {} files; recorded in the ledger by hash", gone.len());
+    }
+    Ok(0)
+}
+
+#[derive(Args)]
+pub struct BundleCli {
+    /// The published forms to bundle (PDFs, manifests beside them)
+    #[arg(required = true)]
+    pub forms: Vec<PathBuf>,
+    /// Folder to write the bundle to (new or empty)
+    #[arg(long)]
+    pub out: PathBuf,
+    /// The published folder: ledger, batch roots, transfers record
+    #[arg(long)]
+    pub public: PathBuf,
+    /// The publisher's public key
+    #[arg(long)]
+    pub pubkey: Option<PathBuf>,
+    /// Where the originals are, to verify each form against
+    #[arg(long)]
+    pub originals: Option<PathBuf>,
+    /// Copy the originals into the bundle (only when their release is authorised)
+    #[arg(long)]
+    pub include_originals: bool,
+    /// Templates, to re-run each redaction from its seed
+    #[arg(long)]
+    pub rerun: Option<PathBuf>,
+}
+
+pub fn bundle(a: BundleCli) -> Result<i32> {
+    let n = rfpii::bundle::bundle(&rfpii::bundle::BundleArgs {
+        forms: &a.forms,
+        out: &a.out,
+        public: &a.public,
+        pubkey: a.pubkey.as_deref(),
+        originals: a.originals.as_deref(),
+        include_originals: a.include_originals,
+        rerun: a.rerun.as_deref(),
+    })?;
+    println!("bundle written to {}: {} of {} forms verified", a.out.display(), n, a.forms.len());
+    Ok(if n == a.forms.len() { 0 } else { 1 })
+}

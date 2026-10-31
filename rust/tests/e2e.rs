@@ -543,6 +543,32 @@ fn a_withdrawn_form_no_longer_verifies_and_its_replacement_names_it() {
 }
 
 #[test]
+fn a_dpia_annex_and_a_scrutiny_bundle_come_from_the_records() {
+    let root = run();
+    let read = |p: &Path| std::fs::read_to_string(p).unwrap();
+    // the annex: the processing as recorded, in the DPIA's order
+    let annex = root.join("annex.md");
+    assert_eq!(rfpii(&["dpia-annex", s(&root.join("out")), "--review", s(&root.join("review")), "-o", s(&annex), "--json", s(&root.join("annex.json"))]), 0);
+    let text = read(&annex);
+    for h in ["## 1. Controller and purpose", "## 2. Systematic description", "## 3. Necessity and proportionality", "## 4. Risks", "## 5. Measures", "## 6. Safeguards prior to and cross-border transfers", "## 7. Retention"] {
+        assert!(text.contains(h), "{} missing", h);
+    }
+    let f: Value = serde_json::from_str(&read(&root.join("annex.json"))).unwrap();
+    assert!(f["documents"].as_u64().unwrap() >= 1 && f["pages_published"].as_u64().unwrap() >= 1);
+    // the bundle: forms, manifests, verify logs, ledger, key, sums
+    let b = root.join("bundle");
+    let _ = std::fs::remove_dir_all(&b);
+    assert_eq!(rfpii(&["bundle", s(&published(root)), "--out", s(&b), "--public", s(&root.join("out")), "--pubkey", s(&root.join("keys/signing_key.pub.pem")), "--originals", s(&root.join("in"))]), 0);
+    let name = NAME.replace(".PDF", ".pdf");
+    assert!(b.join("forms").join(&name).exists() && b.join("ledger.jsonl").exists() && b.join("signing_key.pub.pem").exists());
+    assert!(!b.join("originals").exists(), "originals only when authorised");
+    assert!(read(&b.join("verify").join(format!("{}.txt", name))).contains("VERIFIED"));
+    assert!(read(&b.join("README.md")).contains("| VERIFIED |"));
+    let sums = read(&b.join("SHA256SUMS"));
+    assert!(sums.contains(&format!("forms/{}", name)) && sums.contains("README.md"));
+}
+
+#[test]
 fn a_scanned_batch_is_published_page_by_page() {
     // one file of three pages: a form, a page nothing can be read on, the
     // form again (encoded anew: other coefficients)
