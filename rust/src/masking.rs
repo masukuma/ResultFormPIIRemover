@@ -1593,7 +1593,7 @@ pub fn signature_column(img: &mut Mat, gray: &Mat, f: &Mapper, cells: &[Zone], s
 pub fn verify_signatures(gray: &Mat, out: &Mat, f: &Mapper, cells: &[Zone], s: &MaskSettings, keep: Option<&Mat>, o: &SigOptions) -> Result<String> {
     let (blobs, origin, _, cells2, _) = find_signatures(gray, f, cells, s, SIG_BELOW, o)?;
     let _ = origin;
-    let (above, below) = sig_window(&cells2, s, o.reach, SIG_BELOW);
+    let (above, below) = sig_window(&cells2, s, o.reach, SIG_BELOW + o.hang);
     let og = util::gray(out)?;
     let ostrip = Img::from_mat(&column_strip(&og, f, &cells2, above, below, SIG_OVERRUN)?.strip)?;
     let gstrip = column_strip(gray, f, &cells2, above, below, SIG_OVERRUN)?;

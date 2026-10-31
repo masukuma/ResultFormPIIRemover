@@ -390,6 +390,17 @@ fn a_signature_hanging_below_its_line_is_still_its_lines() {
     let mut canvas = gray(320, 900, 255);
     assert_eq!(modes(&sigs(&mut canvas, &img, &field, &last)), ["signature"]);
     assert_eq!(verify_sig(&img, &apply(&canvas, &img), &field, &last), "");
+    // hanging lower than the search reaches without it: checked there too
+    let mut img = gray(360, 900, 235);
+    line(&mut img, (60, 200), (780, 200), colour(60.0), 2);
+    for x in (160..340).step_by(30) {
+        polyline(&mut img, &[(x, 236), (x + 6, 284), (x + 14, 286), (x + 18, 236)], colour(20.0), 2);
+    }
+    let last = SigOptions { hang: 90.0, ..centered() };
+    let mut canvas = gray(360, 900, 255);
+    assert_eq!(modes(&sigs(&mut canvas, &img, &field, &last)), ["signature"]);
+    assert_eq!(verify_sig(&img, &apply(&canvas, &img), &field, &last), "");
+    assert!(verify_sig(&img, &to_bgr(&img), &field, &last).contains("not masked through the middle"));
 }
 
 /// A signature on its line, 150-400 px; `draw` draws the line. Returns the
