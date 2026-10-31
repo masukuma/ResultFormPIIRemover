@@ -953,7 +953,15 @@ It is on by default (`--no-generic` turns it off) and needs the OCR models
 5. **Declaration.** Each officer's line is found by its "Signature" and "Date"
    labels; the signature field lies between them. The band is OCR'd again at
    2.5× because, at page scale, a label running into handwriting is often
-   missed. The officers' written names are kept for step 7. A page naming
+   missed. Both reads are kept, so a label is often read twice: it makes
+   one field, from the read that reads more of it, and the other read's
+   words are no next label ("ID No. / Rassport:" ends at "No.", and the
+   good read's "Passport" was taken for the label after it, leaving no
+   room for the field). Nothing is written under a 2013 officer's last line
+   but the stamp's lettering, over the security stripe: there a signature
+   hanging below the line is the line's, and the field reaches a printed
+   line lower. Taken for the next line's, such signatures were left
+   showing. The officers' written names are kept for step 7. A page naming
    more officers than it has signature lines goes to review; a stamp's
    "PRESIDING OFFICER", read in capitals inside the stamp's circle and often
    run into the name written under it ("PRESiDINGNSOZOGZ"), names no
@@ -961,7 +969,10 @@ It is on by default (`--no-generic` turns it off) and needs the OCR models
 6. **Numbers written anywhere else.** An ID (7–9 digits that aren't a date,
    or digits after "ID") or a phone number written below the results gets the
    same partial masking as in the table. A label ("ID No. / Passport:",
-   "Tel.", "Mobile No.") names the field after it. "Mobile" heads a label
+   "Tel.", "Mobile No.") names the field after it. OCR often misreads the
+   slash in "ID No. / Passport:" as a letter or digit ("IDNo.1Passport:"),
+   or the word itself ("Passoort:"): a word two letters or fewer off
+   "passport", before a colon, is still the label. "Mobile" heads a label
    only at the start of a line or before "No." or a colon: it also ends the
    names of mobile polling stations ("LOMUKE MOBILE (039)"), and the station
    code after it was masked as a phone number on 37 pages of the 2013 run.

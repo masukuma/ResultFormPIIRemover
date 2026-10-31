@@ -752,7 +752,16 @@ fn declaration(l: &mut Layout, top: f64, bottom: f64) -> BTreeSet<usize> {
             l.problems.push(format!("declaration line at y={:.0}: no room for a signature before 'Date'", cy));
             continue;
         }
-        let mut z = Zone::new(&format!("signature@{:.0},{:.0}", x0, cy), [x0, cy - 0.75 * h, x1 - x0, 1.3 * h], "signature");
+        // nothing written under the line but a stamp's lettering (a 2013
+        // Form 34's last line, over the security stripe): a signature
+        // hanging below the line is the line's, there's no next line's
+        let under = l.lines.iter().any(|o| {
+            let (ox0, oy0, ox1, oy1) = o.bbox();
+            let in_stamp = l.stamps.iter().any(|s| ((ox0 + ox1) / 2.0 - s.cx).hypot((oy0 + oy1) / 2.0 - s.cy) < s.r);
+            oy0 > cy + 0.5 * h && oy0 < cy + 2.0 * h && ox1 > x0 && ox0 < x1 && !in_stamp
+        });
+        let hang = if under { 0.0 } else { h };
+        let mut z = Zone::new(&format!("signature@{:.0},{:.0}", x0, cy), [x0, cy - 0.75 * h, x1 - x0, 1.3 * h + hang], "signature");
         z.search = Some([0.9 * h, 0.5 * h]);
         l.fields.push(Field { kind: "signature".into(), zones: vec![z], source: "declaration".into(), label: how, label_box: (x0, cy - 0.5 * h, x1, cy + 0.5 * h) });
     }
@@ -885,10 +894,22 @@ fn officer_lines_end(lines: &[OLine], from: f64) -> f64 {
 
 // --- labelled fields outside tables -------------------------------------------------------------
 
-fn next_label_x(l: &Layout, ln: &OLine, after: f64) -> Option<f64> {
+/// The same words read twice: the officers' lines are read again, zoomed
+/// in, and both reads are kept.
+fn twins(a: &OLine, b: &OLine) -> bool {
+    let (a, b) = (a.bbox(), b.bbox());
+    let w = a.2.min(b.2) - a.0.max(b.0);
+    let h = a.3.min(b.3) - a.1.max(b.1);
+    let area = |r: (f64, f64, f64, f64)| (r.2 - r.0) * (r.3 - r.1);
+    w > 0.0 && h > 0.0 && w * h >= 0.6 * area(a).min(area(b))
+}
+
+fn next_label_x(l: &Layout, i: usize, after: f64) -> Option<f64> {
+    let ln = &l.lines[i];
     let mut best: Option<f64> = None;
-    for o in &l.lines {
-        if (o.cy() - ln.cy()).abs() > 0.6 * ln.height() {
+    for (j, o) in l.lines.iter().enumerate() {
+        // the other read of this line has this line's own label further on
+        if (o.cy() - ln.cy()).abs() > 0.6 * ln.height() || (j != i && twins(ln, o)) {
             continue;
         }
         for (a, b) in matches(&LABEL_RE, &o.text) {
@@ -903,6 +924,55 @@ fn next_label_x(l: &Layout, ln: &OLine, after: f64) -> Option<f64> {
 
 static FIVE_DIGITS: Lazy<Regex> = Lazy::new(|| re(r"\d{5}"));
 static JOIN_RE: Lazy<Regex> = Lazy::new(|| re(r"^[\s/.:,-]*$"));
+// "Passport:" after "ID No." as OCR reads it, with the slash before it
+// read as a letter or digit ("ID No. ypassport:", "IDNo.1Passport:") or the
+// word itself misread ("Rassport:", "Passoort:"): two letters off at most,
+// so an ID read as letters is never taken for it
+static PASSPORT_TAIL: Lazy<Regex> = Lazy::new(|| re(r"^[\s/.:,|\\-]*(?:[A-Za-z0-9]\s*)?([PpRr][A-Za-z0-9&]{4,8})\s*:"));
+
+/// Letters to change, add or remove to make `a` into `b`.
+fn edits(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for j in 0..b.len() {
+            let cur = row[j + 1];
+            row[j + 1] = (prev + (ca != b[j]) as usize).min(row[j] + 1).min(cur + 1);
+            prev = cur;
+        }
+    }
+    row[b.len()]
+}
+
+/// Where a label of this kind on the line ends, unless a number follows it
+/// on the line (a station's code, read as part of a heading).
+fn label_end(ln: &OLine, kind: &str, rx: &Regex) -> Option<f64> {
+    if kind == "signature" && has(&REFUSAL_RE, &ln.text) {
+        return None;
+    }
+    let m = rx.find(&ln.text).ok().flatten()?;
+    // a label of several words ("ID No. / Passport:") ends after the last
+    let mut end = m.end();
+    for n in rx.find_iter(&ln.text).filter_map(|n| n.ok()).filter(|n| n.start() >= m.end()) {
+        if !has(&JOIN_RE, &ln.text[end..n.start()]) {
+            break;
+        }
+        end = n.end();
+    }
+    if kind == "id" && !ln.text[m.start()..end].to_lowercase().contains("passp") {
+        if let Some(c) = PASSPORT_TAIL.captures(&ln.text[end..]).ok().flatten() {
+            if edits(&c[1].to_lowercase(), "passport") <= 2 {
+                end += c.get(0).unwrap().end();
+            }
+        }
+    }
+    if kind != "signature" && has(&FIVE_DIGITS, &ln.text[end..]) {
+        return None;
+    }
+    Some(ln.span(char_index(&ln.text, m.start()), char_index(&ln.text, end)).1)
+}
 
 fn labels(l: &mut Layout, used: &BTreeSet<usize>, top: f64) {
     let right = l.lines.iter().map(|ln| ln.bbox().2).reduce(f64::max).unwrap_or(l.frame.size.0 as f64);
@@ -912,27 +982,20 @@ fn labels(l: &mut Layout, used: &BTreeSet<usize>, top: f64) {
             continue;
         }
         for (kind, rx) in [("signature", &*SIG_RE), ("id", &*ID_RE), ("phone", &*TEL_RE)] {
-            if kind == "signature" && has(&REFUSAL_RE, &ln.text) {
+            let Some(x1) = label_end(&ln, kind, rx) else { continue };
+            // a label read twice makes one field, from the read that reads
+            // more of it ("ID No. / Rassport:" ends at "No.")
+            let better = l.lines.iter().enumerate().any(|(j, o)| {
+                j != i && !used.contains(&j) && o.cy() >= top && twins(&ln, o) && label_end(o, kind, rx).is_some_and(|x| x > x1 || (x == x1 && j < i))
+            });
+            if better {
                 continue;
             }
-            let Some(m) = rx.find(&ln.text).ok().flatten() else { continue };
-            // a label of several words ("ID No. / Passport:") ends after the last
-            let mut end = m.end();
-            for n in rx.find_iter(&ln.text).filter_map(|n| n.ok()).filter(|n| n.start() >= m.end()) {
-                if !has(&JOIN_RE, &ln.text[end..n.start()]) {
-                    break;
-                }
-                end = n.end();
-            }
-            if kind != "signature" && has(&FIVE_DIGITS, &ln.text[end..]) {
-                continue;
-            }
-            let (_, x1) = ln.span(char_index(&ln.text, m.start()), char_index(&ln.text, end));
             // a line taller than print has the writing after the label in its
             // box ("ID No. / Passport: 28' @rs0&n?"): a field that tall would
             // reach the next line's "Date:"
             let h = ln.height().min(TEXT_H);
-            let end = next_label_x(l, &ln, x1);
+            let end = next_label_x(l, i, x1);
             let fx0 = x1 + 0.15 * h;
             let fx1 = match end {
                 Some(e) => e - 0.15 * h,
