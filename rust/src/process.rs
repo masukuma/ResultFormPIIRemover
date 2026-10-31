@@ -58,6 +58,9 @@ pub struct Config {
     pub supersedes: Vec<Value>,
     /// write a redaction notice on each page, below it, outside the image
     pub notice: bool,
+    /// boxes to mask as well, each naming its source (SHA-256) and page
+    /// (`read_spot_masks`)
+    pub spot_masks: Vec<Value>,
 }
 
 /// The line written below each published page: that it is a redacted copy,
@@ -74,6 +77,24 @@ pub fn notice_text(controller: Option<&str>, source_sha: &str, out_name: &str) -
 }
 
 impl Config {
+    /// The settings a manifest records, and `redact --resume` compares.
+    pub fn settings(&self) -> Value {
+        json!({"hide": self.mask.hide, "phone_tail": self.mask.phone_tail, "mask_stamps": self.mask.masks_stamps(), "stamps": self.mask.stamps.name(),
+               "full_ids": self.mask.full_ids, "full_phones": self.mask.full_phones,
+               "strict_structure": self.strict_structure, "generic": self.generic,
+               "align": self.align.to_json()})
+    }
+
+    /// The spot masks for page `at` (as the source numbers it) of the
+    /// source with SHA-256 `sha`, as a manifest records them.
+    pub fn spots_for(&self, sha: &str, at: usize) -> Vec<Value> {
+        self.spot_masks
+            .iter()
+            .filter(|s| s["sha256"].as_str() == Some(sha) && s["page"].as_u64() == Some(at as u64))
+            .map(|s| json!({"label": s["label"], "box": s["box"], "source": s["source"]}))
+            .collect()
+    }
+
     /// Record a page sent to a model host, if it is abroad: the transfer's
     /// id and the host's region (local, kenya, foreign).
     pub fn transfer(&self, t: crate::legal::Transfer) -> Result<(Option<String>, &'static str)> {
@@ -128,7 +149,11 @@ pub struct Outcome {
 
 /// `datetime.now(timezone.utc).isoformat(timespec="seconds")`.
 pub fn utc_now() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    utc_at(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0))
+}
+
+/// Seconds since 1970 as `utc_now` writes a time.
+pub fn utc_at(secs: i64) -> String {
     let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
     // civil from days (H. Hinnant)
     let z = days + 719468;
@@ -180,21 +205,48 @@ fn page_report(p: &PageResult) -> Value {
     v
 }
 
+/// A template rectangle (x, y, w, h) on a `w` x `h` page aligned by `hh`:
+/// the image px x, y, w, h around it, clipped to the page; None if less
+/// than 32 px either way is left.
+pub fn area_on_page(rect: [f64; 4], hh: &[[f64; 3]; 3], w: i32, h: i32) -> Option<[i32; 4]> {
+    let [x, y, rw, rh] = rect;
+    let c: Vec<[f64; 2]> = [[x, y], [x + rw, y], [x + rw, y + rh], [x, y + rh]].iter().map(|&q| util::project(hh, q)).collect();
+    let x0 = c.iter().map(|q| q[0]).fold(f64::INFINITY, f64::min).max(0.0) as i32;
+    let y0 = c.iter().map(|q| q[1]).fold(f64::INFINITY, f64::min).max(0.0) as i32;
+    let x1 = (c.iter().map(|q| q[0]).fold(f64::NEG_INFINITY, f64::max).ceil() as i32).min(w);
+    let y1 = (c.iter().map(|q| q[1]).fold(f64::NEG_INFINITY, f64::max).ceil() as i32).min(h);
+    (x1 - x0 > 32 && y1 - y0 > 32).then_some([x0, y0, x1 - x0, y1 - y0])
+}
+
 /// The part of a page the review looks at: the template's `review_area`
 /// where it has one, else the whole page. Image px x, y, w, h.
 fn review_area(p: &PageResult, templates: &[Template], w: i32, h: i32) -> [i32; 4] {
     let t = templates.iter().find(|t| t.name == p.template);
-    if let (Some([x, y, rw, rh]), Some(hh)) = (t.and_then(|t| t.review_area), p.h) {
-        let c: Vec<[f64; 2]> = [[x, y], [x + rw, y], [x + rw, y + rh], [x, y + rh]].iter().map(|&q| util::project(&hh, q)).collect();
-        let x0 = c.iter().map(|q| q[0]).fold(f64::INFINITY, f64::min).max(0.0) as i32;
-        let y0 = c.iter().map(|q| q[1]).fold(f64::INFINITY, f64::min).max(0.0) as i32;
-        let x1 = (c.iter().map(|q| q[0]).fold(f64::NEG_INFINITY, f64::max).ceil() as i32).min(w);
-        let y1 = (c.iter().map(|q| q[1]).fold(f64::NEG_INFINITY, f64::max).ceil() as i32).min(h);
-        if x1 - x0 > 32 && y1 - y0 > 32 {
-            return [x0, y0, x1 - x0, y1 - y0];
+    match (t.and_then(|t| t.review_area), p.h) {
+        (Some(r), Some(hh)) => area_on_page(r, &hh, w, h).unwrap_or([0, 0, w, h]),
+        _ => [0, 0, w, h],
+    }
+}
+
+/// The spot masks of a `redact --spot-masks` file: a JSON list of boxes,
+/// each with the SHA-256 of its source file, the page (from 1, as the
+/// source numbers it), a label (signature, id_number, phone_number), a box
+/// (image px x0, y0, x1, y1 of the page as stored) and where it came from
+/// (`source`: who found it, and on what).
+pub fn read_spot_masks(path: &Path) -> Result<Vec<Value>> {
+    let v = crate::manifest::read_json(path)?;
+    let list = v.as_array().ok_or_else(|| anyhow::anyhow!("{}: a list of spot masks expected", path.display()))?;
+    for (i, s) in list.iter().enumerate() {
+        let ok = s["sha256"].as_str().is_some_and(|h| h.len() == 64)
+            && s["page"].as_u64().is_some_and(|p| p >= 1)
+            && crate::vlm::LABELS.contains(&s["label"].as_str().unwrap_or(""))
+            && s["box"].as_array().is_some_and(|b| b.len() == 4 && b.iter().all(|x| x.is_number()))
+            && !s["source"].is_null();
+        if !ok {
+            anyhow::bail!("{}: spot mask {} needs sha256, page, label ({}), box [x0, y0, x1, y1] and source", path.display(), i, crate::vlm::LABELS.join(", "));
         }
     }
-    [0, 0, w, h]
+    Ok(list.clone())
 }
 
 /// Share of `f`'s box inside the page's protected stamps.
@@ -273,18 +325,24 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
     let n = pixels.len();
     let mut found: Vec<Vec<Found>> = vec![vec![]; n];
     let mut whole: Vec<Vec<String>> = vec![vec![]; n];
+    // spot masks: given for this run, or recorded by the one replayed
+    let mut spots: Vec<Vec<Value>> = (0..n).map(|i| cfg.spots_for(&source_sha, number(i))).collect();
     if let Some(m) = replay {
         for (i, p) in m["pages"].as_array().into_iter().flatten().enumerate().take(n) {
             found[i] = p["vlm_found"].as_array().map(|a| a.iter().filter_map(Found::from_value).collect()).unwrap_or_default();
             whole[i] = p["whole_columns"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+            spots[i] = p["spot_masks"].as_array().cloned().unwrap_or_default();
         }
     }
+    let spot_found: Vec<Vec<Found>> = spots.iter().map(|s| s.iter().filter_map(Found::from_value).collect()).collect();
     // Every pass starts from the seed: the output depends only on the seed
-    // and what is masked, however many passes the review took.
+    // and what is masked, however many passes the review took. Spot masks
+    // are masked as the review's finds are.
     let run = |found: &[Vec<Found>], whole: &[Vec<String>]| -> Result<Vec<PageResult>> {
         let mut rng = PyRandom::new(seed);
         opencv::core::set_rng_seed((seed % (1u64 << 31)) as i32)?;
-        let po = PageOptions { form: form.clone(), strict: cfg.strict_structure, generic: cfg.generic, found: found.to_vec(), whole: whole.to_vec(), ..Default::default() };
+        let found: Vec<Vec<Found>> = found.iter().zip(&spot_found).map(|(f, s)| f.iter().chain(s).cloned().collect()).collect();
+        let po = PageOptions { form: form.clone(), strict: cfg.strict_structure, generic: cfg.generic, found, whole: whole.to_vec(), ..Default::default() };
         redact_pages(&pixels, templates, &cfg.align, &cfg.mask, &mut rng, &po)
     };
     let mut doc = run(&found, &whole)?;
@@ -445,6 +503,9 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
         if !whole[i].is_empty() {
             mp["whole_columns"] = json!(whole[i]);
         }
+        if !spots[i].is_empty() {
+            mp["spot_masks"] = json!(spots[i]);
+        }
         mpages.push(mp);
         reds.push(red);
     }
@@ -541,10 +602,7 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
         "source": source,
         "output": {"file": out_rel.to_string_lossy(), "pdf_sha256": proof::sha256(&pdf), "notice": notice},
         "seed": format!("{:x}", seed),
-        "settings": {"hide": cfg.mask.hide, "phone_tail": cfg.mask.phone_tail, "mask_stamps": cfg.mask.masks_stamps(), "stamps": cfg.mask.stamps.name(),
-                     "full_ids": cfg.mask.full_ids, "full_phones": cfg.mask.full_phones,
-                     "strict_structure": cfg.strict_structure, "generic": cfg.generic,
-                     "align": cfg.align.to_json()},
+        "settings": cfg.settings(),
         "controller": cfg.controller.as_ref().map(|c| c.summary()),
         "supersedes": cfg.supersedes.iter().find(|o| o["source"]["sha256"] == source["sha256"] && o["source"]["page"] == source["page"])
             .map(|o| json!({"manifest_sha256": crate::manifest::digest(o), "output_sha256": o["output"]["pdf_sha256"], "name": o["output"]["file"]})),

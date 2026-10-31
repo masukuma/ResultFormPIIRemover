@@ -151,6 +151,24 @@ pub fn band(z: &Zone) -> [[f64; 2]; 4] {
     [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
 }
 
+/// What is hidden where a field crosses a stamp, under `rule`. With
+/// `StampRule::Bands`, a signature's row gets a line through its middle,
+/// as tall a share of the row as a signature's band is of its ink
+/// (`SIG_BAND_H`, at least `SIG_BAND_MIN`): under a stamp the signature's
+/// ink can't be told from the stamp's, so its row stands in for it, and
+/// the rest of the stamp stays visible. A number's whole line is hidden,
+/// every character of it; and so is everything under the older rule
+/// (`Masked`), as its manifests recorded.
+pub fn stamp_band(z: &Zone, rule: StampRule) -> [[f64; 2]; 4] {
+    if rule != StampRule::Bands || z.action != "signature" {
+        return band(z);
+    }
+    let [x, y, w, h] = z.rect;
+    let bh = (SIG_BAND_H * h).max(SIG_BAND_MIN).min(h);
+    let y0 = y + (h - bh) / 2.0;
+    [[x, y0], [x + w, y0], [x + w, y0 + bh], [x, y0 + bh]]
+}
+
 /// How far a column's search window may reach beyond its cells: its usual
 /// search plus `margin` px (up, down), widened when its table couldn't be
 /// snapped; but never past `top` / `bottom` (template y: printed labels

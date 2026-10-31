@@ -5,7 +5,10 @@
 //!     rfpii redact Forms/ --templates templates --out public --review review --sign-key keys/signing_key.pem
 //!     rfpii verify public/x.pdf --original x.PDF --pubkey keys/signing_key.pub.pem --ledger public/ledger.jsonl
 //!     rfpii preview templates/form34a_2022 -o preview.png
+//!     rfpii inventory Forms/ --json
+//!     rfpii job job.yaml
 
+mod cli_job;
 mod cli_legal;
 
 use anyhow::{Context, Result};
@@ -24,7 +27,7 @@ use rfpii::align::{prepare, AlignSettings};
 use rfpii::io;
 use rfpii::manifest as mf;
 use rfpii::masking::MaskSettings;
-use rfpii::process::{output_rel, process_document, utc_now, with_suffix, Config};
+use rfpii::process::{output_rel, process_document, utc_now, Config};
 use rfpii::pyjson;
 use rfpii::templates::{load_templates, Template};
 use rfpii::util;
@@ -61,6 +64,20 @@ enum Cmd {
     Retain(cli_legal::RetainArgs),
     /// Bundle published forms, their proofs and verify logs for scrutiny
     Bundle(cli_legal::BundleCli),
+    /// List a job's inputs: files, hashes, pages, kinds, duplicates, groups
+    Inventory(cli_job::InventoryArgs),
+    /// Count a run's pages published and held, and rank them by risk
+    Stats(cli_job::StatsArgs),
+    /// A region of a published page, verified, as an image for a model
+    Crop(cli_job::CropArgs),
+    /// A held page as a job lets it be shown: a triage view, or to locate fields
+    HeldView(cli_job::HeldViewArgs),
+    /// Text diagnostics of a held page: numbers and printed words only
+    Diagnose(cli_job::DiagnoseArgs),
+    /// Run a whole redaction job, in phases, to a report (HARNESS.md)
+    Job(cli_job::JobArgs),
+    /// A leak on a job's released form: withdraw it and record the incident
+    JobIncident(cli_job::IncidentArgs),
     /// Create a self-signed certificate for digitally signing the PDFs
     Certgen(CertgenArgs),
     /// Render template zones and protected regions for a visual check
@@ -283,11 +300,30 @@ struct RedactArgs {
     vlm: VlmArgs,
     #[arg(long)]
     overwrite: bool,
+    /// Skip a document whose output and manifest exist from a run with the
+    /// same settings and spot masks; redo one whose differ (without this,
+    /// any document whose output exists is skipped)
+    #[arg(long, conflicts_with = "overwrite")]
+    resume: bool,
+    /// Paths under --out are the inputs' paths relative to this folder
+    /// (default: relative to each input given): to redact files one at a
+    /// time into the layout a run over their folder gives
+    #[arg(long)]
+    base: Option<PathBuf>,
     /// Each page of a file of several pages is a document of its own,
     /// published (as NAME.p012.pdf) or sent to review by itself: for scanned
     /// batches of many forms. Its manifest names the whole file and the page.
     #[arg(long)]
     per_page: bool,
+    /// With --per-page: only these pages of each file (e.g. 3,7-9)
+    #[arg(long, requires = "per_page")]
+    pages: Option<String>,
+    /// Boxes to mask as well (a JSON list: each box's source SHA-256, page,
+    /// label, box and where it came from), masked as the vision review's
+    /// finds are: signatures hidden whole, numbers by their rule. Recorded
+    /// in the manifest (`spot_masks`) and replayed by `verify --rerun`
+    #[arg(long)]
+    spot_masks: Option<PathBuf>,
     /// Seed (hex) for every document instead of a fresh random one: for
     /// reproducing a run, never for publishing
     #[arg(long, hide = true)]
@@ -352,29 +388,6 @@ fn out_path(root: &str, rel: &str, page: Option<usize>, ext: &str) -> Result<Pat
     Ok(p)
 }
 
-/// (source, output-relative path) for every input; keeps folder structure so
-/// same-named files from different folders don't collide.
-fn jobs(inputs: &[String]) -> Result<Vec<(String, String)>> {
-    let mut out = Vec::new();
-    for root in inputs {
-        let rp = Path::new(root);
-        for src in io::list_inputs(std::slice::from_ref(root))? {
-            let rel = if let Some((archive, member)) = src.split_once(io::ZIP_SEP) {
-                let base_root = if rp.is_file() { rp.parent().unwrap_or(Path::new("")) } else { rp };
-                let base = Path::new(archive).strip_prefix(base_root).unwrap_or(Path::new(archive));
-                let stem = with_suffix(&base.to_string_lossy(), "");
-                stem.join(member).to_string_lossy().into_owned()
-            } else if rp.is_dir() {
-                Path::new(&src).strip_prefix(rp).map(|p| p.to_string_lossy().into_owned()).unwrap_or(src.clone())
-            } else {
-                Path::new(&src).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(src.clone())
-            };
-            out.push((src, rel));
-        }
-    }
-    Ok(out)
-}
-
 /// A document: a file (`rel` its path under the output folder), or one page
 /// of it with --per-page.
 #[derive(Clone)]
@@ -392,6 +405,19 @@ impl Job {
             Some(_) => output_rel(&self.rel, self.page, "").to_string_lossy().into_owned(),
         }
     }
+}
+
+/// A document already done by a run with these settings and spot masks: its
+/// output and manifest are there, and the manifest records the same.
+fn done_alike(j: &Job, cfg: &Config) -> bool {
+    let pdf = Path::new(&cfg.out).join(output_rel(&j.rel, j.page, ".pdf"));
+    let Ok(m) = mf::read_json(&pdf.with_extension("manifest.json")) else { return false };
+    let sha = m["source"]["sha256"].as_str().unwrap_or("");
+    let spots = m["pages"].as_array().into_iter().flatten().enumerate().all(|(i, p)| {
+        let at = j.page.unwrap_or(i + 1);
+        p["spot_masks"].as_array().cloned().unwrap_or_default() == cfg.spots_for(sha, at)
+    });
+    pdf.exists() && m["settings"] == cfg.settings() && spots
 }
 
 /// With `per_page`, a job for each page of the files of several pages.
@@ -538,6 +564,10 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
         kenya_hosts: a.kenya_hosts.clone(),
         supersedes: a.supersedes.iter().map(|p| mf::read_json(p)).collect::<Result<_>>()?,
         notice: !a.no_notice,
+        spot_masks: match &a.spot_masks {
+            Some(p) => rfpii::process::read_spot_masks(p)?,
+            None => vec![],
+        },
     };
     if a.vlm_rescue && !a.vlm_audit {
         anyhow::bail!("--vlm-rescue needs --vlm-audit: hiding a column whole is only safe when the review checks the result");
@@ -556,10 +586,16 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
     std::fs::create_dir_all(&a.out)?;
     std::fs::create_dir_all(&a.review)?;
     let ledger = a.ledger.clone().unwrap_or_else(|| Path::new(&a.out).join("ledger.jsonl"));
-    let all = jobs(&a.inputs)?;
+    let all = io::sources(&a.inputs, a.base.as_deref())?;
+    let pages = a.pages.as_deref().map(rfpii::job::parse_pages).transpose()?;
     let todo: Vec<Job> = page_jobs(all.clone(), a.per_page)?
         .into_iter()
-        .filter(|j| a.overwrite || !Path::new(&a.out).join(output_rel(&j.rel, j.page, ".pdf")).exists())
+        .filter(|j| pages.as_ref().is_none_or(|p| p.contains(&j.page.unwrap_or(1))))
+        .filter(|j| match (a.overwrite, a.resume) {
+            (true, _) => true,
+            (_, true) => !done_alike(j, &cfg),
+            _ => !Path::new(&a.out).join(output_rel(&j.rel, j.page, ".pdf")).exists(),
+        })
         .collect();
     let mut templates = match &a.templates {
         Some(t) => load_templates(Path::new(t))?,
@@ -943,6 +979,13 @@ fn main() {
         Cmd::DpiaAnnex(a) => cli_legal::dpia_annex(a),
         Cmd::Retain(a) => cli_legal::retain(a),
         Cmd::Bundle(a) => cli_legal::bundle(a),
+        Cmd::Inventory(a) => cli_job::inventory(a),
+        Cmd::Stats(a) => cli_job::stats(a),
+        Cmd::Crop(a) => cli_job::crop(a),
+        Cmd::HeldView(a) => cli_job::held_view(a),
+        Cmd::Diagnose(a) => cli_job::diagnose(a),
+        Cmd::Job(a) => cli_job::run_job(a),
+        Cmd::JobIncident(a) => cli_job::incident(a),
         Cmd::Certgen(a) => cmd_certgen(a),
         Cmd::Preview { template, output } => cmd_preview(&template, &output),
         Cmd::Propose(a) => cmd_propose(a),

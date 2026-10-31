@@ -12,6 +12,9 @@
 //!
 //! Privacy: the audit only ever sends the *redacted* page. Sending an
 //! unredacted form to a non-local host is refused unless explicitly allowed.
+//! A job's clients also carry its `Guard`, which checks every request
+//! before it leaves: only images the job's tools made, or views cut from
+//! them, and no text with a run of five digits.
 //! Every verdict is recorded in the manifest with the model, host and a hash
 //! of the exact image sent; a VLM never edits pixels itself.
 
@@ -272,6 +275,101 @@ impl Drop for Permit {
     }
 }
 
+/// What a job lets its model clients send (HARNESS.md §7): only images its
+/// tools made (`job::view`: crops of published pages, views of held ones)
+/// and views `find`, `check` and `locate` cut from those, and no text with
+/// a run of five or more digits. Every request is checked before it
+/// leaves; every image it carries is listed with the tool image it is, or
+/// was cut from.
+#[derive(Default)]
+pub struct Guard {
+    state: std::sync::Mutex<GuardState>,
+}
+
+#[derive(Default)]
+struct GuardState {
+    /// SHA-256 of the pixels of each image a tool made
+    sources: std::collections::HashSet<String>,
+    /// SHA-256 of each image that may be sent -> the pixels' it came from
+    allowed: std::collections::HashMap<String, String>,
+    sent: Vec<Value>,
+    requests: usize,
+}
+
+/// SHA-256 of an image's pixels, with its size and channels.
+fn pixels_sha(m: &Mat) -> Result<String> {
+    let mut h = Sha256::new();
+    h.update(format!("{}x{}x{}|", m.cols(), m.rows(), m.channels()).as_bytes());
+    h.update(util::bytes(m)?);
+    Ok(hex::encode(h.finalize()))
+}
+
+impl Guard {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, GuardState>> {
+        self.state.lock().map_err(|_| anyhow!("guard lock poisoned"))
+    }
+
+    /// An image a tool made (`pixels`, and `encoded` as it is sent): it may
+    /// be sent, and views cut from it. Its SHA-256, and its pixels'.
+    pub fn register(&self, pixels: &Mat, encoded: &[u8]) -> Result<(String, String)> {
+        let (sha, px) = (hex::encode(Sha256::digest(encoded)), pixels_sha(pixels)?);
+        let mut st = self.lock()?;
+        st.sources.insert(px.clone());
+        st.allowed.insert(sha.clone(), px.clone());
+        Ok((sha, px))
+    }
+
+    /// A view `encoded`, cut from `from`: allowed only if `from` is an
+    /// image a tool made.
+    pub fn cut(&self, from: &Mat, encoded: &[u8]) -> Result<()> {
+        let px = pixels_sha(from)?;
+        let mut st = self.lock()?;
+        if !st.sources.contains(&px) {
+            bail!("refusing to send a view of an image no tool of the job made (crop, held view)");
+        }
+        st.allowed.insert(hex::encode(Sha256::digest(encoded)), px);
+        Ok(())
+    }
+
+    /// Check a request before it is sent: every image in it allowed, no text
+    /// with a run of five or more digits. The images are listed as sent.
+    pub fn check(&self, body: &Value) -> Result<()> {
+        let digits = regex::Regex::new(r"\d{5,}").unwrap();
+        let mut texts: Vec<&str> = vec![body["state"].as_str().unwrap_or(""), body["prompt"].as_str().unwrap_or("")];
+        let mut images: Vec<&str> = body["images"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        for m in body["messages"].as_array().into_iter().flatten() {
+            texts.push(m["content"].as_str().unwrap_or(""));
+            images.extend(m["images"].as_array().into_iter().flatten().filter_map(Value::as_str));
+        }
+        if texts.iter().any(|t| digits.is_match(t)) {
+            bail!("refusing to send text with a run of five or more digits (an ID or phone number?)");
+        }
+        let mut st = self.lock()?;
+        let mut sent = Vec::new();
+        for b64 in images {
+            let bytes = base64::engine::general_purpose::STANDARD.decode(b64)?;
+            let sha = hex::encode(Sha256::digest(&bytes));
+            match st.allowed.get(&sha) {
+                Some(from) => sent.push(json!({"sha256": sha, "from": from})),
+                None => bail!("refusing to send an image no crop or held view of the job made ({})", &sha[..12]),
+            }
+        }
+        st.sent.extend(sent);
+        st.requests += 1;
+        Ok(())
+    }
+
+    /// The images sent since this was last asked.
+    pub fn take_sent(&self) -> Vec<Value> {
+        self.lock().map(|mut st| std::mem::take(&mut st.sent)).unwrap_or_default()
+    }
+
+    /// Requests checked so far.
+    pub fn requests(&self) -> usize {
+        self.lock().map(|st| st.requests).unwrap_or(0)
+    }
+}
+
 /// Reviews redacted pages: `finder` looks for what still shows, `checker`
 /// confirms each spot on a zoomed crop.
 pub struct Reviewer {
@@ -384,6 +482,8 @@ pub struct Ollama {
     /// A decision model (Clef): answers typed questions through
     /// /v1/systemone instead of chatting. Set by `probe`.
     pub decision: bool,
+    /// A job's guard, which checks every request before it is sent
+    pub guard: Option<std::sync::Arc<Guard>>,
 }
 
 /// The host name of a model host's URL (or of a bare host name).
@@ -416,17 +516,44 @@ impl Ollama {
         if !local && s.host.trim_end_matches('/') == CLOUD_HOST && s.api_key.is_none() {
             bail!("Ollama Cloud needs OLLAMA_API_KEY (create one at ollama.com/settings/keys)");
         }
-        Ok(Ollama { s, decision: false })
+        Ok(Ollama { s, decision: false, guard: None })
     }
 
     /// Ask the host what the model is (/api/show): a decision model is asked
     /// through /v1/systemone. Fails if the host doesn't know the model, so a
     /// misspelt model stops a run before its first page.
     pub fn probe(&mut self) -> Result<()> {
+        self.decision = self.capabilities()?.iter().any(|c| c == "decision");
+        Ok(())
+    }
+
+    /// What the host says the model can do (/api/show): "completion",
+    /// "vision", "tools", "decision"...
+    pub fn capabilities(&self) -> Result<Vec<String>> {
         let url = format!("{}/api/show", self.s.host.trim_end_matches('/'));
         let reply = self.post(&url, &json!({"model": self.s.model}))?;
-        self.decision = reply["capabilities"].as_array().is_some_and(|c| c.iter().any(|v| v == "decision"));
-        Ok(())
+        Ok(reply["capabilities"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect())
+    }
+
+    /// `sent`, cut from `from`, as the guard (if any) allows it.
+    fn cut(&self, from: &Mat, sent: &[u8]) -> Result<()> {
+        match &self.guard {
+            Some(g) => g.cut(from, sent),
+            None => Ok(()),
+        }
+    }
+
+    /// A structured answer to `prompt` about `images` (encoded, as sent; may
+    /// be none): JSON in the shape of `schema`, at temperature 0. A reply
+    /// that isn't JSON is an error, which the caller takes as no decision.
+    pub fn chat_json(&self, prompt: &str, images: &[&[u8]], schema: Value) -> Result<Value> {
+        let mut msg = json!({"role": "user", "content": prompt});
+        if !images.is_empty() {
+            msg["images"] = json!(images.iter().map(|i| base64::engine::general_purpose::STANDARD.encode(i)).collect::<Vec<_>>());
+        }
+        let reply = self.post(&self.chat_url(), &json!({"model": self.s.model, "messages": [msg], "format": schema, "stream": false, "options": {"temperature": 0}}))?;
+        let content = reply["message"]["content"].as_str().ok_or_else(|| anyhow!("Ollama reply has no message"))?;
+        loose_json(content).ok_or_else(|| anyhow!("{} answered something that isn't JSON: {:.120}", self.s.model, content))
     }
 
     pub fn local(&self) -> bool {
@@ -466,12 +593,13 @@ impl Ollama {
 
     /// The parsed reply and the sha256 of the exact image sent.
     pub fn ask(&self, prompt: &str, img: &Mat, schema: Value) -> Result<(Value, String)> {
-        let mut buf = Vector::<u8>::new();
-        let params: Vector<i32> = vec![imgcodecs::IMWRITE_JPEG_QUALITY, 90].into_iter().collect();
-        if !imgcodecs::imencode(".jpg", img, &mut buf, &params)? {
-            bail!("encode failed");
-        }
-        let sent = buf.to_vec();
+        self.ask_cut(prompt, img, img, schema)
+    }
+
+    /// `ask` about `img`, a view cut from `from` (the guard's to allow).
+    fn ask_cut(&self, prompt: &str, img: &Mat, from: &Mat, schema: Value) -> Result<(Value, String)> {
+        let sent = jpeg(img)?;
+        self.cut(from, &sent)?;
         let body = json!({
             "model": self.s.model,
             "messages": [{"role": "user", "content": prompt, "images": [base64::engine::general_purpose::STANDARD.encode(&sent)]}],
@@ -479,13 +607,7 @@ impl Ollama {
             "stream": false,
             "options": {"temperature": 0},
         });
-        let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs_f64(self.s.timeout))).build().into();
-        let mut req = agent.post(self.chat_url()).header("Content-Type", "application/json");
-        if let Some(a) = self.authorization() {
-            req = req.header("Authorization", a);
-        }
-        let mut resp = req.send_json(&body).map_err(|e| anyhow!("Ollama at {}: {e}", self.s.host))?;
-        let reply: Value = resp.body_mut().read_json().map_err(|e| anyhow!("Ollama reply: {e}"))?;
+        let reply = self.post(&self.chat_url(), &body)?;
         let content = reply["message"]["content"].as_str().ok_or_else(|| anyhow!("Ollama reply has no message"))?;
         Ok((serde_json::from_str(content)?, hex::encode(Sha256::digest(&sent))))
     }
@@ -493,6 +615,9 @@ impl Ollama {
     /// One request, retried when the host is busy (429, 5xx) or the
     /// connection drops; the reply.
     fn post(&self, url: &str, body: &Value) -> Result<Value> {
+        if let Some(g) = &self.guard {
+            g.check(body)?;
+        }
         let _permit = Permit::take();
         let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs_f64(self.s.timeout))).http_status_as_error(false).build().into();
         let mut last = String::new();
@@ -562,6 +687,7 @@ impl Ollama {
         let small = if f < 1.0 { util::resize_by(&crop, f, imgproc::INTER_AREA)? } else { crop.clone() };
         let (w, h) = (small.cols() as f64, small.rows() as f64);
         let sent = jpeg(&small)?;
+        self.cut(redacted, &sent)?;
         let rules = find_prompt(ms);
         let prompt = rules.replace("{w}", &format!("{}", w as i64)).replace("{h}", &format!("{}", h as i64));
         let reply = self.chat(&prompt, &sent, find_schema())?;
@@ -630,14 +756,16 @@ impl Ollama {
         }
         let p = |x: f64, o: i32| ((x - o as f64) * 2.0) as i32;
         imgproc::rectangle_points(&mut z, opencv::core::Point::new(p(r[0], x0), p(r[1], y0)), opencv::core::Point::new(p(r[2], x0), p(r[3], y0)), opencv::core::Scalar::new(0.0, 0.0, 255.0, 0.0), 3, imgproc::LINE_8, 0)?;
+        let sent = jpeg(&z)?;
+        self.cut(redacted, &sent)?;
         if self.decision {
-            let a = &self.decide(&jpeg(&z)?, DECIDE_STATE, decide_questions())?["what"];
+            let a = &self.decide(&sent, DECIDE_STATE, decide_questions())?["what"];
             let p = |k: &str| a["probabilities"][k].as_f64().unwrap_or(0.0);
             // spots asked about are under 8% black, so a "masked" one can
             // only be crossed by the writer's own stroke: it still shows
             return Ok((p("unmasked_signature") + p("masked_signature"), p("complete_number") + p("masked_number"), a["choice"].as_str().unwrap_or("").to_string()));
         }
-        let reply = self.chat(CHECK_PROMPT, &jpeg(&z)?, check_schema())?;
+        let reply = self.chat(CHECK_PROMPT, &sent, check_schema())?;
         let yes = |k: &str, v: &Value| if v.get(k).and_then(|b| b.as_bool()).unwrap_or(true) { 1.0 } else { 0.0 };
         Ok(match loose_json(&reply) {
             Some(v) => (yes("unmasked_signature", &v), yes("complete_number", &v), v.get("what").and_then(|w| w.as_str()).unwrap_or("").to_string()),
@@ -708,7 +836,7 @@ impl Ollama {
         let (small, (sx, sy)) = self.resize(img)?;
         let (h, w) = (small.rows() as f64, small.cols() as f64);
         let prompt = LOCATE_PROMPT.replace("{w}", &format!("{}", w as i64)).replace("{h}", &format!("{}", h as i64));
-        let (out, _) = self.ask(&prompt, &small, locate_schema())?;
+        let (out, _) = self.ask_cut(&prompt, &small, img, locate_schema())?;
         let mut boxes = Vec::new();
         for it in out["items"].as_array().cloned().unwrap_or_default() {
             let label = it["label"].as_str().unwrap_or("");

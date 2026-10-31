@@ -12,8 +12,9 @@ that **nothing but the personal data was touched**.
 - **Phone numbers** keep their first digits; 3 of the last 6 are hidden, or
   every digit with `--full-phones`.
 - **Names, results, stamps and QR codes** stay readable. Where a stamp lies
-  over a signature or a number, only that field's line across the stamp is
-  blacked; the rest of the stamp is kept, and checked unchanged.
+  over a number, that number's line across the stamp is blacked; over a
+  signature, a line through the middle of its row. The rest of the stamp is
+  kept, and checked unchanged.
   `--keep-stamps` never masks a stamp at all.
 
 The only edit ever made is replacing 8×8 blocks with solid black. On KIEMS
@@ -123,6 +124,29 @@ rfpii retain --policy retention.yaml --apply --sign-key keys/signing_key.pem
 rfpii bundle public/x.pdf public/y.pdf --out bundle/ --public public \
     --pubkey signing_key.pub.pem --originals originals/
 
+# A whole job, in phases, to a report (HARNESS.md): intake, plan, pilot,
+# run, QA, remediation, triage, release through a gate, report. job.yaml
+# names the inputs, the instructions (or a structured policy), the output
+# folder, the signing key, the controller record, the DPIA, the templates,
+# the models (an orchestrator and a vision model, on Ollama Cloud unless a
+# host is given) and whether held pages may go to the cloud model. Models
+# see only verified crops of published pages and, if allowed, views of held
+# ones; nothing is released unless every condition of the gate holds
+rfpii job job.yaml
+# A leak found on a released form: withdrawn, the incident recorded with
+# whose data it holds by class, the s.43 deadlines and a notice drafted
+rfpii job-incident jobs/2013-34 jobs/2013-34/public/x.pdf --reason "ID readable in row 3" --kind id_number
+
+# The harness's tools (HARNESS.md §6), each giving JSON (--json): what a
+# job is given; what a run published and held, and its pages by risk; a
+# verified region of a published page, and a held page's diagnostics
+# (numbers and printed words only), for a model
+rfpii inventory Forms/ --json
+rfpii stats public --review review --risk
+rfpii crop public/x.manifest.json --region declaration --templates templates --out x.png
+rfpii held-view Scans/k.pdf --page 12 --mode triage --job jobs/2013-34 --out k12.jpg
+rfpii diagnose Scans/k.pdf --page 12 --templates templates --json
+
 # Anyone, later: prove a published form against its original
 rfpii verify public/x.pdf --original x.PDF --pubkey signing_key.pub.pem \
     --ledger public/ledger.jsonl --overlay changes/ --trust signer.crt
@@ -200,6 +224,15 @@ Useful flags:
   records.
 - `--supersedes MANIFEST`: the manifest of a withdrawn form this run
   republishes; the new manifest names it.
+- `--resume`: skip a document whose output and manifest exist from a run
+  with the same settings and spot masks, and redo one whose differ.
+- `--pages 3,7-9`: with `--per-page`, only these pages of each file.
+- `--base DIR`: output paths are the inputs' paths relative to `DIR`, so
+  files redacted one at a time land where a run over their folder puts them.
+- `--spot-masks FILE`: boxes to mask as well (a JSON list: each box's source
+  SHA-256, page, label, box, and where it came from), masked as the vision
+  review's finds are, recorded in the manifest (`spot_masks`) and replayed by
+  `verify --rerun`.
 - `--kenya-host HOST`: a model host in Kenya. Every call that sends a page to
   any other remote host (the review, `--orient`, `--vlm-fallback`) is a
   transfer of personal data abroad, recorded in `<out>/transfers.jsonl` with
@@ -207,9 +240,10 @@ Useful flags:
   time, recipient, justification, a description of the data, and hashes of
   the images sent.
 - `--keep-stamps`: never mask a stamp; an ID, phone number or signature a
-  stamp lies over stays visible. By default each field's band across a
-  stamp is blacked whole, covering that part of the stamp, and the rest of
-  the stamp is listed as protected and checked unchanged by `verify`
+  stamp lies over stays visible. By default each number's line across a
+  stamp is blacked whole, and a signature's row gets a line through its
+  middle (half the row's height), covering that part of the stamp; the rest
+  of the stamp is listed as protected and checked unchanged by `verify`
   (`--mask-stamps` asks for that default, for older scripts). Recorded in
   the manifest (`settings.stamps`), and repeated by `verify --rerun`.
 - `--workers`: number of documents processed at once. With `--vlm-audit`,

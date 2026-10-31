@@ -438,6 +438,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
             kenya_hosts: vec![],
             supersedes: vec![],
             notice: false,
+            spot_masks: vec![],
         };
         if let Some(o) = m.get("ocr") {
             let now = crate::ocr::info().map(|i| i["models"].clone()).unwrap_or(Value::Null);

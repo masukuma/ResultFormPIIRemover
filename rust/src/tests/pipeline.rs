@@ -199,6 +199,52 @@ fn the_bands_across_a_stamp_are_listed_out_to_its_edge_as_verify_draws_it() {
 }
 
 #[test]
+fn across_a_stamp_a_signature_row_gets_a_line_through_its_middle_and_a_number_its_whole_line() {
+    let sig = Zone::new("sig", [300.0, 460.0, 400.0, 80.0], "signature");
+    let id = Zone::new("id", [300.0, 600.0, 400.0, 40.0], "partial");
+    // a signature: the middle half of its row; a number: all of it
+    assert_eq!(masking::stamp_band(&sig, masking::StampRule::Bands), [[300.0, 480.0], [700.0, 480.0], [700.0, 520.0], [300.0, 520.0]]);
+    assert_eq!(masking::stamp_band(&id, masking::StampRule::Bands), masking::band(&id));
+    // the older rule, as its manifests recorded: the whole row
+    assert_eq!(masking::stamp_band(&sig, masking::StampRule::Masked), masking::band(&sig));
+    // a short row: at least SIG_BAND_MIN, never more than the row
+    let thin = Zone::new("thin", [0.0, 100.0, 50.0, 12.0], "signature");
+    let b = masking::stamp_band(&thin, masking::StampRule::Bands);
+    assert!((b[2][1] - b[0][1] - masking::SIG_BAND_MIN).abs() < 1e-9);
+
+    // on a page: across the stamp only the middle of the row is hidden;
+    // above and below it the stamp is kept, and the page passes verify's check
+    let stamp = Stamp::new(500.0, 500.0, 100.0, 1.0, "ring");
+    let ident = masking::homography(util::IDENTITY);
+    let mut bands = gray(1000, 1000, 255);
+    masking::fill(&mut bands, &ident, &masking::stamp_band(&sig, masking::StampRule::Bands)).unwrap();
+    let (img, mut canvas) = (bgr(1000, 1000, [255, 255, 255]), gray(1000, 1000, 255));
+    let (_, _, _, records) = protect_stamps(&img, &mut canvas, std::slice::from_ref(&stamp), (40.0, 200.0), None, &MaskSettings::default(), Some(&bands)).unwrap();
+    let c = util::bytes(&canvas).unwrap();
+    let at = |x: usize, y: usize| c[y * 1000 + x];
+    assert_eq!(at(500, 500), 0, "the middle of the row is hidden across the stamp");
+    assert_eq!(at(500, 465), 255, "the top of the row is kept on the stamp");
+    assert_eq!(at(500, 535), 255, "the bottom of the row is kept on the stamp");
+    let hidden: Vec<u8> = c.iter().map(|&v| if v == 0 { 255 } else { 0 }).collect();
+    let blocks = proof::to_blocks(&util::from_bytes(1000, 1000, &hidden).unwrap()).unwrap();
+    assert_eq!(crate::verify::protected_hits(&records, &blocks, 1000, 1000).unwrap(), 0);
+}
+
+#[test]
+fn a_signature_a_review_found_on_a_stamp_is_hidden_across_it_as_any_signature_is() {
+    let found = vec![
+        Found { label: "signature".into(), rect: [420.0, 470.0, 580.0, 530.0] },
+        Found { label: "id_number".into(), rect: [100.0, 100.0, 300.0, 130.0] },
+    ];
+    let sigs = found_signatures(&found, &MaskSettings::default());
+    assert_eq!(sigs.len(), 1);
+    assert!(sigs[0].action == "signature" && sigs[0].rect == [420.0, 470.0, 160.0, 60.0]);
+    // the stamp's band rule takes it; the older rules keep it as they did
+    assert!(found_signatures(&found, &kept()).is_empty());
+    assert!(found_signatures(&found, &MaskSettings { stamps: masking::StampRule::Masked, ..MaskSettings::default() }).is_empty());
+}
+
+#[test]
 fn with_stamps_masked_over_as_before_the_officers_box_is_masked_stamp_and_all() {
     // the rule older manifests recorded as "mask_stamps": masks stay on the stamp
     let ts = templates();

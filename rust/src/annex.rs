@@ -234,7 +234,7 @@ pub fn markdown(f: &Value, controller: Option<&Controller>, retention: Option<&s
     s += &table(&f["held_reasons"], ("Why pages were held", "Pages"));
     s += "\n## 5. Measures and safeguards\n\n";
     s += "- Only 8×8 blocks are blacked; every other block is the original's data, and each form's manifest, signed with an encrypted Ed25519 key, lists them. A hash-chained ledger and a Merkle batch root fix the record; anyone can check a published form against its original with `rfpii verify`.\n";
-    s += "- Results regions and stamps are protected regions no mask may touch (a stamp except along a field's line across it), checked before publishing and by `verify`.\n";
+    s += "- Results regions and stamps are protected regions no mask may touch (a stamp except along a number's line across it, or a line through the middle of a signature's row), checked before publishing and by `verify`.\n";
     s += "- Gates before publishing: page alignment, table placement, the column edge check, the leak check (written characters in a row left unmasked), signature coverage. A page failing any is held, never published.\n";
     s += "- Each page carries a notice that it is a redacted copy, naming the original by its hash.\n";
     s += "- Forms found leaking after release are withdrawn (`rfpii withdraw`) and the withdrawal is recorded in the ledger; signing keys can be rotated and revoked there.\n";

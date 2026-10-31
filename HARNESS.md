@@ -42,14 +42,25 @@ inputs:                       # files, folders, zips; fetched by code, never by 
 instructions: |               # free text from the requester
   Hide ID numbers completely. Officers stamp over their details:
   hide what is under the stamps too. Keep the phone prefixes.
-outputs: /jobs/2013-34          # staging/, public/, review/, quarantine/, report.*
-sign_key: /keys/signing_key.pem
+policy: {ids: whole}          # optional: the policy (§3), used when no model compiles the instructions
+outputs: /jobs/2013-34        # staging/, public/, review/, quarantine/, report.*
+sign_key: /keys/signing_key.pem   # encrypted: its passphrase in $RFPII_SIGN_PASSWORD
+controller: /keys/controller.json # who publishes, on what legal basis (required)
+dpia: {reference: ODPC/DPIA/2026/14, submitted_on: 2026-08-01, status: submitted}
+templates: /opt/rfpii/templates
 models:                       # Ollama Cloud unless a host is given; see §5
   orchestrator: [qwen3.5:397b, kimi-k2.6, gpt-oss:120b]
   vision: [gemma4:31b, qwen3.5:397b]
-held_pages: cloud             # held pages go to the vision model too (§4.7, §7)
+  host: https://ollama.com
+held_pages: cloud             # held pages go to the vision model too (§4.7, §7); default none
 budget: {model_requests: 20000, hours: 12}
+certificate: /keys/signer.p12 # optional: PDFs digitally signed ($RFPII_CERT_PASSWORD)
+kenya_hosts: []               # model hosts in Kenya: calls to them are not transfers abroad
 ```
+
+Relative paths are taken from the job file's folder. `rfpii job job.yaml`
+runs it; the exit code is 0 if everything was released, 2 if anything was
+held or stays in `staging/`.
 
 No one approves a job's settings: the job runs as soon as it is given
 (§3).
@@ -66,6 +77,9 @@ The folder it fills:
 | `quarantine/` | pages withdrawn after QA, and why |
 | `defects/` | problems for the developers, with redacted evidence (§4.6) |
 | `report.md`, `report.json` | the job's outcome (§10) |
+| `spot_masks.json`, `pilot-note.json`, `signing_key.pub.pem` | the spot masks given (§4.6), the orchestrator's pilot note, the public key |
+| `incidents/` | leaks found after release, each with its notice draft (`rfpii job-incident`) |
+| `logs/redact.log` | what each `rfpii redact` process printed |
 
 ## 2. Rules the harness can't break
 
@@ -113,7 +127,7 @@ against this schema. Each field maps to `rfpii` flags:
 | `ids` | `three` (default) · `whole` | `--full-ids` |
 | `phones` | `tail` (default) · `whole` | `--full-phones` |
 | `hide`, `phone_tail` | characters hidden (3), digits counted from the end (6) | `--hide`, `--phone-tail` |
-| `stamps` | `bands` (default: a field's line across a stamp hidden, the rest verified) · `protected` | — · `--keep-stamps` |
+| `stamps` | `bands` (default: a number's line, or a line through a signature row's middle, hidden across a stamp; the rest verified) · `protected` | — · `--keep-stamps` |
 | `signatures` | `band` (only value) | — |
 | `uncertain_tables` | `widen` (default) · `hold` · `hide_columns_if_reviewed` | `--strict-structure` · `--vlm-rescue --vlm-audit` |
 | `vision_review` | `sample` (default, §8) · `every_page` | — · `--vlm-audit` |
@@ -147,9 +161,21 @@ settled by fixed rules, not by asking:
 
 ## 4. The process
 
-The phases are fixed, in code. Within a phase, the orchestrator works in a
-loop with the phase's tools until it returns the phase's structured
-verdict. The loop has a step limit and a share of the budget.
+The phases are fixed, in code. In this version the models are asked at
+fixed points of each phase, every time for JSON in a fixed schema, never in
+a free tool-calling loop (`rust/src/job/models.rs`):
+- the orchestrator compiles the instructions into the policy (§3), writes
+  the pilot note, sorts held pages from their diagnostics when their images
+  stay on the machine, and may call a group's confirmed leaks a pattern
+  (never the reverse: three of a kind are a pattern whatever it says);
+- the vision model reviews crops of published pages (§4.5), sorts held
+  pages from their triage views, and locates the fields of a held page of
+  the right form (§4.7).
+
+Code does everything else: which pages are sampled, what is redacted again,
+what is quarantined, what is released. A loop of the orchestrator with the
+phase's tools, a step limit and a share of the budget, as first designed,
+is left for when the fixed points prove too narrow.
 
 | Phase | What it does | Done by hand in 2013 |
 |---|---|---|
@@ -215,7 +241,8 @@ Code checks the plan against the machine and refuses one that can't fit:
 - **Going on.** The full run goes ahead only if:
   - the pilot found no confirmed leak that remediation (§4.6) couldn't
     clear;
-  - each group's publish rate is within what the plan expected.
+  - each group's publish rate is within what the plan expected (in v1: at
+    least half of its pilot published).
 
   A group that fails is set to "review only": it is run, but nothing from
   it is released until its problem is understood.
@@ -226,7 +253,9 @@ Code checks the plan against the machine and refuses one that can't fit:
 
 - **One file at a time.** One `rfpii redact` process per source file, as in
   the 2013 run, so that one file's memory doesn't add to another's and a
-  crash costs one file.
+  crash costs one file. Files of one document each (KIEMS forms, photos)
+  go 200 to a process: starting a process per file would cost more than
+  redacting it.
 - **Resumable.** With `--resume` (new, §6), pages already in the ledger with
   the same settings are skipped.
 - **A heartbeat every minute**, recorded in the journal: pages done, rate,
@@ -381,22 +410,22 @@ The report is described in §10.
 The orchestrator acts only through these. Each takes and returns JSON, and
 is an `rfpii` subcommand, so it can be tested without a model.
 
-| Tool | Kind | Exists? |
+| Tool | Kind | Built as (v1, §13) |
 |---|---|---|
-| `inventory(inputs)` → files, pages, kinds, hashes, duplicates, broken files, groups | read | new: `rfpii inventory` |
-| `redact(group or pages, policy, plan)` → run id | write (staging) | `rfpii redact`, plus `--resume`, `--pages`, `--spot-masks` (new) |
-| `status(run)` → heartbeat | read | new (from the ledger and the process) |
-| `stats(run, group?)` → counts, normalised held reasons, mask modes | read | new: `rfpii stats` (what `summary.py` did) |
-| `risk(run, group?)` → pages ranked by the signals of §8 | read | new: `rfpii stats --risk` (`empty_sig.py`, `ink_check.py`, `id_in_stamp.py`) |
-| `crop(manifest, region)` → image, for a model | read; the only image path | new: `rfpii crop`. Refuses anything not in `staging/` with a verified manifest |
-| `review(crops, policy)` → confirmed findings | model | the find and check of `vlm.rs`, made a subcommand |
+| `inventory(inputs)` → files, pages, kinds, hashes, duplicates, broken files, groups | read | `rfpii inventory`; also PDFs that open only repaired (truncated downloads) |
+| `redact(group or pages, policy, plan)` → run id | write (staging) | `rfpii redact`, plus `--resume`, `--pages`, `--base`, `--spot-masks` |
+| `status(run)` → heartbeat | read | heartbeats in the journal, a minute apart |
+| `stats(run, group?)` → counts, normalised held reasons, mask modes | read | `rfpii stats` (what `summary.py` did) |
+| `risk(run, group?)` → pages ranked by the signals of §8 | read | `rfpii stats --risk` (`empty_sig.py`, `ink_check.py`, `id_in_stamp.py`) |
+| `crop(manifest, region)` → image, for a model | read; the only image path | `rfpii crop`. Takes a manifest beside its PDF, and renders only once `verify` passes; in a job, only from `staging/` |
+| `review(crops, policy)` → confirmed findings | model | the find and check of `vlm.rs`, run by the job on crops |
 | `verify(pages, rerun?)` → pass or fail per check | read | `rfpii verify` |
-| `diagnose(held page)` → text diagnostics (§4.7) | read | new: `rfpii diagnose` |
-| `held_view(held page, triage or locate)` → image, for a model | read; held pages' only image path | new: `rfpii held-view`. Only with `held_pages: cloud`; full resolution only to locate fields on a page triage found to be of the right kind |
-| `spot_mask(page, findings)` → the page redacted again | write (staging) | new: `redact --spot-masks` |
-| `quarantine(pages, reason)` | write | new (moves files; journal entry) |
-| `defect(title, signal, pages, crops)` | write | new (a file in `defects/`) |
-| `release(group)` | write | new; runs only if the gate passes |
+| `diagnose(held page)` → text diagnostics (§4.7) | read | `rfpii diagnose` |
+| `held_view(held page, triage or locate)` → image, for a model | read; held pages' only image path | `rfpii held-view --job`. Only with `held_pages: cloud`; full resolution only to locate fields on a page triage found to be of the right kind (a decision in the journal) |
+| `spot_mask(page, findings)` → the page redacted again | write (staging) | `redact --spot-masks`, from findings by their journal ids |
+| `quarantine(pages, reason)` | write | moves files to `quarantine/`, with why; journal entry |
+| `defect(title, signal, pages, crops)` | write | `defects/<group>-<kind>.json`, with crops as published |
+| `release(group)` | write | runs only if the gate passes |
 
 Code checks each write tool's preconditions:
 - a spot mask needs a confirmed check, by its id in the journal;
@@ -481,6 +510,11 @@ A group is released only if all of these hold, checked by code:
    the job's journal shows its flags on every redact call.
 7. Every instruction was met. If the instructions asked to hide something
    the redactor can't (§3), nothing from the job is released.
+8. The processing may start under the Data Protection Act s.31: the job's
+   DPIA is approved (or deemed approved), or was submitted to the
+   Commissioner at least 60 days before the job.
+9. The controller record (`controller.json`) loads, with its legal basis,
+   purpose and the operator's role.
 
 A failed condition holds the group; the report names it.
 
@@ -551,7 +585,78 @@ on jobs whose answers are known.
 It is built inside `rfpii` (`rust/src/job/`), reusing the Ollama client and
 guard of `vlm.rs`: one binary, one privacy guard, and the same tests.
 
-## 13. Decisions and open questions
+## 13. What is built (v1)
+
+Milestones 1 to 3 of §12, in `rust/src/job/` and `rust/src/cli_job.rs`:
+
+| | Built | As |
+|---|---|---|
+| 1 | `rfpii inventory`, `stats [--risk]`, `crop`, `held-view`, `diagnose`; `redact --resume --pages --base --spot-masks` | JSON tools, no model; spot masks recorded in the manifest and replayed by `verify --rerun` |
+| 2 | `rfpii job` with fixed phases; the journal; the 0.5% sampling rule (`sample.rs`); the gate with a DPIA and a controller condition; the report; `rfpii job-incident` | without models a job runs to its report, and nothing is released (conditions 3 and 4 need a review) |
+| 3 | the models at fixed points; visual review of crops (find, then check); remediation by spot masks, patterns, quarantine and defects; held pages to the cloud as triage views and, to locate fields, at full resolution; the guard (`vlm::Guard`) and the scrubber; the canary tests | tested end to end against a stub model host |
+
+How some of it works:
+- **The guard.** Every model client of a job carries it. `crop` and
+  `held_view` register each image they make; `find`, `check` and `locate`
+  may send views cut from a registered image, and nothing else. Every
+  request is checked before it leaves: an image not registered, or text
+  with a run of five digits, is refused. Each image sent is journalled
+  with the tool image it came from.
+- **The scrubber** (`scrub.rs`). Runs of five or more digits become `#` in
+  all text sent; quoted text in what the redactor wrote (reasons, notes)
+  becomes `'…'`; only allow-listed fields of a record are sent. The
+  requester's instructions keep their quotes: they are not read off a form,
+  and an apostrophe is not a quote.
+- **The policy backstop.** Whatever compiled the policy, instructions to
+  hide names or results are also found by plain matching, sentence by
+  sentence, and made unsupported (§3): a model that misses one can't get a
+  job released against it.
+- **Without a policy.** With no orchestrator, the job file's `policy` is
+  the compiled policy; with neither, the defaults, and instructions nothing
+  compiled can't be shown to be met, so nothing is released.
+- **Risk signals** (`stats --risk`, from manifests only): fields hidden
+  whole; an officer's signature line judged empty on a stamped page;
+  writing left visible on a stamp; a field's line hidden across one;
+  collateral-text notes; a page read at a quarter turn; fields read unlike
+  the other pages of its template (at least five), and ID numbers with
+  fewer characters than theirs. Pages scoring 3 or more are all reviewed.
+- **Triage without models** sorts held pages by fixed rules on their
+  diagnostics: blank (ink under 0.5%), tally sheet (the word TALLY on a
+  page that names no form and that no template matched: Form 34A's own
+  title says "tallying"), faint (contrast under 25 or OCR confidence under
+  0.6), turned, not a form (no printed word of the vocabulary), not read.
+- **Incidents.** `rfpii job-incident JOB_DIR PDF --reason TEXT --kind KIND`
+  withdraws the form (`rfpii withdraw`), counts whose data it holds from its
+  masks' role tags, sets the s.43 deadlines (the Commissioner in 72 hours;
+  the controller in 48 if the operator is its processor), drafts the notice
+  under `incidents/` for a person to send, and re-opens the group at its
+  third leak of one kind since release (gate condition 5).
+
+Not built, and why:
+- **`status` and `review` as subcommands.** The heartbeat goes to the
+  journal, and the review runs in the job's process, where its guard is.
+- **Tiling crops** (§4.5): only once the evaluation (§11) shows it finds as
+  much as single crops.
+- **`hide_columns_if_reviewed`** needs the review inside `redact`
+  (`--vlm-rescue --vlm-audit`); a policy asking for it runs as `hold` (more
+  hidden), noted as raised.
+- **Retrying a held page with another reader**, and running the pages a
+  defect touched again with a new version and comparing masks (§4.6): the
+  report lists them for people.
+- **Risk signals not in the manifests:** a field near a stamp's ring or the
+  page edge, OCR confidence on the labels, a leak check one short of its
+  threshold. They need the redactor to record them first.
+- **Reviews kept across runs.** A job run again (to resume it) redacts only
+  what isn't done, but verifies and reviews again; the reviews already in
+  the journal are not reused.
+- **Model fallbacks during a run.** Each role's first available model is
+  chosen at start (§5); one that fails later gives no decision (the safe
+  side) rather than passing to the next.
+- **Requests in parallel.** Model calls go one at a time, so each image
+  sent is journalled with its call.
+- **Milestone 4**, the evaluation of §11.
+
+## 14. Decisions and open questions
 
 Decided:
 - **No one approves a job's settings.** The policy runs as compiled, and
@@ -561,6 +666,8 @@ Decided:
 - **Held pages go to a vision model on Ollama Cloud** (§4.7): a triage view
   for every held page, and full resolution to locate fields where that
   could get a page published.
+- **The risk threshold stays at 3.** On the 2022 Forms 34A it sends about
+  41% of pages to the vision review (87 of 214); that share is accepted.
 
 Open:
 - At 50,000 forms, is `--vlm-audit` on every page affordable? If so, the
