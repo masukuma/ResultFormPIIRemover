@@ -262,6 +262,13 @@ Useful flags:
   SHA-256) and the page, and `verify` checks it against that page of the
   original.
 
+## As an HTTP API
+
+`rfpii-api` (`api/`) serves the harness as a paid product: clients upload
+forms, start jobs, download what the release gate let out, and anyone can
+verify a published form. It runs `rfpii job` for each job and charges per
+released form ([PRICING.md](PRICING.md)). See [API.md](API.md).
+
 ## Adding a form type
 
 1. **Reference image:** pick a flat, sharp photo of the form and **erase the
