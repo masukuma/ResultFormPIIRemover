@@ -1256,14 +1256,86 @@ fn free_signatures(l: &mut Layout, top: f64, passes: &[usize], strict: bool) -> 
         }
     }
     let h = TEXT_H;
+    // words read as capitals with fair confidence (a comment, a name, a
+    // date): a signature's mask is cut back off them, so the comments stay
+    // readable. Only words beside the signature: one over its writing may
+    // be the signature itself, read as letters
+    let lines: Vec<&OLine> = l.lines.iter().filter(|ln| ln.cy() >= top && !stamps::is_stamp_text(&ln.text)).collect();
+    let words = capital_words(&lines);
     for (bx, why) in found {
         let cy = (bx.1 + bx.3) / 2.0;
-        let mut z = Zone::new(&format!("signature-text@{:.0},{:.0}", bx.0, cy), [bx.0 - 4.0, bx.1 - 4.0, bx.2 - bx.0 + 8.0, bx.3 - bx.1 + 8.0], "signature");
+        let padded = (bx.0 - 4.0, bx.1 - 4.0, bx.2 + 4.0, bx.3 + 4.0);
+        let core = |w: &BoxF| (bx.2.min(w.2) - bx.0.max(w.0)).max(0.0) * (bx.3.min(w.3) - bx.1.max(w.1)).max(0.0);
+        let beside: Vec<BoxF> = words.iter().copied().filter(|w| core(w) <= 0.15 * (bx.2 - bx.0) * (bx.3 - bx.1)).collect();
+        // nothing left once cut: masked whole, as found
+        let m = off_words(padded, &beside).unwrap_or(padded);
+        if m != padded {
+            l.notes.push(format!("collateral text: a signature's mask at y={:.0} cut back off words read as capitals", cy));
+        }
+        let mut z = Zone::new(&format!("signature-text@{:.0},{:.0}", bx.0, cy), [m.0, m.1, m.2 - m.0, m.3 - m.1], "signature");
         z.search = Some([0.3 * h, 0.3 * h]);
         l.fields.push(Field { kind: "signature".into(), zones: vec![z], source: "free-text".into(), label: format!("unlabelled signature ({})", why), label_box: bx });
         l.notes.push(format!("unlabelled handwriting at y={:.0} taken for a signature ({})", cy, why));
     }
     Ok(())
+}
+
+/// The boxes of the words OCR read as capitals (or digits) with fair
+/// confidence: three or more letters or digits, seven in ten of them
+/// capitals or digits, read at 0.6 or better.
+fn capital_words(lines: &[&OLine]) -> Vec<BoxF> {
+    let mut out = Vec::new();
+    for ln in lines {
+        let n = ln.chars.len();
+        if n == 0 || ln.pos.len() != n {
+            continue;
+        }
+        let b = ln.bbox();
+        let cw = (b.2 - b.0) / n as f64;
+        let mut i = 0;
+        while i < n {
+            if ln.chars[i].is_whitespace() {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < n && !ln.chars[i].is_whitespace() {
+                i += 1;
+            }
+            let al: Vec<usize> = (start..i).filter(|&k| ln.chars[k].is_alphanumeric()).collect();
+            if al.len() < 3 {
+                continue;
+            }
+            let caps = al.iter().filter(|&&k| ln.chars[k].is_ascii_uppercase() || ln.chars[k].is_ascii_digit()).count();
+            let conf = util::np_mean(&al.iter().map(|&k| if ln.probs.len() == n { ln.probs[k] } else { ln.score }).collect::<Vec<_>>());
+            if caps as f64 >= 0.7 * al.len() as f64 && conf >= 0.6 {
+                out.push((ln.x_at(ln.pos[start]) - 0.5 * cw, b.1, ln.x_at(ln.pos[i - 1]) + 0.5 * cw, b.3));
+            }
+        }
+    }
+    out
+}
+
+/// `b` cut back off every box in `words` it overlaps, keeping the largest
+/// part left on one side of each; None if nothing is left (it lies within
+/// the words).
+fn off_words(b: BoxF, words: &[BoxF]) -> Option<BoxF> {
+    let mut b = b;
+    for &w in words {
+        let (ix, iy) = (b.2.min(w.2) - b.0.max(w.0), b.3.min(w.3) - b.1.max(w.1));
+        if ix <= 0.0 || iy <= 0.0 {
+            continue;
+        }
+        // left of the words, right of them, above, below
+        let sides = [(b.0, b.1, b.2.min(w.0), b.3), (b.0.max(w.2), b.1, b.2, b.3), (b.0, b.1, b.2, b.3.min(w.1)), (b.0, b.1.max(w.3), b.2, b.3)];
+        let area = |s: &BoxF| (s.2 - s.0).max(0.0) * (s.3 - s.1).max(0.0);
+        let best = sides.iter().copied().max_by(|p, q| area(p).partial_cmp(&area(q)).unwrap())?;
+        if area(&best) <= 0.0 {
+            return None;
+        }
+        b = best;
+    }
+    Some(b)
 }
 
 /// The signatures `free_signatures` finds, with names' doubtful end letters

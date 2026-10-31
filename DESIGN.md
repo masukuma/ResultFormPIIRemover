@@ -1181,6 +1181,21 @@ hidden whole (the box of the writing). The template's own printed letters
 are taken out first, and stamps found anywhere on the page are protected,
 including one the area cuts through.
 
+A signature's box is cut back off the words beside it that OCR read as
+capitals with fair confidence (three or more letters or digits, seven in
+ten capitals or digits, read at 0.6 or better), so a comment, a name or a
+date next to a sign-off stays readable: the comments are where the forms
+record reasons for refusal, which the courts read
+(`legal/C-recommendations.md` §2.4). Words over the signature's own
+writing (more than 15% of it) are not counted, since they may be the
+signature read as letters, and a box that would be cut to nothing is masked
+whole. Each cut is noted (`collateral text: …`). On the two 2022 Form 34A
+zips (215 forms) masks were cut back 19 times on 12 pages; put side by side
+with the earlier outputs, no signature shows that didn't before, and words
+such as a name's last letters are back. A first version cut masks back off
+whole OCR lines read as capitals: a signature written on the same line as a
+name and a date ("AMINA OMAR [signature] 09-08-2022") then lost its mask.
+
 The rule is stricter here, because the comments are where most of the
 handwriting is: block capitals, often across the security print, which OCR
 misses much of. A word OCR never finds as a line reads as nothing, the same

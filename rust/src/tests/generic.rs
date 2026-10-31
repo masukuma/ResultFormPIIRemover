@@ -525,3 +525,15 @@ fn a_word_read_on_an_officers_signature_line_was_written() {
     assert_eq!(px(560, 214), 0, "the signature is no print");
     assert_eq!((px(300, 224), px(120, 461), px(900, 222)), (255, 255, 255));
 }
+
+#[test]
+fn a_signatures_mask_is_cut_back_off_words_in_capitals() {
+    // a signature box reaching into a comment's words on its right
+    let words = [(100.0, 0.0, 300.0, 30.0)];
+    assert_eq!(off_words((20.0, 0.0, 140.0, 30.0), &words), Some((20.0, 0.0, 100.0, 30.0)));
+    // ... or hanging down into the line below
+    assert_eq!(off_words((120.0, -60.0, 200.0, 10.0), &words), Some((120.0, -60.0, 200.0, 0.0)));
+    // nowhere near words: unchanged; wholly within them: not a signature's
+    assert_eq!(off_words((400.0, 0.0, 450.0, 30.0), &words), Some((400.0, 0.0, 450.0, 30.0)));
+    assert_eq!(off_words((150.0, 5.0, 200.0, 25.0), &words), None);
+}
