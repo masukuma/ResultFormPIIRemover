@@ -197,6 +197,13 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
     };
     let m = mf::read_json(&manifest_path)?;
     let pdf = std::fs::read(a.redacted)?;
+    // the notice below each page: there, and saying what the manifest says
+    if let Some(n) = m["output"]["notice"].as_str() {
+        let want = format!("({}) Tj", io::pdf_text(n));
+        let notices = io::pdf_notices(&pdf)?;
+        let ok = !notices.is_empty() && notices.iter().all(|c| c.as_deref().is_some_and(|c| c.contains(&want)));
+        r.add(ok, if ok { "each page carries the redaction notice the manifest records".to_string() } else { "a page lacks the redaction notice the manifest records, or shows another".to_string() });
+    }
     // who published it, and on what legal basis (covered by the signature)
     if let Some(c) = m.get("controller").filter(|c| !c.is_null()) {
         r.notes.push(format!(
@@ -210,16 +217,42 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
     }
 
     // 1. signature and ledger
+    let ledger = match a.ledger {
+        Some(l) => Some(mf::ledger_check(l)?),
+        None => None,
+    };
     if let Some(pk) = a.pubkey {
-        let why = mf::check_signature(&m, &mf::load_public(pk)?);
-        let ok = why.is_empty();
-        r.add(ok, if ok { "manifest signature valid".to_string() } else { format!("manifest signature: {}", why) });
+        let published = mf::load_public(pk)?;
+        // a key the published one handed over to in the ledger, unless revoked
+        let key = match &ledger {
+            Some((_, _, entries)) => mf::signing_key(&m, &published, entries),
+            None => Ok((published, vec![])),
+        };
+        match key {
+            Ok((k, chain)) => {
+                let why = mf::check_signature(&m, &k);
+                let ok = why.is_empty();
+                r.add(ok, if ok { "manifest signature valid".to_string() } else { format!("manifest signature: {}", why) });
+                r.notes.extend(chain);
+            }
+            Err(why) => {
+                r.add(false, format!("manifest signature: {}", why));
+            }
+        }
     } else {
         r.notes.push("no public key given: signature not checked".into());
     }
-    if let Some(l) = a.ledger {
-        let (ok, why, entries) = mf::ledger_check(l)?;
+    if let (Some((ok, why, entries)), Some(_)) = (ledger, a.ledger) {
         r.add(ok, if ok { "ledger hash chain intact".to_string() } else { why });
+        // taken down since (a leak found), and what replaced it
+        let own = mf::digest(&m);
+        match entries.iter().find(|e| e["type"] == "withdrawal" && e["manifest_sha256"].as_str() == Some(own.as_str())) {
+            Some(w) => r.add(false, format!("not withdrawn: withdrawn in ledger entry {} ({}): {}", w["seq"], w["at"].as_str().unwrap_or("?"), w["reason"].as_str().unwrap_or(""))),
+            None => r.add(true, "not withdrawn"),
+        };
+        if let Some(s) = m.get("supersedes").filter(|s| !s.is_null()) {
+            r.notes.push(format!("this form replaces {} (manifest {}), withdrawn", s["name"].as_str().unwrap_or("?"), s["manifest_sha256"].as_str().unwrap_or("?")));
+        }
         let h = mf::digest(&m);
         let hit = entries.iter().find(|e| e["manifest_sha256"].as_str() == Some(h.as_str()));
         match hit {
@@ -395,6 +428,8 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
             controller: None,
             transfers: None,
             kenya_hosts: vec![],
+            supersedes: vec![],
+            notice: false,
         };
         if let Some(o) = m.get("ocr") {
             let now = crate::ocr::info().map(|i| i["models"].clone()).unwrap_or(Value::Null);

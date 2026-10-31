@@ -22,20 +22,19 @@ pub fn digest(v: &Value) -> String {
 
 // --- keys -------------------------------------------------------------------------------
 
-pub fn keygen(directory: &Path) -> Result<(PathBuf, PathBuf)> {
+/// A new key pair in `directory`. With a passphrase the private key is
+/// written encrypted (PKCS#8, AES-256-CBC with a key derived from the
+/// passphrase): a stolen private key is a reportable breach (Second
+/// Schedule of the Data Protection (General) Regulations), and an encrypted
+/// one is of no use without the passphrase.
+pub fn keygen(directory: &Path, passphrase: Option<&str>) -> Result<(PathBuf, PathBuf)> {
     std::fs::create_dir_all(directory)?;
     let mut seed = [0u8; 32];
     getrandom_fill(&mut seed)?;
     let key = SigningKey::from_bytes(&seed);
     let priv_path = directory.join("signing_key.pem");
     let pub_path = directory.join("signing_key.pub.pem");
-    let pem = key.to_pkcs8_pem(ed25519_dalek::pkcs8::spki::der::pem::LineEnding::LF).map_err(|e| anyhow!("{e}"))?;
-    std::fs::write(&priv_path, pem.as_bytes())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&priv_path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    write_private(&key, &priv_path, passphrase)?;
     let pubpem = key
         .verifying_key()
         .to_public_key_pem(ed25519_dalek::pkcs8::spki::der::pem::LineEnding::LF)
@@ -44,13 +43,60 @@ pub fn keygen(directory: &Path) -> Result<(PathBuf, PathBuf)> {
     Ok((priv_path, pub_path))
 }
 
+/// Write `key` as PKCS#8 PEM, encrypted with `passphrase` if given,
+/// readable by its owner only.
+pub fn write_private(key: &SigningKey, path: &Path, passphrase: Option<&str>) -> Result<()> {
+    let pem: Vec<u8> = match passphrase {
+        Some(p) => {
+            let k = openssl::pkey::PKey::private_key_from_raw_bytes(&key.to_bytes(), openssl::pkey::Id::ED25519)?;
+            k.private_key_to_pem_pkcs8_passphrase(openssl::symm::Cipher::aes_256_cbc(), p.as_bytes())?
+        }
+        None => key.to_pkcs8_pem(ed25519_dalek::pkcs8::spki::der::pem::LineEnding::LF).map_err(|e| anyhow!("{e}"))?.as_bytes().to_vec(),
+    };
+    std::fs::write(path, &pem)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+/// The passphrase of an encrypted signing key: `$RFPII_SIGN_PASSWORD`, or
+/// asked for on the terminal.
+pub fn sign_passphrase(what: &str) -> Result<String> {
+    if let Ok(p) = std::env::var("RFPII_SIGN_PASSWORD") {
+        return Ok(p);
+    }
+    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        return Ok(rpassword::prompt_password(format!("passphrase for {}: ", what))?);
+    }
+    bail!("{} is encrypted: set RFPII_SIGN_PASSWORD or run on a terminal", what)
+}
+
 pub fn getrandom_fill(buf: &mut [u8]) -> Result<()> {
     use rand::TryRng;
     rand::rngs::SysRng.try_fill_bytes(buf).map_err(|e| anyhow!("no system randomness: {e}"))
 }
 
 pub fn load_private(path: &Path) -> Result<SigningKey> {
+    load_private_with(path, None)
+}
+
+/// A private key; an encrypted one with `passphrase`, or `sign_passphrase`.
+pub fn load_private_with(path: &Path, passphrase: Option<&str>) -> Result<SigningKey> {
     let pem = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    if pem.contains("ENCRYPTED PRIVATE KEY") {
+        let pass = match passphrase {
+            Some(p) => p.to_string(),
+            None => sign_passphrase(&path.display().to_string())?,
+        };
+        let k = openssl::pkey::PKey::private_key_from_pem_passphrase(pem.as_bytes(), pass.as_bytes())
+            .map_err(|_| anyhow!("{}: wrong passphrase, or not an encrypted private key", path.display()))?;
+        let raw = k.raw_private_key().map_err(|e| anyhow!("{}: not an Ed25519 private key: {e}", path.display()))?;
+        let seed = <[u8; 32]>::try_from(raw.as_slice()).map_err(|_| anyhow!("{}: not an Ed25519 private key", path.display()))?;
+        return Ok(SigningKey::from_bytes(&seed));
+    }
     SigningKey::from_pkcs8_pem(&pem).map_err(|e| anyhow!("{}: not an Ed25519 private key: {e}", path.display()))
 }
 
@@ -107,7 +153,8 @@ fn entry_hash(e: &Value) -> String {
     digest(&Value::Object(m))
 }
 
-pub fn ledger_append(path: &Path, manifest_hash: &str, source_sha256: &str, output_sha256: &str, name: &str) -> Result<Value> {
+/// The last entry's hash and the next sequence number.
+fn ledger_tail(path: &Path) -> Result<(String, i64)> {
     let (mut prev, mut seq) = ("0".repeat(64), 0i64);
     if let Ok(text) = std::fs::read_to_string(path) {
         if let Some(last) = text.trim().lines().last() {
@@ -116,10 +163,81 @@ pub fn ledger_append(path: &Path, manifest_hash: &str, source_sha256: &str, outp
             seq = l["seq"].as_i64().unwrap_or(0) + 1;
         }
     }
+    Ok((prev, seq))
+}
+
+pub fn ledger_append(path: &Path, manifest_hash: &str, source_sha256: &str, output_sha256: &str, name: &str) -> Result<Value> {
+    let (prev, seq) = ledger_tail(path)?;
     let mut e = json!({"seq": seq, "prev": prev, "name": name, "manifest_sha256": manifest_hash,
                        "source_sha256": source_sha256, "output_sha256": output_sha256});
     let h = entry_hash(&e);
     e["entry_hash"] = Value::String(h);
+    write_entry(path, &e)?;
+    Ok(e)
+}
+
+/// Append a signed event to the ledger: a key rotation, a key revocation,
+/// or the withdrawal of a published form. `fields` go in with `type` and
+/// `at`; the entry is signed by `key` and chained like any other.
+pub fn ledger_event(path: &Path, kind: &str, fields: Value, key: &SigningKey) -> Result<Value> {
+    let (prev, seq) = ledger_tail(path)?;
+    let mut e = json!({"seq": seq, "prev": prev, "type": kind, "at": crate::process::utc_now()});
+    for (k, v) in fields.as_object().cloned().unwrap_or_default() {
+        e[k] = v;
+    }
+    let mut e = sign(&e, key);
+    let h = entry_hash(&e);
+    e["entry_hash"] = Value::String(h);
+    write_entry(path, &e)?;
+    Ok(e)
+}
+
+/// "" if a ledger event's signature is valid under `k`, else the reason.
+pub fn check_event(e: &Value, k: &VerifyingKey) -> String {
+    let mut m = e.as_object().cloned().unwrap_or_default();
+    m.remove("entry_hash");
+    check_signature(&Value::Object(m), k)
+}
+
+/// The key that signed `m`, reached from the `published` key through the
+/// ledger's key rotations (each signed by the key it replaces), or the
+/// reason it can't be trusted: not reached, or revoked before `m` entered
+/// the ledger or within the window the revocation names (`since`).
+pub fn signing_key(m: &Value, published: &VerifyingKey, entries: &[Value]) -> std::result::Result<(VerifyingKey, Vec<String>), String> {
+    let kid = m["signature"]["key_id"].as_str().unwrap_or("").to_string();
+    let mut key = *published;
+    let mut notes = Vec::new();
+    for e in entries.iter().filter(|e| e["type"] == "key_rotation") {
+        if key_id(&key) == kid {
+            break;
+        }
+        if e["old_key_id"].as_str() != Some(key_id(&key).as_str()) || !check_event(e, &key).is_empty() {
+            continue;
+        }
+        let Ok(next) = VerifyingKey::from_public_key_pem(e["new_public_key"].as_str().unwrap_or("")) else { continue };
+        notes.push(format!("key {} replaced by {} (ledger entry {}, {})", key_id(&key), key_id(&next), e["seq"], e["at"].as_str().unwrap_or("?")));
+        key = next;
+    }
+    if key_id(&key) != kid {
+        return Err(format!("signed with key {}, which the published key {} does not lead to through the ledger", kid, key_id(published)));
+    }
+    let own = digest(m);
+    let entered = entries.iter().find(|e| e["manifest_sha256"].as_str() == Some(own.as_str())).and_then(|e| e["seq"].as_i64());
+    for e in entries.iter().filter(|e| e["type"] == "key_revocation" && e["key_id"].as_str() == Some(kid.as_str())) {
+        if !check_event(e, &key).is_empty() {
+            continue;
+        }
+        let after = entered.is_some_and(|s| Some(s) > e["seq"].as_i64());
+        let within = e["since"].as_str().is_some_and(|since| m["created_at"].as_str().is_some_and(|c| c >= since));
+        if after || within {
+            return Err(format!("signed with key {}, revoked in ledger entry {} ({})", kid, e["seq"], e["reason"].as_str().unwrap_or("")));
+        }
+    }
+    Ok((key, notes))
+}
+
+/// One ledger line, keys sorted as Python's json.dumps(sort_keys=True).
+fn write_entry(path: &Path, e: &Value) -> Result<()> {
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     // python: json.dumps(entry, sort_keys=True) -> ", " and ": " separators
     let mut sorted = String::new();
@@ -136,7 +254,7 @@ pub fn ledger_append(path: &Path, manifest_hash: &str, source_sha256: &str, outp
     }
     sorted.push('}');
     writeln!(f, "{}", sorted)?;
-    Ok(e)
+    Ok(())
 }
 
 pub fn ledger_check(path: &Path) -> Result<(bool, String, Vec<Value>)> {

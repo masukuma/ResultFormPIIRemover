@@ -58,9 +58,23 @@ compiler and clang.
 ## Run
 
 ```bash
-# Once: a signing key for the manifests. Keep the private key offline;
-# publish the .pub.pem.
+# Once: a signing key for the manifests, its private key encrypted with a
+# passphrase ($RFPII_SIGN_PASSWORD, or asked for). Keep it offline; publish
+# the .pub.pem.
 rfpii keygen keys/
+
+# A key to retire, or lost: hand over to a new one, or revoke it, in the
+# ledger. Forms keep verifying with the first published key; those a
+# revoked key signs from then on (or since --since) don't.
+rfpii rotate-key --key keys/signing_key.pem --new keys2/ --ledger public/ledger.jsonl
+rfpii revoke-key --key keys2/signing_key.pem --ledger public/ledger.jsonl --reason "laptop stolen"
+
+# A leak found after release: take the form down (out of public/, recorded
+# in the ledger; verify then reports it withdrawn), and republish it
+# corrected, naming what it replaces
+rfpii withdraw public/x.pdf --reason "phone number readable in row 3" --sign-key keys/signing_key.pem
+rfpii redact x.PDF --templates templates --out public --review review \
+    --sign-key keys/signing_key.pem --supersedes public-withdrawn/x.manifest.json
 
 # Once, unless you have a certificate: a self-signed certificate for the
 # PDFs' digital signatures. Publish signer.crt (or its SHA-256 fingerprint).
@@ -162,6 +176,14 @@ Useful flags:
   (model hosts with their country) and the DPIA reference. Checked when the
   run starts, its hash and main fields recorded in every manifest, and
   printed by `verify`. See `legal/C-recommendations.md` §2.9.
+- `--no-notice`: don't write the redaction notice. By default each published
+  page carries a line below it, outside the form image, saying it is a
+  redacted copy under the Data Protection Act, that the results are
+  unchanged, which original it was made from (its SHA-256) and how to check
+  it. `verify` checks the notice is there and says what the manifest
+  records.
+- `--supersedes MANIFEST`: the manifest of a withdrawn form this run
+  republishes; the new manifest names it.
 - `--kenya-host HOST`: a model host in Kenya. Every call that sends a page to
   any other remote host (the review, `--orient`, `--vlm-fallback`) is a
   transfer of personal data abroad, recorded in `<out>/transfers.jsonl` with

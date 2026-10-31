@@ -6,6 +6,8 @@
 //!     rfpii verify public/x.pdf --original x.PDF --pubkey keys/signing_key.pub.pem --ledger public/ledger.jsonl
 //!     rfpii preview templates/form34a_2022 -o preview.png
 
+mod cli_legal;
+
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use opencv::core::{Point, Scalar, Vector};
@@ -45,8 +47,14 @@ enum Cmd {
     Redact(RedactArgs),
     /// Prove a redacted form changed nothing but the listed blocks
     Verify(VerifyCli),
-    /// Create an Ed25519 signing key pair
-    Keygen { directory: PathBuf },
+    /// Create an Ed25519 signing key pair (the private key encrypted)
+    Keygen(cli_legal::KeygenArgs),
+    /// Hand signing over to a new key, recorded in the ledger
+    RotateKey(cli_legal::RotateKeyArgs),
+    /// Revoke a signing key (lost or stolen), recorded in the ledger
+    RevokeKey(cli_legal::RevokeKeyArgs),
+    /// Take a published form down (a leak found), recorded in the ledger
+    Withdraw(cli_legal::WithdrawArgs),
     /// Create a self-signed certificate for digitally signing the PDFs
     Certgen(CertgenArgs),
     /// Render template zones and protected regions for a visual check
@@ -208,6 +216,16 @@ struct RedactArgs {
     /// <out>/transfers.jsonl (Data Protection (General) Regulations reg. 41(2))
     #[arg(long = "kenya-host")]
     kenya_hosts: Vec<String>,
+    /// The manifest of a withdrawn form (rfpii withdraw) this run republishes
+    /// corrected (repeatable): matched by source file and page, and named in
+    /// the new manifest
+    #[arg(long)]
+    supersedes: Vec<PathBuf>,
+    /// Don't write the redaction notice below each published page (by
+    /// default a line outside the form image says it is a redacted copy,
+    /// names the original by its hash, and says how to check it)
+    #[arg(long)]
+    no_notice: bool,
     #[arg(long, default_value_t = 0.35)]
     min_score: f64,
     #[arg(long, default_value_t = 40)]
@@ -512,6 +530,8 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
         },
         transfers: Some(std::sync::Arc::new(rfpii::legal::Transfers::new(Path::new(&a.out).join("transfers.jsonl")))),
         kenya_hosts: a.kenya_hosts.clone(),
+        supersedes: a.supersedes.iter().map(|p| mf::read_json(p)).collect::<Result<_>>()?,
+        notice: !a.no_notice,
     };
     if a.vlm_rescue && !a.vlm_audit {
         anyhow::bail!("--vlm-rescue needs --vlm-audit: hiding a column whole is only safe when the review checks the result");
@@ -765,12 +785,6 @@ fn cmd_verify(a: VerifyCli) -> Result<i32> {
     Ok(if rep.ok() { 0 } else { 1 })
 }
 
-fn cmd_keygen(dir: &Path) -> Result<i32> {
-    let (p, q) = mf::keygen(dir)?;
-    println!("private key {} (keep offline/secret)\npublic key  {} (publish)  id {}", p.display(), q.display(), mf::key_id(&mf::load_public(&q)?));
-    Ok(0)
-}
-
 /// Draw zones (red blackout, purple signature, blue partial), protected
 /// results regions (green) and fence labels (orange) over the reference so
 /// they can be checked by eye.
@@ -916,7 +930,10 @@ fn main() {
     let r = match cli.cmd {
         Cmd::Redact(a) => cmd_redact(a),
         Cmd::Verify(a) => cmd_verify(a),
-        Cmd::Keygen { directory } => cmd_keygen(&directory),
+        Cmd::Keygen(a) => cli_legal::keygen(a),
+        Cmd::RotateKey(a) => cli_legal::rotate_key(a),
+        Cmd::RevokeKey(a) => cli_legal::revoke_key(a),
+        Cmd::Withdraw(a) => cli_legal::withdraw(a),
         Cmd::Certgen(a) => cmd_certgen(a),
         Cmd::Preview { template, output } => cmd_preview(&template, &output),
         Cmd::Propose(a) => cmd_propose(a),

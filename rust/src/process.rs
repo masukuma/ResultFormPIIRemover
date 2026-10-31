@@ -53,6 +53,24 @@ pub struct Config {
     pub transfers: Option<std::sync::Arc<crate::legal::Transfers>>,
     /// model hosts the operator names as in Kenya (not a transfer abroad)
     pub kenya_hosts: Vec<String>,
+    /// manifests of withdrawn forms this run republishes (matched by source
+    /// and page)
+    pub supersedes: Vec<Value>,
+    /// write a redaction notice on each page, below it, outside the image
+    pub notice: bool,
+}
+
+/// The line written below each published page: that it is a redacted copy,
+/// under what law, that the results are unchanged, which original it was
+/// made from and how to check it.
+pub fn notice_text(controller: Option<&str>, source_sha: &str, out_name: &str) -> String {
+    let by = controller.map(|c| format!("Published by {}. ", c)).unwrap_or_default();
+    format!(
+        "{}REDACTED COPY: personal data masked under Kenya's Data Protection Act 2019; results unchanged. Original SHA-256 {}. Check it: rfpii verify {} --original <the original form>",
+        by,
+        &source_sha[..16.min(source_sha.len())],
+        out_name
+    )
 }
 
 impl Config {
@@ -481,7 +499,9 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
             (img, sp.page_size, sp.place, (sp.rotate + turn).rem_euclid(360))
         })
         .collect();
-    let pdf = io::build_pdf(&items)?;
+    let out_name = out_rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let notice = cfg.notice.then(|| notice_text(cfg.controller.as_ref().and_then(|c| c.raw["controller"]["name"].as_str()), &source_sha, &out_name));
+    let pdf = io::build_pdf_with(&items, notice.as_deref())?;
     let created = utc_now();
     let pdf = match &cfg.pdf_signer {
         Some(s) => crate::pdfsign::sign_pdf(&pdf, s, &created)?,
@@ -512,13 +532,15 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
         "tool": tool_info(),
         "created_at": created,
         "source": source,
-        "output": {"file": out_rel.to_string_lossy(), "pdf_sha256": proof::sha256(&pdf)},
+        "output": {"file": out_rel.to_string_lossy(), "pdf_sha256": proof::sha256(&pdf), "notice": notice},
         "seed": format!("{:x}", seed),
         "settings": {"hide": cfg.mask.hide, "phone_tail": cfg.mask.phone_tail, "mask_stamps": cfg.mask.masks_stamps(), "stamps": cfg.mask.stamps.name(),
                      "full_ids": cfg.mask.full_ids, "full_phones": cfg.mask.full_phones,
                      "strict_structure": cfg.strict_structure, "generic": cfg.generic,
                      "align": cfg.align.to_json()},
         "controller": cfg.controller.as_ref().map(|c| c.summary()),
+        "supersedes": cfg.supersedes.iter().find(|o| o["source"]["sha256"] == source["sha256"] && o["source"]["page"] == source["page"])
+            .map(|o| json!({"manifest_sha256": crate::manifest::digest(o), "output_sha256": o["output"]["pdf_sha256"], "name": o["output"]["file"]})),
         "templates": tmap,
         "pages": mpages,
         "vlm_review": if reviews.is_empty() { Value::Null } else { Value::Array(reviews) },

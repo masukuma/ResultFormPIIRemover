@@ -21,7 +21,12 @@ fn tmpdir(name: &str) -> PathBuf {
 }
 
 fn rfpii(args: &[&str]) -> i32 {
-    let out = Command::new(env!("CARGO_BIN_EXE_rfpii")).args(args).env("RFPII_CERT_PASSWORD", "test-password").output().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rfpii"))
+        .args(args)
+        .env("RFPII_CERT_PASSWORD", "test-password")
+        .env("RFPII_SIGN_PASSWORD", "test-sign-password")
+        .output()
+        .unwrap();
     if !out.status.success() {
         eprintln!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     }
@@ -214,9 +219,13 @@ fn pdf_output_has_no_text_or_metadata() {
     let out = std::fs::read(root.join("out/in.pdf")).unwrap();
     let res = Document::load_mem(&out).unwrap();
     assert!(res.trailer.get(b"Info").is_err());
+    // the only text is the redaction notice the manifest records
+    let m: Value = serde_json::from_str(&std::fs::read_to_string(root.join("out/in.manifest.json")).unwrap()).unwrap();
+    let notice = format!("({}) Tj", io::pdf_text(m["output"]["notice"].as_str().unwrap()));
     for (_, id) in res.get_pages() {
         let text = String::from_utf8_lossy(&res.get_page_content(id)).into_owned();
-        assert!(!text.contains("Tj") && !text.contains("Tf"), "{}", text);
+        assert_eq!(text.matches("Tj").count(), 1, "{}", text);
+        assert!(text.contains(&notice) && !text.contains("0712345678"), "{}", text);
     }
     assert!(!String::from_utf8_lossy(&out).contains("JANE"));
 }
@@ -488,6 +497,49 @@ fn the_controller_record_and_whose_data_each_mask_holds_are_in_the_manifest() {
     // verify names the publisher
     let r = check(&root, &published(&root), None, &root.join("in").join(NAME), &[], None, None);
     assert!(r.notes.iter().any(|n| n.contains("published by Example Observer Group")), "{:?}", r.notes);
+}
+
+#[test]
+fn a_withdrawn_form_no_longer_verifies_and_its_replacement_names_it() {
+    let root = tmpdir("withdraw");
+    write_template(&root.join("templates").join("sample_rs1")).unwrap();
+    let (scan, _) = simulate_scan(&filled_form(4).unwrap(), 8, 2.0, 1.3).unwrap();
+    std::fs::create_dir_all(root.join("in")).unwrap();
+    let orig = root.join("in").join(NAME);
+    std::fs::write(&orig, image_pdf(PageImage::Jpeg(&io::encode(&scan, "jpg", 80).unwrap()), 1612.0, 2280.0)).unwrap();
+    assert_eq!(rfpii(&["keygen", s(&root.join("keys"))]), 0);
+    assert!(std::fs::read_to_string(root.join("keys/signing_key.pem")).unwrap().contains("ENCRYPTED"), "keys are encrypted by default");
+    let (input, tpl, out, review, key) = (root.join("in"), root.join("templates"), root.join("out"), root.join("review"), root.join("keys/signing_key.pem"));
+    let redact = |extra: &[&str]| {
+        let mut a = vec!["redact", s(&input), "--templates", s(&tpl), "--out", s(&out), "--review", s(&review), "--workers", "1", "--sign-key", s(&key), "--no-pdf-signature"];
+        a.extend_from_slice(extra);
+        assert_eq!(rfpii(&a), 0);
+    };
+    redact(&[]);
+    let pdf = published(&root);
+    let old = manifest(&root);
+    // the notice below the page says what it is, and verify checks it
+    assert!(old["output"]["notice"].as_str().unwrap().contains("REDACTED COPY"));
+    let r = check(&root, &pdf, None, &orig, &[], None, None);
+    assert!(r.ok(), "{}", r.text());
+    assert!(r.checks.iter().any(|(ok, m)| *ok && m.contains("redaction notice")));
+    assert!(r.checks.iter().any(|(ok, m)| *ok && m == "not withdrawn"));
+    // a leak is found: the form comes down, out of the published folder
+    assert_eq!(rfpii(&["withdraw", s(&pdf), "--reason", "a phone number readable in row 3", "--sign-key", s(&root.join("keys/signing_key.pem"))]), 0);
+    assert!(!pdf.exists());
+    let gone = root.join("out-withdrawn").join(NAME.replace(".PDF", ".pdf"));
+    assert!(gone.exists() && gone.with_extension("manifest.json").exists());
+    let r = check(&root, &gone, Some(&gone.with_extension("manifest.json")), &orig, &[], None, None);
+    assert!(!r.ok() && r.checks.iter().any(|(ok, m)| !ok && m.contains("withdrawn in ledger entry") && m.contains("row 3")), "{}", r.text());
+    // republished corrected, naming what it replaces
+    let old_path = root.join("old.manifest.json");
+    std::fs::write(&old_path, serde_json::to_string(&old).unwrap()).unwrap();
+    redact(&["--supersedes", s(&old_path)]);
+    let new = manifest(&root);
+    assert_eq!(new["supersedes"]["manifest_sha256"], rfpii::manifest::digest(&old));
+    let r = check(&root, &published(&root), None, &orig, &[], None, None);
+    assert!(r.ok(), "{}", r.text());
+    assert!(r.notes.iter().any(|n| n.contains("this form replaces")), "{:?}", r.notes);
 }
 
 #[test]

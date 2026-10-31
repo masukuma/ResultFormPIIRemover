@@ -288,6 +288,25 @@ fn as_f64(o: &Object) -> Option<f64> {
 }
 
 fn page_box(doc: &Document, page: ObjectId) -> Result<(f64, f64, f64, f64)> {
+    // a redaction notice's strip below the page is not the page's
+    let strip = doc.get_dictionary(page).ok().and_then(|d| d.get(b"RfpiiNoticeHeight").ok()).and_then(as_f64).unwrap_or(0.0);
+    let (x0, y0, x1, y1) = page_box_raw(doc, page)?;
+    Ok((x0, y0 + strip, x1, y1))
+}
+
+/// The text of a page's redaction notice, if it has one (`build_pdf_with`).
+pub fn pdf_notices(data: &[u8]) -> Result<Vec<Option<String>>> {
+    let doc = Document::load_mem(data).context("reading PDF")?;
+    let mut out = Vec::new();
+    for (_, page) in doc.get_pages() {
+        let has = doc.get_dictionary(page).ok().is_some_and(|d| d.get(b"RfpiiNoticeHeight").is_ok());
+        let text = if has { Some(String::from_utf8_lossy(&doc.get_page_content(page)).into_owned()) } else { None };
+        out.push(text);
+    }
+    Ok(out)
+}
+
+fn page_box_raw(doc: &Document, page: ObjectId) -> Result<(f64, f64, f64, f64)> {
     // CropBox or MediaBox, inherited from the page tree
     let mut id = Some(page);
     while let Some(pid) = id {
@@ -751,6 +770,33 @@ pub enum PageImage<'a> {
 
 /// PDF with one image per page, laid out like the source page; no metadata.
 pub fn build_pdf(pages: &[(PageImage, Option<(f64, f64)>, Option<Place>, i64)]) -> Result<Vec<u8>> {
+    build_pdf_with(pages, None)
+}
+
+/// The height (pt) of the strip a notice is written in, below the page,
+/// for a page `pw` pt wide; and the font size.
+fn notice_strip(text: &str, pw: f64) -> (f64, f64) {
+    let fs = (7.0f64).min((pw - 8.0) / (text.chars().count() as f64 * 0.5)).max(3.0);
+    (fs * 2.2, fs)
+}
+
+/// `text` as a PDF string literal's contents (Helvetica, WinAnsi): ASCII,
+/// with parentheses and backslashes escaped.
+pub fn pdf_text(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '(' | ')' | '\\' => format!("\\{}", c),
+            c if c.is_ascii() && !c.is_ascii_control() => c.to_string(),
+            _ => "?".to_string(),
+        })
+        .collect()
+}
+
+/// As `build_pdf`, with `notice` written on each page in a strip added
+/// below it, outside the image: the page box reaches down by the strip's
+/// height, recorded as /RfpiiNoticeHeight so that `page_box` leaves it out
+/// and the page reads back with the size and placement it had.
+pub fn build_pdf_with(pages: &[(PageImage, Option<(f64, f64)>, Option<Place>, i64)], notice: Option<&str>) -> Result<Vec<u8>> {
     let mut w = PdfWriter::new();
     let n = pages.len();
     // ids: 1 catalog, 2 pages, then 3 per page (page, content, image)
@@ -788,19 +834,31 @@ pub fn build_pdf(pages: &[(PageImage, Option<(f64, f64)>, Option<Place>, i64)]) 
         let (pw, ph) = size.unwrap_or((iw as f64 * 72.0 / 150.0, ih as f64 * 72.0 / 150.0));
         let m = place.unwrap_or([pw, 0.0, 0.0, ph, 0.0, 0.0]);
         let rot = if *rotate != 0 { format!(" /Rotate {}", rotate) } else { String::new() };
+        let (strip, fs) = notice.map(|t| notice_strip(t, pw)).unwrap_or((0.0, 0.0));
+        let (font, mark) = if notice.is_some() {
+            (" /Font <</F1 <</Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding>>>>".to_string(), format!(" /RfpiiNoticeHeight {}", fmt_num(strip)))
+        } else {
+            (String::new(), String::new())
+        };
         w.obj(
             pid,
             format!(
-                "<</Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}]{} /Resources <</XObject <</Im0 {} 0 R>>>> /Contents {} 0 R>>",
+                "<</Type /Page /Parent 2 0 R /MediaBox [0 {} {} {}]{}{} /Resources <</XObject <</Im0 {} 0 R>>{}>> /Contents {} 0 R>>",
+                fmt_num(-strip),
                 fmt_num(pw),
                 fmt_num(ph),
                 rot,
+                mark,
                 iid,
+                font,
                 cid
             )
             .as_bytes(),
         );
-        let content = format!("q {} cm /Im0 Do Q", m.map(fmt_num).join(" "));
+        let mut content = format!("q {} cm /Im0 Do Q", m.map(fmt_num).join(" "));
+        if let Some(t) = notice {
+            content += &format!(" BT /F1 {} Tf 4 {} Td ({}) Tj ET", fmt_num(fs), fmt_num(-strip + 0.7 * fs), pdf_text(t));
+        }
         w.stream(cid, "", content.as_bytes());
         w.stream(iid, &format!(" {}", dict), &data);
     }

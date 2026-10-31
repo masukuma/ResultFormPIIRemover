@@ -613,6 +613,25 @@ altered, only obscured, and the manifest records where.
     is commercial.
 
   It is signed with the publisher's Ed25519 key (`manifest.rs`).
+- **Ledger events.** Besides one entry per published form, the ledger
+  takes signed events, chained like any entry: `key_rotation` (signed by
+  the key replaced, carrying the new public key), `key_revocation` (signed
+  by the revoked key, optionally back to a date) and `withdrawal` (a form
+  taken down, with the reason). `verify` follows rotations from the first
+  published key, rejects a signature made with a revoked key after its
+  revocation or since its date, and reports a withdrawn form
+  (`legal/C-recommendations.md` §2.11, §2.14). `rfpii withdraw` moves the
+  PDF out of the published folder into `<out>-withdrawn/` with a copy of
+  its manifest; a corrected form republished with `--supersedes` names the
+  one it replaces. Private keys are written encrypted (PKCS#8, AES-256)
+  unless `--unencrypted`.
+- **The notice.** Each published page gets a line below it, outside the
+  image: a redacted copy under the Data Protection Act, results unchanged,
+  the original's SHA-256, and how to check it. The page box reaches down
+  by the strip's height, recorded on the page as `/RfpiiNoticeHeight`, so
+  the page reads back with the size and placement of the original and the
+  image is untouched. The text is in the manifest (`output.notice`) and
+  `verify` checks every page carries it.
 - **Transfers abroad.** Every call that sends a page to a model host
   outside Kenya (anything not on this machine nor named with
   `--kenya-host`) appends a line to `transfers.jsonl`, the record reg.
