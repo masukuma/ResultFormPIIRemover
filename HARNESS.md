@@ -621,9 +621,10 @@ How some of it works:
   the other pages of its template (at least five), and ID numbers with
   fewer characters than theirs. Pages scoring 3 or more are all reviewed.
 - **Triage without models** sorts held pages by fixed rules on their
-  diagnostics: blank (ink under 0.5%), tally sheet (the word TALLY), faint
-  (contrast under 25 or OCR confidence under 0.6), turned, not a form (no
-  printed word of the vocabulary), not read.
+  diagnostics: blank (ink under 0.5%), tally sheet (the word TALLY on a
+  page that names no form and that no template matched: Form 34A's own
+  title says "tallying"), faint (contrast under 25 or OCR confidence under
+  0.6), turned, not a form (no printed word of the vocabulary), not read.
 - **Incidents.** `rfpii job-incident JOB_DIR PDF --reason TEXT --kind KIND`
   withdraws the form (`rfpii withdraw`), counts whose data it holds from its
   masks' role tags, sets the s.43 deadlines (the Commissioner in 72 hours;

@@ -34,8 +34,11 @@ pub fn categorise(d: &Value, reason: &str) -> (String, String, String) {
     if ink < 0.005 {
         return out("blank", "not_for_this_job", format!("ink covers {:.2}% of the page", ink * 100.0));
     }
-    if words.contains(&"TALLY") {
-        return out("tally_sheet", "not_for_this_job", "the printed word TALLY is on the page".into());
+    // a form names itself ("FORM 34A"), or a template matched it; Form
+    // 34A's own title reads "TALLYING", so TALLY alone is not enough
+    let a_form = words.iter().any(|w| w.starts_with("FORM ")) || d["read"]["template"].is_string();
+    if words.contains(&"TALLY") && !a_form {
+        return out("tally_sheet", "not_for_this_job", "the printed word TALLY is on the page, and no form's name".into());
     }
     if contrast < 25.0 || conf.is_some_and(|c| c < 0.6) {
         return out("faint", "people", format!("contrast {:.1}, OCR confidence {}", contrast, conf.map(|c| format!("{:.2}", c)).unwrap_or("none".into())));
@@ -138,6 +141,11 @@ mod tests {
         let d = |ink: f64, contrast: f64, conf: Option<f64>, words: &[&str], turn: i64| json!({"ink": ink, "contrast": contrast, "ocr": {"mean_confidence": conf, "vocabulary": words, "turn": turn}});
         assert_eq!(categorise(&d(0.001, 2.0, None, &[], 0), "").0, "blank");
         assert_eq!(categorise(&d(0.05, 50.0, Some(0.9), &["TALLY", "COUNTY"], 0), "").0, "tally_sheet");
+        // a Form 34A ("... TALLYING ..." in its title): never set aside as a tally sheet
+        assert_eq!(categorise(&d(0.05, 50.0, Some(0.9), &["FORM 34A", "TALLY", "DECLARATION"], 0), "").0, "not_read");
+        let mut matched = d(0.05, 50.0, Some(0.9), &["TALLY", "DECLARATION"], 0);
+        matched["read"] = json!({"template": "form34a_2022", "ok": false});
+        assert_eq!(categorise(&matched, "").0, "not_read");
         assert_eq!(categorise(&d(0.05, 18.0, Some(0.9), &["DECLARATION"], 0), "").0, "faint");
         assert_eq!(categorise(&d(0.05, 50.0, Some(0.9), &["DECLARATION"], 90), "").0, "turned");
         assert_eq!(categorise(&d(0.05, 50.0, Some(0.9), &[], 0), "").0, "not_a_form");
