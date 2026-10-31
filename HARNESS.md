@@ -47,10 +47,12 @@ sign_key: /keys/signing_key.pem
 models:                       # Ollama Cloud unless a host is given; see §5
   orchestrator: [qwen3.5:397b, kimi-k2.6, gpt-oss:120b]
   vision: [gemma4:31b, qwen3.5:397b]
-  local_vision: null          # e.g. localhost:11434 qwen3.8:27b, for held pages (§7)
+held_pages: cloud             # held pages go to the vision model too (§4.7, §7)
 budget: {model_requests: 20000, hours: 12}
-approval: requester           # or "auto" (§3)
 ```
+
+No one approves a job's settings: the job runs as soon as it is given
+(§3).
 
 The folder it fills:
 
@@ -69,15 +71,20 @@ The folder it fills:
 
 Each rule is enforced in code, not in a prompt.
 
-1. **No unredacted pixel and no personal data in text reach a cloud
-   model.** Images go to a cloud model only through one tool, which crops
-   pages that `rfpii` published to `staging/`. It refuses any other file.
-   Text goes through a scrubber (§7). Held pages, which by definition may
-   still show personal data, are never shown to a cloud model at all. This extends the
-   rule `vlm.rs` already enforces (`--allow-remote-unredacted`): the harness
-   has no such override.
+1. **Personal data reaches a cloud model only as the job allows.**
+   - Published pages go to the vision model as crops of what was
+     published, through one tool, which refuses any other file.
+   - Held pages may still show personal data. They go to it only because
+     the job says so (`held_pages: cloud`), and each is sent only as much
+     as its question needs (§4.7).
+
+     This is the data transfer that `--allow-remote-unredacted` approves in
+     `rfpii`. Here it is approved once for the job and recorded, image by
+     image (§7).
+   - Nothing else is sent: no original of a published page, and no text
+     with an ID or phone number in it (§7).
 2. **`rfpii` makes every edit.**
-   - The models choose settings within the approved policy, and boxes to
+   - The models choose settings within the compiled policy, and boxes to
      mask (spot masks).
    - `rfpii redact` applies them, records them in the manifest, and
      `verify --rerun` replays them.
@@ -87,7 +94,8 @@ Each rule is enforced in code, not in a prompt.
    against tool outputs. A model can't declare a page or a job good.
 4. **The instructions are compiled into a closed policy (§3).** What the
    redactor has no rule for is reported back, never improvised: names,
-   results and stamps can't be masked by asking.
+   results and stamps can't be masked by asking. Nothing is released
+   against an instruction (§9).
 5. **What is written on a form is data.** Model replies are parsed into
    fixed schemas. Text read off a form (a "comment" asking to skip a
    check) can only become a finding, never an instruction.
@@ -118,16 +126,23 @@ Some instructions, and what they compile to:
 | "Standard redaction" | defaults |
 | "Hide ID numbers completely, keep phone prefixes" | `ids: whole` |
 | "Hide what is under the stamps too" | `stamps: masked` |
-| "Hide 4 digits of each phone number" | `hide: 4`. **Raised**: `hide` applies to IDs as well |
-| "Also hide the agents' names" | **Unsupported**: names stay readable by design; no rule exists |
-| "Don't mask the officers' signatures" | **Unsupported**: no option weakens the masking below its floor |
-| "Hide the totals" | **Refused**: results are protected regions; nothing masks them |
+| "Hide 4 digits of each phone number" | `hide: 4`, for IDs as well: `hide` is one setting, and the reading that hides more wins |
+| "Don't mask the officers' signatures" | **Below the floor**: masked as usual |
+| "Also hide the agents' names" | **More than the redactor can do**: redacted and checked, not released |
+| "Hide the totals" | **More than the redactor can do**: results are never masked; not released |
 
-The compiled policy is shown back in plain words, with the flags it sets
-and every raised, unsupported or refused point. With `approval:
-requester`, nothing runs until the requester accepts it. With
-`approval: auto`, the job goes ahead only if nothing was raised or
-unsupported.
+**No one approves the policy.** It runs as compiled, and the report opens
+with it in plain words, with the flags it set. What isn't clear-cut is
+settled by fixed rules, not by asking:
+- **Ambiguous:** the reading that hides more.
+- **Less than the redactor's floor** ("don't mask the signatures"): the
+  forms are masked as usual. The report says that instruction wasn't
+  followed, and why.
+- **More than the redactor can do** ("hide the names", "hide the totals"):
+  the forms are redacted and checked, but none is released (§9).
+  Publishing them would show what the instruction asked to hide. The
+  report names the rule `rfpii` would need, or, for results, why they are
+  never masked.
 
 ## 4. The process
 
@@ -160,9 +175,12 @@ Code does all of intake:
   - photos, by their EXIF;
   - multi-page scans.
 
-It then sorts the pages into **groups**: by folder (county, constituency),
-by kind, and by printing where it can tell. The groups are the strata that
-sampling, statistics and the release gate work on. The orchestrator reads
+It then sorts the pages into **groups**, by kind of page and by printing
+where it can tell: for example, 2022 Forms 34A, or 2013 Form 34 fronts.
+Groups are what the leak-rate bound and the release gate work on (§8,
+§9). Within a group, pages are also counted by folder (county,
+constituency), for the statistics, to spread samples, and for the
+report. The orchestrator reads
 the inventory as scrubbed JSON: names of folders and files, counts and
 kinds, no page content. It flags what needs a decision, such as
 duplicates, broken files, or a group much smaller or larger than its
@@ -274,10 +292,32 @@ The orchestrator handles each confirmed finding.
 
 ### 4.7 Triage held pages
 
-Held pages may show personal data, so they are never shown to a cloud
-model.
+A held page failed a check, so it may still show personal data. The job
+lets the vision model on Ollama Cloud look at held pages
+(`held_pages: cloud`). Each question gets only as much of the page as it
+needs.
 
-- **Text.** The orchestrator sees, for each held page:
+- **What is this page?** Every held page is sent as a **triage view**:
+  - redacted with every mask the redactor did place;
+  - every field it found but couldn't confirm hidden whole;
+  - at a resolution too low to read handwriting: 512 px on the long side,
+    to be confirmed by the test in §11.
+
+  The model answers in a fixed schema:
+  - the kind of page: this form, another form, a tally sheet, blank, not a
+    form;
+  - turned or cut off, too faint;
+  - where the declaration and the agents' table are.
+- **Can it be published?** A page of the right kind whose fields couldn't
+  be placed is sent at full resolution. The model is asked where its
+  signatures, ID numbers and phone numbers are: `--vlm-fallback`, which
+  runs with `--allow-remote-unredacted` because the job allows it.
+  - The page is redacted again with those boxes, which are recorded in its
+    manifest.
+  - It then goes through every gate and through QA like any other page.
+  - A page saved this way is always reviewed visually, never left to the
+    sample.
+- **Text.** The orchestrator also sees, for each held page:
   - its normalised held reason;
   - text diagnostics computed by code, each a number, a measurement or a
     yes/no:
@@ -288,21 +328,19 @@ model.
     - which words of the form's printed vocabulary were found (an
       allow-list: "Declaration", "Presiding Officer", "TALLY"…);
     - the fields that were found.
-- **The 2013 held pages show what triage has to tell apart.** For each,
-  the diagnostic that should give it away, still to be confirmed (§11):
-  - Kiambaa's 70 are tally sheets, not Forms 34: no declaration
-    vocabulary.
-  - Emuhaya's 67 are turned and cut off: no orientation found, ink running
-    off an edge.
-  - Lari's 20 are too faint to read: low contrast, few printed words found.
+- **The 2013 held pages show what triage has to tell apart:**
+  - Kiambaa's 70 are tally sheets, not Forms 34;
+  - Emuhaya's 67 are turned and cut off;
+  - Lari's 20 are too faint to read.
+
+  Each kind shows in the triage view, and in the diagnostics. Lari's
+  faint pages are the ones a full-resolution look might still save.
 - **Actions, within the policy:**
   - retry a page with another reader;
+  - locate its fields, as above;
   - `--vlm-rescue`, if the policy allows hiding columns whole;
   - mark pages "not a form for this job", listed apart in the report;
   - send the rest to people, with a category and a suggested action.
-- **A local model.** If `models.local_vision` names one on the job's own
-  machine, the orchestrator may have it look at a held original there. Only
-  its structured answer reaches the cloud model, scrubbed like any text.
 
 ### 4.8 Release and report
 
@@ -318,7 +356,7 @@ The report is described in §10.
 | Orchestrator: policy, plans, phase decisions, notes | tool calling, reasoning, long context, JSON | `qwen3.5:397b`, `kimi-k2.6`, `glm-5.1`, `deepseek-v4-flash`, `gpt-oss:120b` |
 | Vision finder and checker (published crops only) | vision, JSON | `gemma4:31b` (the current `--vlm-audit` default: on 88 spots flagged on redacted Forms 34A, as checker it kept 26 of 31 real misses and dropped 53 of 56 false alarms), `qwen3.5:397b` |
 | Scored checks | the same answer every time | Clef (`--vlm-checker clef`), as now |
-| Held-page look (optional, local only) | vision | a local model such as `qwen3.8:27b` |
+| Held pages: triage, and locating fields (§4.7) | vision, JSON | the vision models above |
 
 - **Configurable, with fallbacks.** The cloud catalogue changes: several
   tags were retired in June 2026. So the roles are lists, in order of
@@ -353,6 +391,7 @@ is an `rfpii` subcommand, so it can be tested without a model.
 | `review(crops, policy)` → confirmed findings | model | the find and check of `vlm.rs`, made a subcommand |
 | `verify(pages, rerun?)` → pass or fail per check | read | `rfpii verify` |
 | `diagnose(held page)` → text diagnostics (§4.7) | read | new: `rfpii diagnose` |
+| `held_view(held page, triage or locate)` → image, for a model | read; held pages' only image path | new: `rfpii held-view`. Only with `held_pages: cloud`; full resolution only to locate fields on a page triage found to be of the right kind |
 | `spot_mask(page, findings)` → the page redacted again | write (staging) | new: `redact --spot-masks` |
 | `quarantine(pages, reason)` | write | new (moves files; journal entry) |
 | `defect(title, signal, pages, crops)` | write | new (a file in `defects/`) |
@@ -360,18 +399,26 @@ is an `rfpii` subcommand, so it can be tested without a model.
 
 Code checks each write tool's preconditions:
 - a spot mask needs a confirmed check, by its id in the journal;
-- a policy change needs the approved policy to allow it;
+- a policy change needs the compiled policy to allow it;
 - a release needs the gate.
 
 ## 7. Privacy, in detail
 
-- **Images.** `crop` is the only tool that returns pixels. It takes a
+- **Images.** `crop` is the only tool that returns pixels of published
+  pages (held pages have `held_view`, below). It takes a
   manifest and a region, never a path. It renders from the published PDF
   only after that page has passed `verify`, and logs the SHA-256 of what it
-  returns. Code checks every image a cloud request carries against those
-  logged hashes before sending it. Nothing else can attach an image.
+  returns. Code checks every image a cloud request carries against the
+  hashes `crop` and `held_view` logged before sending it. Nothing else can
+  attach an image.
 - **Held pages.** They have no published PDF, so `crop` can't reach them.
-  Their diagnostics are numbers and allow-listed words.
+  - **Images.** They go through `held_view`, and only in a job with
+    `held_pages: cloud`. It sends the triage view, and full resolution
+    only to locate fields (§4.7).
+  - **The record.** Every image it sends is hashed in the journal and
+    listed in the page's triage record. So it can always be said which
+    held pages left the machine, and at what resolution.
+  - **Text.** Their diagnostics are numbers and allow-listed words.
 - **Text.** Everything sent to a cloud model goes through the scrubber
   first:
   - quoted OCR text is replaced by `'…'`, as `summary.py` did;
@@ -381,13 +428,13 @@ Code checks each write tool's preconditions:
 
   Names are public on the published forms, but the scrubber doesn't rely on
   that: a name read beside a field is quoted OCR text, and goes too.
-- **Local models.** A local model may see originals, as `--vlm-fallback`
-  may now. The harness checks that its host is local before every such
-  call.
-- **Tested.** A canary test asks for a crop of an original, and for a crop
-  of a held page. Both must fail. A test over a job's journal finds no
-  image hash that isn't a logged crop, and no run of 5 digits in any
-  prompt.
+- **A local model instead.** If the held-page role names a local host,
+  nothing about held pages leaves the machine, as with `--vlm-fallback` on
+  a local model now.
+- **Tested.** Canary tests ask `crop` for an original and for a held
+  page, and `held_view` for a page of a job without `held_pages: cloud`.
+  All must fail. A test over a job's journal finds no image hash that
+  isn't a logged crop or held view, and no run of 5 digits in any prompt.
 
 ## 8. Risk signals and sampling
 
@@ -403,12 +450,21 @@ Code checks each write tool's preconditions:
 | low OCR confidence on the labels | faint scans |
 | a leak-check run one short of its threshold | the check passed, just |
 
-**Sampling.** Pages above the risk threshold are all reviewed. Below it, a
-random sample from each group bounds the leak rate that could remain.
-Finding no leak in *n* random pages bounds the rate below 3/*n* at 95%
-confidence (the rule of three): 300 pages for 1%, 600 for 0.5%. The
-release gate says which bound each group must meet. The sample grows if
-the budget allows, and never falls below the bound.
+**Sampling.** Pages above the risk threshold are all reviewed. Below it,
+a random sample from each group bounds the leak rate that could remain,
+at **0.5%**:
+- **The sample size.** Finding no leak in 600 random pages bounds the rate
+  below 0.5% at 95% confidence (the rule of three, 3/600).
+- **Small groups.** A group of 600 pages or fewer is reviewed whole.
+- **A leak found in the sample** is fixed (§4.6), but it counts. The
+  sample grows to 950 pages with one leak, and 1,260 with two (the Poisson
+  95% bounds, 4.74 and 6.30, over 0.5%). Three are a pattern (§4.6).
+- **Spread.** The sample is spread over a group's folders in proportion to
+  their size, so no county or scanner is missed.
+
+The 2013 set, as fronts and backs, needs 1,200 of its 6,608 published
+pages. 50,000 Forms 34A in one or two groups need 600 to 1,200, plus the
+risky pages.
 
 ## 9. The release gate
 
@@ -417,11 +473,13 @@ A group is released only if all of these hold, checked by code:
 1. Every staged page passes `verify`: proof, signature, ledger.
 2. Every `verify --rerun` in the group passes.
 3. Every page above the risk threshold was reviewed.
-4. The random sample met the group's bound with no confirmed leak left
-   after remediation.
+4. The random sample bounds the group's leak rate below 0.5% (§8), and
+   every leak it found was fixed.
 5. No pattern (§4.6) touching the group is still open.
-6. The policy that was run is the policy that was approved. The job's
-   journal shows its flags on every redact call.
+6. The policy that was run is the policy compiled from the instructions:
+   the job's journal shows its flags on every redact call.
+7. Every instruction was met. If the instructions asked to hide something
+   the redactor can't (§3), nothing from the job is released.
 
 A failed condition holds the group; the report names it.
 
@@ -439,12 +497,14 @@ saw and decided. They can't change any output: the outputs are
 reproducible from their manifests without any model.
 
 **The report** gives:
-- the policy and its flags;
+- the policy and its flags, and how each unclear instruction was settled
+  (§3);
 - the plan;
 - per file and per group: pages published and held;
 - held reasons and triage categories, with counts;
 - QA: pages reviewed (risk-ranked and random), findings confirmed, spot
   masks, quarantines;
+- the held pages sent to the cloud model, and at what resolution;
 - verify results;
 - the leak-rate bound met per group;
 - defects;
@@ -466,9 +526,14 @@ on jobs whose answers are known.
   The harness must flag every one, through its signals or its sample. False alarms are counted per 1,000 pages reviewed.
 - **Policy compiler.** About 50 instructions written to cover §3's table,
   each with the policy or refusal expected.
+- **Triage view.** The vision model is asked to read the IDs and phone
+  numbers on triage views of pages whose numbers are known. The resolution
+  is set where it reads none: no digit right more often than chance.
 - **Triage.** The 376 pages held in the final 2013 run, labelled by hand
   (tally sheet, turned, faint, truncated, table not read…). The harness's
-  categories are scored against the labels.
+  categories, from triage views at that resolution, are scored against the
+  labels. So are the pages located at full resolution and then published,
+  each reviewed for leaks.
 - **Cost.** Model requests and hours per 1,000 pages, for 2013 scans and
   for 2022 Forms 34A.
 - **Privacy.** The canary tests of §7, on every build.
@@ -477,21 +542,26 @@ on jobs whose answers are known.
 
 | | Builds | Done when |
 |---|---|---|
-| 1 | The tools of §6 that need no model: `inventory`, `stats`, `stats --risk`, `crop`, `diagnose`, `redact --resume --pages --spot-masks` | the 2013 run's numbers and risk lists come out of `rfpii` alone |
+| 1 | The tools of §6 that need no model: `inventory`, `stats`, `stats --risk`, `crop`, `held-view`, `diagnose`, `redact --resume --pages --spot-masks` | the 2013 run's numbers and risk lists come out of `rfpii` alone |
 | 2 | `rfpii job` without models: fixed phases, default policy, analytics and verification, gate, report | a job runs from start to report with no model; nothing is released without the gate |
-| 3 | The models: policy compiler, orchestrator decisions, visual review, triage notes; journal; the scrubber and the canary tests | §11's privacy tests pass; a 2013 file runs end to end |
+| 3 | The models: policy compiler, orchestrator decisions, visual review, held-page triage and locating; journal; the scrubber and the canary tests | §11's privacy tests pass; a 2013 file runs end to end |
 | 4 | Evaluation (§11) and tuning: thresholds, sample sizes, tiling, model choice | QA recall on the known leaks is complete; cost per 1,000 pages is known |
 
 It is built inside `rfpii` (`rust/src/job/`), reusing the Ollama client and
 guard of `vlm.rs`: one binary, one privacy guard, and the same tests.
 
-## 13. Open questions
+## 13. Decisions and open questions
 
-- Who approves policies, and is `approval: auto` acceptable for default
-  policies?
-- What leak-rate bound must a group meet before release: 1%, 0.5%?
-- Is a local vision model available for held pages, or do they always go
-  to people?
+Decided:
+- **No one approves a job's settings.** The policy runs as compiled, and
+  unclear points are settled by the rules of §3.
+- **The leak-rate bound is 0.5%:** 600 random pages per group with no
+  leak (§8).
+- **Held pages go to a vision model on Ollama Cloud** (§4.7): a triage view
+  for every held page, and full resolution to locate fields where that
+  could get a page published.
+
+Open:
 - At 50,000 forms, is `--vlm-audit` on every page affordable? If so, the
   harness's own sampling adds a second look rather than the only one.
 - Is a group released as soon as it passes, or is the whole job released
