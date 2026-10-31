@@ -6,6 +6,8 @@
 //!     rfpii verify public/x.pdf --original x.PDF --pubkey keys/signing_key.pub.pem --ledger public/ledger.jsonl
 //!     rfpii preview templates/form34a_2022 -o preview.png
 
+mod cli_legal;
+
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use opencv::core::{Point, Scalar, Vector};
@@ -45,8 +47,20 @@ enum Cmd {
     Redact(RedactArgs),
     /// Prove a redacted form changed nothing but the listed blocks
     Verify(VerifyCli),
-    /// Create an Ed25519 signing key pair
-    Keygen { directory: PathBuf },
+    /// Create an Ed25519 signing key pair (the private key encrypted)
+    Keygen(cli_legal::KeygenArgs),
+    /// Hand signing over to a new key, recorded in the ledger
+    RotateKey(cli_legal::RotateKeyArgs),
+    /// Revoke a signing key (lost or stolen), recorded in the ledger
+    RevokeKey(cli_legal::RevokeKeyArgs),
+    /// Take a published form down (a leak found), recorded in the ledger
+    Withdraw(cli_legal::WithdrawArgs),
+    /// Write the technical annex of a DPIA from a run's records
+    DpiaAnnex(cli_legal::DpiaAnnexArgs),
+    /// Report, or delete, files kept past their retention schedule
+    Retain(cli_legal::RetainArgs),
+    /// Bundle published forms, their proofs and verify logs for scrutiny
+    Bundle(cli_legal::BundleCli),
     /// Create a self-signed certificate for digitally signing the PDFs
     Certgen(CertgenArgs),
     /// Render template zones and protected regions for a visual check
@@ -180,10 +194,14 @@ struct RedactArgs {
     /// Phone numbers: hide only within the last N digits
     #[arg(long, default_value_t = 6)]
     phone_tail: usize,
-    /// Mask writing under stamps too: an ID, phone number or signature a
-    /// stamp lies over is hidden, and the masks cover that part of the stamp
-    /// (its field's band across the stamp is blacked whole). By default
-    /// stamps are never masked, and writing under one stays visible.
+    /// Never mask a stamp: an ID, phone number or signature a stamp lies
+    /// over stays visible. By default each field's band across a stamp is
+    /// blacked whole, and the rest of the stamp is protected and verified
+    /// unchanged.
+    #[arg(long, conflicts_with = "mask_stamps")]
+    keep_stamps: bool,
+    /// Hide writing under stamps along each field's band (the default;
+    /// accepted for older scripts)
     #[arg(long)]
     mask_stamps: bool,
     /// Hide every character of each ID or passport number, not `--hide` of
@@ -193,6 +211,27 @@ struct RedactArgs {
     /// Hide every digit of each phone number, its first digits too
     #[arg(long)]
     full_phones: bool,
+    /// Who publishes the forms and on what legal basis (controller.json: the
+    /// controller and its registration, the operator's role, legal basis,
+    /// purpose, commercial use, processors, DPIA). Recorded in every
+    /// manifest; see legal/C-recommendations.md §2.9
+    #[arg(long)]
+    controller: Option<PathBuf>,
+    /// A model host in Kenya (repeatable): calls to it are not transfers
+    /// abroad. Every call to any other remote host is recorded in
+    /// <out>/transfers.jsonl (Data Protection (General) Regulations reg. 41(2))
+    #[arg(long = "kenya-host")]
+    kenya_hosts: Vec<String>,
+    /// The manifest of a withdrawn form (rfpii withdraw) this run republishes
+    /// corrected (repeatable): matched by source file and page, and named in
+    /// the new manifest
+    #[arg(long)]
+    supersedes: Vec<PathBuf>,
+    /// Don't write the redaction notice below each published page (by
+    /// default a line outside the form image says it is a redacted copy,
+    /// names the original by its hash, and says how to check it)
+    #[arg(long)]
+    no_notice: bool,
     #[arg(long, default_value_t = 0.35)]
     min_score: f64,
     #[arg(long, default_value_t = 40)]
@@ -414,8 +453,17 @@ fn vlm_proposal(v: &Ollama, pages: &[io::SourcePage], cfg: &Config, rel: &str, p
     mf::getrandom_fill(&mut seed)?;
     let mut rng = PyRandom::new(u64::from_le_bytes(seed) >> 1);
     let mut images = Vec::new();
-    for sp in pages {
+    for (k, sp) in pages.iter().enumerate() {
         let boxes: Vec<(f64, f64, f64, f64, String)> = v.locate(&sp.pixels)?.into_iter().map(|b| (b.x0, b.y0, b.x1, b.y1, b.label)).collect();
+        cfg.transfer(rfpii::legal::Transfer {
+            host: &v.s.host,
+            model: &v.s.model,
+            purpose: "locating fields on a page that couldn't be read",
+            data: "the unredacted page: names, parties, ID and phone numbers and signatures of officers and agents".into(),
+            document: rel,
+            page: page.unwrap_or(k + 1),
+            images: vec![],
+        })?;
         images.push(redact_boxes(&sp.pixels, &boxes, &cfg.mask, &mut rng, 10.0)?.image.unwrap());
     }
     let out = out_path(&Path::new(&cfg.review).join("vlm").to_string_lossy(), rel, page, ".pdf")?;
@@ -464,7 +512,7 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
     let mut mask = MaskSettings::default();
     mask.hide = a.hide;
     mask.phone_tail = a.phone_tail;
-    mask.mask_stamps = a.mask_stamps;
+    mask.stamps = if a.keep_stamps { rfpii::masking::StampRule::Protected } else { rfpii::masking::StampRule::Bands };
     mask.full_ids = a.full_ids;
     mask.full_phones = a.full_phones;
     let cfg = Config {
@@ -482,6 +530,14 @@ fn cmd_redact(a: RedactArgs) -> Result<i32> {
         vlm_rounds: a.vlm_rounds,
         pdf_signer: pdf_signer(&a)?.map(std::sync::Arc::new),
         orient: if a.orient { Some(std::sync::Arc::new(orienter(&a)?)) } else { None },
+        controller: match &a.controller {
+            Some(p) => Some(std::sync::Arc::new(rfpii::legal::Controller::load(p)?)),
+            None => None,
+        },
+        transfers: Some(std::sync::Arc::new(rfpii::legal::Transfers::new(Path::new(&a.out).join("transfers.jsonl")))),
+        kenya_hosts: a.kenya_hosts.clone(),
+        supersedes: a.supersedes.iter().map(|p| mf::read_json(p)).collect::<Result<_>>()?,
+        notice: !a.no_notice,
     };
     if a.vlm_rescue && !a.vlm_audit {
         anyhow::bail!("--vlm-rescue needs --vlm-audit: hiding a column whole is only safe when the review checks the result");
@@ -735,12 +791,6 @@ fn cmd_verify(a: VerifyCli) -> Result<i32> {
     Ok(if rep.ok() { 0 } else { 1 })
 }
 
-fn cmd_keygen(dir: &Path) -> Result<i32> {
-    let (p, q) = mf::keygen(dir)?;
-    println!("private key {} (keep offline/secret)\npublic key  {} (publish)  id {}", p.display(), q.display(), mf::key_id(&mf::load_public(&q)?));
-    Ok(0)
-}
-
 /// Draw zones (red blackout, purple signature, blue partial), protected
 /// results regions (green) and fence labels (orange) over the reference so
 /// they can be checked by eye.
@@ -886,7 +936,13 @@ fn main() {
     let r = match cli.cmd {
         Cmd::Redact(a) => cmd_redact(a),
         Cmd::Verify(a) => cmd_verify(a),
-        Cmd::Keygen { directory } => cmd_keygen(&directory),
+        Cmd::Keygen(a) => cli_legal::keygen(a),
+        Cmd::RotateKey(a) => cli_legal::rotate_key(a),
+        Cmd::RevokeKey(a) => cli_legal::revoke_key(a),
+        Cmd::Withdraw(a) => cli_legal::withdraw(a),
+        Cmd::DpiaAnnex(a) => cli_legal::dpia_annex(a),
+        Cmd::Retain(a) => cli_legal::retain(a),
+        Cmd::Bundle(a) => cli_legal::bundle(a),
         Cmd::Certgen(a) => cmd_certgen(a),
         Cmd::Preview { template, output } => cmd_preview(&template, &output),
         Cmd::Propose(a) => cmd_propose(a),

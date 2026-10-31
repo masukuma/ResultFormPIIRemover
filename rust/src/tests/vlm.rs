@@ -72,8 +72,10 @@ fn page(h: i32, w: i32) -> Mat {
 
 #[test]
 fn with_stamps_masked_over_the_review_is_told_stamps_shield_nothing() {
-    assert_eq!(find_prompt(&MaskSettings::default()), FIND_PROMPT);
-    let masked = find_prompt(&MaskSettings { mask_stamps: true, ..MaskSettings::default() });
+    let kept = MaskSettings { stamps: crate::masking::StampRule::Protected, ..MaskSettings::default() };
+    assert_eq!(find_prompt(&kept), FIND_PROMPT);
+    // by default the bands across stamps are hidden: writing there follows the rules
+    let masked = find_prompt(&MaskSettings::default());
     assert!(!masked.contains("writing inside the round official stamp are allowed to show"), "{}", masked);
     assert!(masked.contains("inside the round official stamp follows the same rules"));
 }

@@ -11,8 +11,10 @@ that **nothing but the personal data was touched**.
   them with `--full-ids`.
 - **Phone numbers** keep their first digits; 3 of the last 6 are hidden, or
   every digit with `--full-phones`.
-- **Names, results, stamps and QR codes** stay readable. A stamp is never
-  masked, even where it lies over a signature or a number.
+- **Names, results, stamps and QR codes** stay readable. Where a stamp lies
+  over a signature or a number, only that field's line across the stamp is
+  blacked; the rest of the stamp is kept, and checked unchanged.
+  `--keep-stamps` never masks a stamp at all.
 
 The only edit ever made is replacing 8×8 blocks with solid black. On KIEMS
 JPEGs this is done at coefficient level, so every other block is the same
@@ -56,9 +58,23 @@ compiler and clang.
 ## Run
 
 ```bash
-# Once: a signing key for the manifests. Keep the private key offline;
-# publish the .pub.pem.
+# Once: a signing key for the manifests, its private key encrypted with a
+# passphrase ($RFPII_SIGN_PASSWORD, or asked for). Keep it offline; publish
+# the .pub.pem.
 rfpii keygen keys/
+
+# A key to retire, or lost: hand over to a new one, or revoke it, in the
+# ledger. Forms keep verifying with the first published key; those a
+# revoked key signs from then on (or since --since) don't.
+rfpii rotate-key --key keys/signing_key.pem --new keys2/ --ledger public/ledger.jsonl
+rfpii revoke-key --key keys2/signing_key.pem --ledger public/ledger.jsonl --reason "laptop stolen"
+
+# A leak found after release: take the form down (out of public/, recorded
+# in the ledger; verify then reports it withdrawn), and republish it
+# corrected, naming what it replaces
+rfpii withdraw public/x.pdf --reason "phone number readable in row 3" --sign-key keys/signing_key.pem
+rfpii redact x.PDF --templates templates --out public --review review \
+    --sign-key keys/signing_key.pem --supersedes public-withdrawn/x.manifest.json
 
 # Once, unless you have a certificate: a self-signed certificate for the
 # PDFs' digital signatures. Publish signer.crt (or its SHA-256 fingerprint).
@@ -90,6 +106,22 @@ rfpii redact Forms/ --templates templates --out public --review review \
 # judges which way up each redacted page stands, and it is published upright
 rfpii redact Photos/ --learn learned --out public --review review \
     --sign-key keys/signing_key.pem --orient
+
+# Towards the DPIA (Data Protection Act s.31): the technical annex, from
+# what the run recorded: the processing, residual-risk figures, measures,
+# transfers abroad, retention
+rfpii dpia-annex public --review review --controller controller.json \
+    --retention retention.yaml -o dpia-annex.md
+
+# Keep files no longer than their schedule (s.39): report what is due, or
+# delete it, recording each disposal in the ledger by hash
+rfpii retain --policy retention.yaml --apply --sign-key keys/signing_key.pem
+
+# For a court, a petitioner or agents: the forms asked for, their manifests,
+# each one's verify log against the original, the ledger, batch roots, key,
+# a cover sheet and SHA256SUMS (originals only with --include-originals)
+rfpii bundle public/x.pdf public/y.pdf --out bundle/ --public public \
+    --pubkey signing_key.pub.pem --originals originals/
 
 # Anyone, later: prove a published form against its original
 rfpii verify public/x.pdf --original x.PDF --pubkey signing_key.pub.pem \
@@ -153,11 +185,33 @@ Useful flags:
   too. Both are recorded in the manifest and repeated by `verify --rerun`;
   with them the leak check withholds a page showing 3 written characters in
   a row of such a number outside a stamp.
-- `--mask-stamps`: the stamp isn't sacred. An ID, phone number or signature
-  a stamp lies over is hidden: each field's band across the stamp is
-  blacked whole, covering that part of the stamp. By default stamps are
-  never masked and writing under one stays visible. Recorded in the
-  manifest, and repeated by `verify --rerun`.
+- `--controller controller.json`: who publishes the forms and on what legal
+  basis: the controller and its registration with the Data Protection
+  Commissioner, whether the operator is the controller or a processor, the
+  legal basis, the purpose, whether the use is commercial, the processors
+  (model hosts with their country) and the DPIA reference. Checked when the
+  run starts, its hash and main fields recorded in every manifest, and
+  printed by `verify`. See `legal/C-recommendations.md` §2.9.
+- `--no-notice`: don't write the redaction notice. By default each published
+  page carries a line below it, outside the form image, saying it is a
+  redacted copy under the Data Protection Act, that the results are
+  unchanged, which original it was made from (its SHA-256) and how to check
+  it. `verify` checks the notice is there and says what the manifest
+  records.
+- `--supersedes MANIFEST`: the manifest of a withdrawn form this run
+  republishes; the new manifest names it.
+- `--kenya-host HOST`: a model host in Kenya. Every call that sends a page to
+  any other remote host (the review, `--orient`, `--vlm-fallback`) is a
+  transfer of personal data abroad, recorded in `<out>/transfers.jsonl` with
+  what reg. 41(2) of the Data Protection (General) Regulations asks: date and
+  time, recipient, justification, a description of the data, and hashes of
+  the images sent.
+- `--keep-stamps`: never mask a stamp; an ID, phone number or signature a
+  stamp lies over stays visible. By default each field's band across a
+  stamp is blacked whole, covering that part of the stamp, and the rest of
+  the stamp is listed as protected and checked unchanged by `verify`
+  (`--mask-stamps` asks for that default, for older scripts). Recorded in
+  the manifest (`settings.stamps`), and repeated by `verify --rerun`.
 - `--workers`: number of documents processed at once. With `--vlm-audit`,
   use about three per core: most of a document's time is spent waiting for
   the models.

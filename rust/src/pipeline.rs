@@ -111,15 +111,22 @@ pub fn apply(img: &Mat, canvas: &Mat, keep: Option<&Mat>) -> Result<(Grid, Mat)>
 pub const STAMP_MARGIN: f64 = 6.0; // px kept clear around a stamp, plus 4% of its radius
 
 /// Add stamps found around the masks, and lift the masks off every stamp.
-/// Returns (stamps, keep mask, notes). With `ms.mask_stamps` no stamp is
-/// protected: the masks stay where they are, stamp or not.
-pub fn protect_stamps(img: &Mat, canvas: &mut Mat, found: &[Stamp], r_range: (f64, f64), maps: Option<&stamps::Maps>, ms: &MaskSettings) -> Result<(Vec<Stamp>, Mat, Vec<String>)> {
+/// Returns (stamps, keep mask, notes). By the stamp rule (`ms.stamps`):
+/// - `Protected`: every mask on a stamp is lifted;
+/// - `Bands`: each field's band across a stamp (`bands`: 0 on a canvas of
+///   their own, `masking::band`) is hidden, the near stamps' included, and
+///   every other mask on the stamp lifted. Each stamp's record lists the
+///   8x8 blocks of its bands (`except_blocks`), which `verify` leaves out
+///   of the stamp it checks unchanged;
+/// - `Masked`: no stamp is protected and the masks stay where they are
+///   (the bands were hidden already, `hide_under_stamps`).
+pub fn protect_stamps(img: &Mat, canvas: &mut Mat, found: &[Stamp], r_range: (f64, f64), maps: Option<&stamps::Maps>, ms: &MaskSettings, bands: Option<&Mat>) -> Result<(Vec<Stamp>, Mat, Vec<String>, Vec<Value>)> {
     let cv = util::bytes(canvas)?;
-    if ms.mask_stamps {
+    if ms.stamps == masking::StampRule::Masked {
         let disc = util::bytes(&stamps::protect_mask(canvas.rows(), canvas.cols(), found, STAMP_MARGIN)?)?;
         let over = cv.iter().zip(&disc).filter(|&(&c, &d)| c == 0 && d > 0).count();
-        let notes = if over > 0 { vec![format!("masks over {} px inside stamps: stamps are masked over (--mask-stamps)", over)] } else { vec![] };
-        return Ok((vec![], util::zeros_u8(canvas.rows(), canvas.cols())?, notes));
+        let notes = if over > 0 { vec![format!("masks over {} px inside stamps: stamps are masked over", over)] } else { vec![] };
+        return Ok((vec![], util::zeros_u8(canvas.rows(), canvas.cols())?, notes, vec![]));
     }
     let hide: Vec<u8> = cv.iter().map(|&v| if v == 0 { 255 } else { 0 }).collect();
     let mut all = found.to_vec();
@@ -127,16 +134,40 @@ pub fn protect_stamps(img: &Mat, canvas: &mut Mat, found: &[Stamp], r_range: (f6
         let hm = util::from_bytes(canvas.rows(), canvas.cols(), &hide)?;
         all.extend(stamps::near(img, &hm, r_range, found, maps)?);
     }
+    let mut notes = Vec::new();
+    // the bands across stamps, in whole blocks: hidden, and left out of the
+    // stamps kept clear
+    let mut band_blocks = Grid::new(0, 0);
     let mut keep = util::zeros_u8(canvas.rows(), canvas.cols())?;
     for st in &all {
         util::fill_poly(&mut keep, &st.polygon(STAMP_MARGIN + 0.04 * st.r), 255.0)?;
     }
+    if let (masking::StampRule::Bands, Some(b)) = (ms.stamps, bands) {
+        // as far out as the stamp is kept clear
+        let (disc, bv) = (util::bytes(&keep)?, util::bytes(b)?);
+        let inside: Vec<u8> = bv.iter().zip(&disc).map(|(&v, &d)| if v == 0 && d > 0 { 255 } else { 0 }).collect();
+        let c = canvas.data_bytes_mut()?;
+        let mut n = 0;
+        for (i, &v) in inside.iter().enumerate() {
+            if v > 0 && c[i] != 0 {
+                c[i] = 0;
+                n += 1;
+            }
+        }
+        if n > 0 {
+            notes.push(format!("fields' bands across stamps hidden whole: {} px; the rest of each stamp is kept", n));
+        }
+        band_blocks = proof::to_blocks(&util::from_bytes(canvas.rows(), canvas.cols(), &inside)?)?;
+    }
     // Masks are applied in whole 8x8 blocks, so what stays clear is every
     // block touching a stamp; the checks must allow for exactly that.
-    let keep = proof::to_pixels(&proof::to_blocks(&keep)?, canvas.rows(), canvas.cols())?;
+    let mut kb = proof::to_blocks(&keep)?;
+    if band_blocks.rows > 0 {
+        kb = kb.and_not(&band_blocks);
+    }
+    let keep = proof::to_pixels(&kb, canvas.rows(), canvas.cols())?;
     let kv = util::bytes(&keep)?;
     let covered = hide.iter().zip(&kv).filter(|&(&h, &k)| h > 0 && k > 0).count();
-    let mut notes = Vec::new();
     if covered > 0 {
         notes.push(format!("masks lifted off {} px inside stamps: writing on a stamp stays visible", covered));
     }
@@ -148,13 +179,48 @@ pub fn protect_stamps(img: &Mat, canvas: &mut Mat, found: &[Stamp], r_range: (f6
             }
         }
     }
-    Ok((all, keep, notes))
+    let records = all.iter().map(|st| stamp_record(st, &band_blocks)).collect();
+    Ok((all, keep, notes, records))
 }
 
-/// With stamps masked over: each field's band across a stamp is hidden
-/// whole. What is written under a stamp can't be told from the stamp's own
-/// lettering (blue pen on a violet stamp is the same colour), so it isn't
-/// read there; the rest of the stamp stays visible. `bands`: the fields'
+/// A stamp's protected-region record, with the blocks of the bands hidden
+/// across it (`except_blocks`, [x, y, w, h] px, one run of blocks per row).
+fn stamp_record(st: &Stamp, band_blocks: &Grid) -> Value {
+    let mut rec = st.record();
+    let b = proof::BLOCK;
+    // every block the stamp's region can touch as `verify` draws it (its
+    // outline rounded out to whole px reaches into the next block), and
+    // all of its band blocks (hidden as far out as the stamp is kept
+    // clear): band blocks only are listed, so looking wider lists nothing
+    // else
+    let reach = st.r + STAMP_MARGIN + 0.04 * st.r + 2.0 * b as f64;
+    let (r0, r1) = (((st.cy - reach).max(0.0) as usize) / b, ((st.cy + reach).max(0.0) as usize) / b);
+    let (c0, c1) = (((st.cx - reach).max(0.0) as usize) / b, ((st.cx + reach).max(0.0) as usize) / b);
+    let mut runs = Vec::new();
+    for r in r0..=r1.min(band_blocks.rows.saturating_sub(1)) {
+        let mut c = c0;
+        while c <= c1.min(band_blocks.cols.saturating_sub(1)) {
+            if !band_blocks.get(r, c) {
+                c += 1;
+                continue;
+            }
+            let start = c;
+            while c <= c1.min(band_blocks.cols - 1) && band_blocks.get(r, c) {
+                c += 1;
+            }
+            runs.push(json!([start * b, r * b, (c - start) * b, b]));
+        }
+    }
+    if !runs.is_empty() {
+        rec["except_blocks"] = json!(runs);
+    }
+    rec
+}
+
+/// Each field's band across a stamp is hidden whole. What is written under
+/// a stamp can't be told from the stamp's own lettering (blue pen on a
+/// violet stamp is the same colour), so it isn't read there; the rest of
+/// the stamp stays visible. `bands`: the fields'
 /// bands, 0 on a canvas of their own (`masking::band`). Returns the px
 /// hidden that weren't already.
 pub fn hide_under_stamps(canvas: &mut Mat, bands: &Mat, found: &[Stamp]) -> Result<usize> {
@@ -663,6 +729,8 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
         masking::blackout(&mut canvas, &mapper(std::slice::from_ref(z))?, &zz, t.padding as f64)?;
         report.push(json!({"zone": z.name, "mode": "blackout"}));
     }
+    // a blacked-out zone's band across a stamp is all of it, as masked
+    let blackouts = if ms.masks_stamps() { Some(canvas.try_clone()?) } else { None };
     // Columns whose place couldn't be confirmed (`whole`), with the
     // signatures of their table: hidden whole, a quarter of a column wider
     // either side and half a row (or the widened search) above and below.
@@ -745,13 +813,19 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
             }
         }
     }
-    if ms.mask_stamps && !known.is_empty() {
+    // the fields' bands, where writing under a stamp is hidden
+    let bands = if ms.masks_stamps() {
         let mut bands = util::full_u8(gray.rows(), gray.cols(), 255)?;
         for (_, cells) in columns.iter().chain(&signatures) {
             let f = mapper(cells)?;
             for z in cells {
                 masking::fill(&mut bands, &f, &masking::band(z))?;
             }
+        }
+        if let Some(bo) = &blackouts {
+            let mut both = Mat::default();
+            opencv::core::min(&bands, bo, &mut both)?;
+            bands = both;
         }
         for (_, ft) in &free {
             let f = ft.mapper();
@@ -763,17 +837,22 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
         for z in &found_zones {
             masking::fill(&mut bands, &ident, &masking::band(z))?;
         }
-        let n = hide_under_stamps(&mut canvas, &bands, &known)?;
+        Some(bands)
+    } else {
+        None
+    };
+    if let (masking::StampRule::Masked, Some(b)) = (ms.stamps, &bands) {
+        let n = hide_under_stamps(&mut canvas, b, &known)?;
         if n > 0 {
             notes.push(format!("fields' bands across stamps hidden whole: {} px", n));
         }
     }
-    let (found, keep, stamp_notes) = protect_stamps(img, &mut canvas, &known, r_range, Some(&maps), ms)?;
+    let (_, keep, stamp_notes, stamp_records) = protect_stamps(img, &mut canvas, &known, r_range, Some(&maps), ms, bands.as_ref())?;
     notes.extend(stamp_notes);
     let (blocks, out) = apply(img, &canvas, Some(&keep))?;
 
     // Results regions must not lose a single block.
-    let mut protected: Vec<Value> = found.iter().map(|s| s.record()).collect();
+    let mut protected: Vec<Value> = stamp_records;
     let mut prot_mask = util::zeros_u8(gray.rows(), gray.cols())?;
     let hf = masking::homography(hh);
     for (name, [x, y, w, h]) in &t.protect {
@@ -826,6 +905,7 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
     if !leaks.is_empty() {
         return Ok(PageResult { unsure, ..fail(format!("leak check: {}", leaks.join("; ")), report, notes) });
     }
+    masking::tag_roles(&mut report, 0, None);
     Ok(PageResult {
         ok: true,
         image: Some(out),
@@ -908,6 +988,7 @@ pub fn redact_boxes(img: &Mat, boxes: &[(f64, f64, f64, f64, String)], ms: &Mask
         }
     }
     let (blocks, out) = apply(img, &canvas, None)?;
+    masking::tag_roles(&mut report, 0, Some("unknown"));
     Ok(PageResult {
         ok: true,
         image: Some(out),

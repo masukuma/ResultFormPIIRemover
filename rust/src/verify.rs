@@ -98,9 +98,45 @@ fn decode_gray(data: &[u8]) -> Result<Mat> {
 }
 
 /// Pixels of `a` and `b` (same size) inside a polygon are identical.
-fn same_inside(a: &Mat, b: &Mat, poly: &[[f64; 2]]) -> Result<bool> {
-    let mut region = util::zeros_u8(a.rows(), a.cols())?;
-    util::fill_poly(&mut region, poly, 255.0)?;
+/// A protected region's pixels: its polygon, less the blocks of the fields'
+/// bands hidden across it (a stamp's `except_blocks`).
+fn region_mask(p: &Value, rows: i32, cols: i32) -> Result<Mat> {
+    let mut m = util::zeros_u8(rows, cols)?;
+    util::fill_poly(&mut m, &polygon(p), 255.0)?;
+    if let Some(ex) = p["except_blocks"].as_array() {
+        let w = cols as usize;
+        let d = m.data_bytes_mut()?;
+        for r in ex {
+            let v: Vec<usize> = r.as_array().map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as usize).collect()).unwrap_or_default();
+            if v.len() != 4 {
+                continue;
+            }
+            for y in v[1]..(v[1] + v[3]).min(rows as usize) {
+                for x in v[0]..(v[0] + v[2]).min(w) {
+                    d[y * w + x] = 0;
+                }
+            }
+        }
+    }
+    Ok(m)
+}
+
+/// Blacked blocks (`blocks`) inside the protected regions of a page
+/// `rows` x `cols` (a manifest page's `protected`, each region less its
+/// `except_blocks`): what `verify` requires to be none, and `redact`
+/// checks before anything is written.
+pub fn protected_hits(protected: &[Value], blocks: &Grid, rows: i32, cols: i32) -> Result<usize> {
+    let mut prot = util::zeros_u8(rows, cols)?;
+    for p in protected {
+        let m = region_mask(p, rows, cols)?;
+        core::bitwise_or_def(&prot.clone(), &m, &mut prot)?;
+    }
+    let pb = proof::to_blocks(&prot)?;
+    Ok(if pb.rows == blocks.rows && pb.cols == blocks.cols { blocks.and(&pb).count() } else { blocks.count() })
+}
+
+fn same_inside(a: &Mat, b: &Mat, p: &Value) -> Result<bool> {
+    let region = region_mask(p, a.rows(), a.cols())?;
     let (r, av, bv) = (util::bytes(&region)?, util::bytes(a)?, util::bytes(b)?);
     let ch = a.channels() as usize;
     Ok(r.iter().enumerate().all(|(i, &v)| v == 0 || av[i * ch..(i + 1) * ch] == bv[i * ch..(i + 1) * ch]))
@@ -175,18 +211,62 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
     };
     let m = mf::read_json(&manifest_path)?;
     let pdf = std::fs::read(a.redacted)?;
+    // the notice below each page: there, and saying what the manifest says
+    if let Some(n) = m["output"]["notice"].as_str() {
+        let want = format!("({}) Tj", io::pdf_text(n));
+        let notices = io::pdf_notices(&pdf)?;
+        let ok = !notices.is_empty() && notices.iter().all(|c| c.as_deref().is_some_and(|c| c.contains(&want)));
+        r.add(ok, if ok { "each page carries the redaction notice the manifest records".to_string() } else { "a page lacks the redaction notice the manifest records, or shows another".to_string() });
+    }
+    // who published it, and on what legal basis (covered by the signature)
+    if let Some(c) = m.get("controller").filter(|c| !c.is_null()) {
+        r.notes.push(format!(
+            "published by {} ({}), legal basis: {}; purpose: {}; controller record sha256 {}",
+            c["controller"].as_str().unwrap_or("?"),
+            c["operator_role"].as_str().unwrap_or("?"),
+            c["legal_basis"].as_str().unwrap_or("?"),
+            c["purpose"].as_str().unwrap_or("?"),
+            c["sha256"].as_str().unwrap_or("?")
+        ));
+    }
 
     // 1. signature and ledger
+    let ledger = match a.ledger {
+        Some(l) => Some(mf::ledger_check(l)?),
+        None => None,
+    };
     if let Some(pk) = a.pubkey {
-        let why = mf::check_signature(&m, &mf::load_public(pk)?);
-        let ok = why.is_empty();
-        r.add(ok, if ok { "manifest signature valid".to_string() } else { format!("manifest signature: {}", why) });
+        let published = mf::load_public(pk)?;
+        // a key the published one handed over to in the ledger, unless revoked
+        let key = match &ledger {
+            Some((_, _, entries)) => mf::signing_key(&m, &published, entries),
+            None => Ok((published, vec![])),
+        };
+        match key {
+            Ok((k, chain)) => {
+                let why = mf::check_signature(&m, &k);
+                let ok = why.is_empty();
+                r.add(ok, if ok { "manifest signature valid".to_string() } else { format!("manifest signature: {}", why) });
+                r.notes.extend(chain);
+            }
+            Err(why) => {
+                r.add(false, format!("manifest signature: {}", why));
+            }
+        }
     } else {
         r.notes.push("no public key given: signature not checked".into());
     }
-    if let Some(l) = a.ledger {
-        let (ok, why, entries) = mf::ledger_check(l)?;
+    if let (Some((ok, why, entries)), Some(_)) = (ledger, a.ledger) {
         r.add(ok, if ok { "ledger hash chain intact".to_string() } else { why });
+        // taken down since (a leak found), and what replaced it
+        let own = mf::digest(&m);
+        match entries.iter().find(|e| e["type"] == "withdrawal" && e["manifest_sha256"].as_str() == Some(own.as_str())) {
+            Some(w) => r.add(false, format!("not withdrawn: withdrawn in ledger entry {} ({}): {}", w["seq"], w["at"].as_str().unwrap_or("?"), w["reason"].as_str().unwrap_or(""))),
+            None => r.add(true, "not withdrawn"),
+        };
+        if let Some(s) = m.get("supersedes").filter(|s| !s.is_null()) {
+            r.notes.push(format!("this form replaces {} (manifest {}), withdrawn", s["name"].as_str().unwrap_or("?"), s["manifest_sha256"].as_str().unwrap_or("?")));
+        }
         let h = mf::digest(&m);
         let hit = entries.iter().find(|e| e["manifest_sha256"].as_str() == Some(h.as_str()));
         match hit {
@@ -267,12 +347,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
         let red_px = io::decode_bytes(img_bytes)?;
         // blacked blocks must not touch results regions
         let protected = pm["protected"].as_array().cloned().unwrap_or_default();
-        let mut prot = util::zeros_u8(red_px.rows(), red_px.cols())?;
-        for p in &protected {
-            util::fill_poly(&mut prot, &polygon(p), 255.0)?;
-        }
-        let pb = proof::to_blocks(&prot)?;
-        let hits = if pb.rows == declared.rows && pb.cols == declared.cols { declared.and(&pb).count() } else { declared.count() };
+        let hits = protected_hits(&protected, &declared, red_px.rows(), red_px.cols())?;
         let n_stamps = protected.iter().filter(|p| p.get("kind").and_then(|v| v.as_str()) == Some("stamp")).count();
         let what = format!("{} protected results region(s) and {} stamp(s)", protected.len() - n_stamps, n_stamps);
         r.add(
@@ -326,7 +401,7 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
             if !same {
                 break;
             }
-            same = same_inside(&ia, &ib, &polygon(p))?;
+            same = same_inside(&ia, &ib, p)?;
         }
         r.add(
             same,
@@ -358,6 +433,11 @@ pub fn verify(a: &VerifyArgs) -> Result<Report> {
             vlm_rounds: 0,
             pdf_signer: None,
             orient: None,
+            controller: None,
+            transfers: None,
+            kenya_hosts: vec![],
+            supersedes: vec![],
+            notice: false,
         };
         if let Some(o) = m.get("ocr") {
             let now = crate::ocr::info().map(|i| i["models"].clone()).unwrap_or(Value::Null);

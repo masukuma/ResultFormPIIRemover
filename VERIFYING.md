@@ -17,7 +17,10 @@ For every published form, the publisher claims:
    as in the original.
 3. **Results and stamps untouched.** None of those black blocks touches the
    results (header and QR code, station names and codes, the votes table, the
-   polling-station counts) or any official stamp on the form.
+   polling-station counts) or any official stamp on the form, except where a
+   field's line crosses a stamp: an ID, a phone number or a signature
+   written under the stamp. Those blocks are listed with the stamp
+   (`except_blocks`), and the rest of the stamp is checked untouched.
 4. **Fixed record.** The form, its manifest and its place in the batch were
    recorded when published, and cannot be changed later without detection.
 
@@ -95,9 +98,26 @@ so you can see for yourself where the changes are.
 The protected regions come from the manifest. For a Form 34A or 34B they are
 the template's results regions; for older forms read without a template, the
 whole page above the "Declaration" label. Stamps are found on each page and
-listed with their circle. Whether the list is complete is something you can
-check by eye on the overlay: every stamp on the form should be outlined, and
-no red block should touch one.
+listed with their circle, and with the blocks of any field's line hidden
+across them. Whether the list is complete is something you can check by eye
+on the overlay: every stamp on the form should be outlined, and red blocks
+should touch one only along a field's line (forms redacted with
+`--keep-stamps`, and before October 2026, have none there).
+
+A few more checks and notes concern the publisher's record rather than the
+image:
+- **The notice.** Each page carries a line below it saying it is a redacted
+  copy, naming the original by its hash. `verify` checks it says what the
+  manifest records.
+- **Withdrawn.** A form taken down after release (a leak found) is marked
+  in the ledger; `verify` then fails "not withdrawn", and its replacement's
+  manifest names it.
+- **The signing key.** If the publisher handed over to a new key, or
+  revoked one, the ledger records it, signed by the key it concerns: a form
+  signed with a later key verifies with the first published key and the
+  ledger, and one signed with a revoked key after its revocation fails.
+- **Who published it.** If the manifest names a controller record, `verify`
+  prints the publisher, its legal basis and purpose.
 
 ## How the check works, and why it doesn't rely on trusting us
 

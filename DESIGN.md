@@ -15,7 +15,7 @@ personal data gets a different treatment:
 | Phone numbers | **First digits kept, 3 of the last 6 hidden**: `0734471897` keeps `0734` and hides 3 of `471897` (all of them with `--full-phones`) |
 | Names | Left visible |
 | QR code, station codes, votes | Left visible: these are what make the form verifiable |
-| Stamps | **Never masked**, even where a stamp lies over a signature, an ID or a phone number (unless `--mask-stamps`, see "Stamps") |
+| Stamps | **Kept and verified**, except a field's line across one: where a stamp lies over a signature, an ID or a phone number, that line is blacked and the rest of the stamp kept (`--keep-stamps`: never masked; see "Stamps") |
 
 The hidden characters are random, but never more than two neighbouring
 characters are left visible together.
@@ -368,7 +368,8 @@ checks alike, and the page notes say how many there were.
    hidden. Writing on a protected stamp stays visible by the stamp rule. On
    one 2022 Lamu form the stamp's edge lay over the first three digits of
    two phone numbers. Counted, they held the page, and so would every
-   number a stamp touches; `--mask-stamps` hides them instead. On 225 pages
+   number a stamp touches with `--keep-stamps`; by default they are hidden
+   along the field's line. On 225 pages
    (two 2022 Form 34A zips, the 2013 Diaspora scan), the same pages were
    published and held as with the default rule. The settings are recorded
    in the manifest (`settings.full_ids`, `settings.full_phones`) and
@@ -477,12 +478,15 @@ is, readers learn only by comparing the certificate's fingerprint with the
 one the publisher announced. A certificate from a CA they already trust
 makes that link for them.
 
-## Stamps are never masked (`stamps.rs`)
+## Stamps are kept (`stamps.rs`)
 
 The presiding officer's stamp is what readers look for to tell a genuine
 form. It is often pressed across a signature, an ID or a phone number. The
-rule is absolute: **no blacked block may touch a stamp**, even when that leaves
-part of a signature or a number visible under it.
+rule: **no blacked block may touch a stamp except along a field's line
+across it**, and the rest of the stamp is checked unchanged. Until October
+2026 the rule was absolute (no blacked block touched a stamp at all, even
+when that left a signature or a number readable under it); `--keep-stamps`
+still applies it.
 
 - **Finding stamps.** Two ink maps are made: dark ink, and coloured ink (any
   colour that stands out from the paper's own, so faded violet or blue stamps
@@ -527,25 +531,32 @@ part of a signature or a number visible under it.
   found). `rfpii verify` checks that no blacked block touches one and that its
   pixels decode identically in the original and the redacted form, as for the
   results. The overlay outlines stamps in magenta.
-- **`--mask-stamps`: the stamp isn't sacred.** Off by default. Officers often
-  stamp over their own details: in the 2013 Forms 34, about 250 of 2,968
-  published pages had half or more of an officer's ID line inside a stamp,
-  and on some the whole ID was readable there. With the flag, no stamp is
-  protected and no mask is lifted off one, and each field's band across a
-  stamp (its zone: an ID's or phone number's line, a signature's line, a
-  table cell) is blacked whole. What is written under a stamp can't be told
-  from the stamp's own lettering: on Isiolo North-2 p17 the blue pen lies
-  10–20° of hue from the violet stamp, inside the stamp's own spread, and
-  the lettering is as dark as the pen. So it isn't read there, and the
-  three-characters rule gives way to hiding the part of the number under the
-  stamp. Outside stamps, masking is unchanged; the rest of each stamp (its
-  ring, the lettering off the fields' lines) stays visible. Stamps are then
-  not listed as protected regions, so `verify` doesn't require them
-  untouched and the overlay doesn't outline them; the page notes say how
-  much of the stamps the masks cover. The setting is recorded in the
-  manifest (`settings.mask_stamps`) and `verify --rerun` repeats it. The VLM
-  review is told that writing inside a stamp follows the rules, and what it
-  finds there is masked.
+- **A field's line across a stamp is hidden (the default since October
+  2026).** Officers often stamp over their own details: in the 2013 Forms
+  34, 560 of 6,608 published pages had half or more of an officer's ID line
+  inside a stamp, and on some the whole ID was readable there. The Data
+  Protection Act's minimisation duty (s.25(d), kept binding by s.51(1) even
+  where publication is required) and the courts' use of the stamp as a mark
+  of authenticity are both met by hiding only the line and keeping the
+  rest (`legal/C-recommendations.md` §2.6). Each field's band across a stamp
+  (its zone: an ID's or phone number's line, a signature's line, a table
+  cell, a blacked-out zone as masked) is blacked whole, as far out as the
+  stamp is kept clear; the near stamps found around masks are treated the
+  same. What is written under a stamp can't be told from the stamp's own
+  lettering: on Isiolo North-2 p17 the blue pen lies 10–20° of hue from the
+  violet stamp, inside the stamp's own spread, and the lettering is as dark
+  as the pen. So it isn't read there, and the three-characters rule gives
+  way to hiding the part of the number under the stamp. Every other mask on
+  the stamp is lifted, as before. The stamp stays listed as a protected
+  region, with the 8×8 blocks of the bands across it (`except_blocks`,
+  [x, y, w, h], one run of blocks per row): `verify` requires the rest of
+  the stamp untouched and identical to the original, and the overlay still
+  outlines it. The setting is recorded in the manifest (`settings.stamps`:
+  `bands`, `protected` for `--keep-stamps`) and `verify --rerun` repeats it;
+  manifests from before it re-run as recorded then (`settings.mask_stamps`:
+  `false` protected, `true` the old `--mask-stamps`, which protected no
+  stamp at all). The VLM review is told that writing inside a stamp follows
+  the rules, and what it finds there is masked.
 
 ## Verifiability
 
@@ -592,9 +603,58 @@ altered, only obscured, and the manifest records where.
     and the page alignment;
   - per agent row, the rule applied and which character *positions* were
     hidden (never the characters themselves);
-  - any VLM verdicts.
+  - any VLM verdicts, with each model host's region (local, kenya,
+    foreign) and the id of the transfer recorded for a host abroad;
+  - whose personal data each mask holds (`role`: officer, agent or
+    unknown, from the zone's name or the field's place on the form), for
+    the record of processing and for counting who a breach would touch;
+  - the controller record (`--controller`): its SHA-256, the controller,
+    the operator's role, the legal basis, the purpose and whether the use
+    is commercial.
 
   It is signed with the publisher's Ed25519 key (`manifest.rs`).
+- **Ledger events.** Besides one entry per published form, the ledger
+  takes signed events, chained like any entry: `key_rotation` (signed by
+  the key replaced, carrying the new public key), `key_revocation` (signed
+  by the revoked key, optionally back to a date) and `withdrawal` (a form
+  taken down, with the reason). `verify` follows rotations from the first
+  published key, rejects a signature made with a revoked key after its
+  revocation or since its date, and reports a withdrawn form
+  (`legal/C-recommendations.md` §2.11, §2.14). `rfpii withdraw` moves the
+  PDF out of the published folder into `<out>-withdrawn/` with a copy of
+  its manifest; a corrected form republished with `--supersedes` names the
+  one it replaces. Private keys are written encrypted (PKCS#8, AES-256)
+  unless `--unencrypted`.
+- **The notice.** Each published page gets a line below it, outside the
+  image: a redacted copy under the Data Protection Act, results unchanged,
+  the original's SHA-256, and how to check it. The page box reaches down
+  by the strip's height, recorded on the page as `/RfpiiNoticeHeight`, so
+  the page reads back with the size and placement of the original and the
+  image is untouched. The text is in the manifest (`output.notice`) and
+  `verify` checks every page carries it.
+- **Toward the publisher's duties.** `rfpii dpia-annex` writes the
+  technical annex of a DPIA from a run's manifests, review report,
+  transfers record and ledger, in the order of s.31(2) and the Third
+  Schedule: the processing (settings, masks by role and field, software),
+  residual-risk figures (candidates left per number, writing left on
+  stamps, pages held and why, withdrawals), measures, transfers abroad and
+  retention; necessity and proportionality are left for the controller to
+  write, with the points it must answer. `rfpii retain` applies a retention
+  schedule (`retention.yaml`: classes of file, folders, days kept),
+  recording each disposal in the ledger by file name and hash. `rfpii
+  bundle` packs forms for scrutiny with their manifests, verify logs, the
+  ledger, batch roots, key, a cover sheet and SHA256SUMS
+  (`legal/C-recommendations.md` §2.8, §2.10, §2.13).
+- **Transfers abroad.** Every call that sends a page to a model host
+  outside Kenya (anything not on this machine nor named with
+  `--kenya-host`) appends a line to `transfers.jsonl`, the record reg.
+  41(2) of the Data Protection (General) Regulations 2021 requires: date
+  and time, recipient (host, model), justification (the controller's
+  purpose and legal basis), a description of the data sent, and the
+  hashes of the images. Reg. 26 asks that processing for elections run in
+  Kenya, or keep a serving copy there (the originals and outputs stay on
+  the operator's machine); the record shows what left it
+  (`legal/C-recommendations.md` §2.1).
 - **Ledger.** `ledger.jsonl` is append-only and hash-chained. Each entry commits
   to the previous one, so altering, dropping or back-dating any entry breaks
   the chain.
@@ -668,10 +728,10 @@ non-local host unless `--allow-remote-unredacted` is given.)
    printed "Tel." header it took for a phone, is not kept because the
    checker sees a signature beside it. A reply that can't be read counts as
    yes.
-4. **On a stamp?** A spot at least half inside a protected stamp is left
-   visible: the stamp rule would lift a mask there anyway. It is recorded
-   (`on_stamps`) but not masked. With `--mask-stamps` no stamp is protected,
-   and every spot is masked.
+4. **On a stamp?** With `--keep-stamps`, a spot at least half inside a
+   protected stamp is left visible: the stamp rule would lift a mask there
+   anyway. It is recorded (`on_stamps`) but not masked. By default every
+   spot is masked, its band across a stamp included.
 5. **Mask and repeat.** What is confirmed is masked through the same block
    masking and proof as everything else: signatures hidden whole, numbers
    with 3 digits hidden. The page is redacted again from its seed and
@@ -1121,6 +1181,21 @@ hidden whole (the box of the writing). The template's own printed letters
 are taken out first, and stamps found anywhere on the page are protected,
 including one the area cuts through.
 
+A signature's box is cut back off the words beside it that OCR read as
+capitals with fair confidence (three or more letters or digits, seven in
+ten capitals or digits, read at 0.6 or better), so a comment, a name or a
+date next to a sign-off stays readable: the comments are where the forms
+record reasons for refusal, which the courts read
+(`legal/C-recommendations.md` §2.4). Words over the signature's own
+writing (more than 15% of it) are not counted, since they may be the
+signature read as letters, and a box that would be cut to nothing is masked
+whole. Each cut is noted (`collateral text: …`). On the two 2022 Form 34A
+zips (215 forms) masks were cut back 19 times on 12 pages; put side by side
+with the earlier outputs, no signature shows that didn't before, and words
+such as a name's last letters are back. A first version cut masks back off
+whole OCR lines read as capitals: a signature written on the same line as a
+name and a date ("AMINA OMAR [signature] 09-08-2022") then lost its mask.
+
 The rule is stricter here, because the comments are where most of the
 handwriting is: block capitals, often across the security print, which OCR
 misses much of. A word OCR never finds as a line reads as nothing, the same
@@ -1244,10 +1319,10 @@ results don't depend on how the work is split.
   (steps 6 and 7 above), but by rule, not by understanding: in the comments
   some signatures are missed and a few words are masked (see "Comments on a
   templated form"). Run `--vlm-audit` on them.
-- **Writing under a stamp stays visible.** A signature, ID or phone number
-  that a stamp lies across is masked only outside the stamp. This is the
-  stamp rule working as intended, and the page notes record it.
-  `--mask-stamps` hides it instead, blacking that band of the stamp.
+- **Writing under a stamp off a field's line stays visible.** Only each
+  field's band across a stamp is hidden; a signature's flourish or a number
+  written high above its line, inside a stamp, shows. With `--keep-stamps`
+  everything under a stamp shows. The page notes record both.
 - **A stamp the finder misses is not protected.** Rings that are very faint,
   mostly hidden, or far from circular can be missed. The second search near
   masks and the VLM audit's `stamp_covered` check reduce this; the overlay

@@ -42,9 +42,8 @@ pub struct MaskSettings {
     pub min_glyph_h: f64,
     pub min_glyph_h_out: f64,
     pub empty_ink: f64,
-    /// Stamps are not protected: writing under one is hidden, and the
-    /// masks cover that part of the stamp (`--mask-stamps`)
-    pub mask_stamps: bool,
+    /// What happens to writing under a stamp
+    pub stamps: StampRule,
     /// Every character of an ID or passport number is hidden, not `hide` of
     /// them (`--full-ids`)
     pub full_ids: bool,
@@ -55,7 +54,31 @@ pub struct MaskSettings {
 
 impl Default for MaskSettings {
     fn default() -> Self {
-        MaskSettings { hide: 3, phone_tail: 6, vpad: 60.0, mask_vpad: 3.0, min_glyph_h: 0.4, min_glyph_h_out: 0.4, empty_ink: 0.01, mask_stamps: false, full_ids: false, full_phones: false }
+        MaskSettings { hide: 3, phone_tail: 6, vpad: 60.0, mask_vpad: 3.0, min_glyph_h: 0.4, min_glyph_h_out: 0.4, empty_ink: 0.01, stamps: StampRule::Bands, full_ids: false, full_phones: false }
+    }
+}
+
+/// What happens to writing under a stamp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StampRule {
+    /// Each field's band across a stamp is hidden; the rest of the stamp is
+    /// protected, and `verify` checks it unchanged (the default)
+    Bands,
+    /// Stamps are never masked: writing under one stays visible
+    /// (`--keep-stamps`; the default before October 2026)
+    Protected,
+    /// Bands hidden and no stamp protected: `--mask-stamps` before the
+    /// default changed, kept to re-run the manifests it made
+    Masked,
+}
+
+impl StampRule {
+    pub fn name(self) -> &'static str {
+        match self {
+            StampRule::Bands => "bands",
+            StampRule::Protected => "protected",
+            StampRule::Masked => "masked",
+        }
     }
 }
 
@@ -65,19 +88,59 @@ impl MaskSettings {
     pub fn from_record(st: &serde_json::Value) -> MaskSettings {
         let d = MaskSettings::default();
         let flag = |k: &str| st[k].as_bool().unwrap_or(false);
+        // before `stamps` was recorded: stamps protected, or masked over
+        // with `mask_stamps`
+        let stamps = match st["stamps"].as_str() {
+            Some("bands") => StampRule::Bands,
+            Some("masked") => StampRule::Masked,
+            Some(_) => StampRule::Protected,
+            None if flag("mask_stamps") => StampRule::Masked,
+            None => StampRule::Protected,
+        };
         MaskSettings {
             hide: st["hide"].as_u64().map_or(d.hide, |v| v as usize),
             phone_tail: st["phone_tail"].as_u64().map_or(d.phone_tail, |v| v as usize),
-            mask_stamps: flag("mask_stamps"),
+            stamps,
             full_ids: flag("full_ids"),
             full_phones: flag("full_phones"),
             ..d
         }
     }
 
+    /// Writing under stamps is hidden.
+    pub fn masks_stamps(&self) -> bool {
+        self.stamps != StampRule::Protected
+    }
+
     /// Numbers of this rule (`phone` or `id`) are hidden whole.
     pub fn whole(&self, rule: &str) -> bool {
         if rule == "phone" { self.full_phones } else { self.full_ids }
+    }
+}
+
+/// Whose personal data a zone holds, from its name: an agent's, an
+/// officer's (presiding or deputy officer, returning officer, chairperson),
+/// or neither known. Recorded with each mask, for the record of processing
+/// and for counting who a breach would touch; masking is the same for all.
+pub fn role_of(zone: &str) -> &'static str {
+    let z = zone.to_ascii_lowercase();
+    if z.contains("agent") {
+        "agent"
+    } else if ["officer", "presiding", "deputy", "chair", "ro_", "returning", "handover"].iter().any(|k| z.contains(k)) {
+        "officer"
+    } else {
+        "unknown"
+    }
+}
+
+/// Tag each mask record from `from` on with `role`, or the role its zone's
+/// name gives when `role` is None, unless it has one already.
+pub fn tag_roles(report: &mut [serde_json::Value], from: usize, role: Option<&str>) {
+    for r in report.iter_mut().skip(from) {
+        if r.get("role").is_none() {
+            let role = role.unwrap_or_else(|| role_of(r["zone"].as_str().unwrap_or("")));
+            r["role"] = serde_json::json!(role);
+        }
     }
 }
 

@@ -47,6 +47,43 @@ pub struct Config {
     /// a decision model (Clef) asked which way up each published page of a
     /// photo with no EXIF orientation tag stands
     pub orient: Option<std::sync::Arc<crate::vlm::Ollama>>,
+    /// who publishes and on what legal basis (`controller.json`)
+    pub controller: Option<std::sync::Arc<crate::legal::Controller>>,
+    /// where every transfer of a page to a model host abroad is recorded
+    pub transfers: Option<std::sync::Arc<crate::legal::Transfers>>,
+    /// model hosts the operator names as in Kenya (not a transfer abroad)
+    pub kenya_hosts: Vec<String>,
+    /// manifests of withdrawn forms this run republishes (matched by source
+    /// and page)
+    pub supersedes: Vec<Value>,
+    /// write a redaction notice on each page, below it, outside the image
+    pub notice: bool,
+}
+
+/// The line written below each published page: that it is a redacted copy,
+/// under what law, that the results are unchanged, which original it was
+/// made from and how to check it.
+pub fn notice_text(controller: Option<&str>, source_sha: &str, out_name: &str) -> String {
+    let by = controller.map(|c| format!("Published by {}. ", c)).unwrap_or_default();
+    format!(
+        "{}REDACTED COPY: personal data masked under Kenya's Data Protection Act 2019; results unchanged. Original SHA-256 {}. Check it: rfpii verify {} --original <the original form>",
+        by,
+        &source_sha[..16.min(source_sha.len())],
+        out_name
+    )
+}
+
+impl Config {
+    /// Record a page sent to a model host, if it is abroad: the transfer's
+    /// id and the host's region (local, kenya, foreign).
+    pub fn transfer(&self, t: crate::legal::Transfer) -> Result<(Option<String>, &'static str)> {
+        let region = crate::legal::host_region(t.host, &self.kenya_hosts);
+        let id = match &self.transfers {
+            Some(tr) => tr.record(&t, &self.kenya_hosts, self.controller.as_deref())?,
+            None => None,
+        };
+        Ok((id, region))
+    }
 }
 
 /// Version and exact code revision, so a scrutineer can run the same code.
@@ -280,11 +317,27 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
                     for (k, x) in r.record.as_object().unwrap() {
                         rec[k] = x.clone();
                     }
-                    // writing on a stamp stays visible (the stamp rule lifts
-                    // any mask there): not the review's to mask. With
-                    // stamps masked over, no stamp is protected and every
-                    // spot found is masked.
-                    let (stamped, found_now): (Vec<Found>, Vec<Found>) = r.found.into_iter().partition(|f| on_stamps(f, &p.protected) >= 0.5);
+                    // spots already black are not asked about: no crop sent
+                    let checked = r.record["spots"].as_array().map(|s| s.iter().filter(|x| !x["what"].as_str().unwrap_or("").ends_with("already black")).count()).unwrap_or(0);
+                    let (id, region) = cfg.transfer(crate::legal::Transfer {
+                        host: &rv.finder.s.host,
+                        model: &format!("{} (checks: {})", rv.finder.s.model, rv.checker.s.model),
+                        purpose: "review",
+                        data: format!("the redacted page from the declaration down, and zoomed crops of it around {} spot(s): names and parties of officers and agents, ID and phone numbers and signatures masked as the manifest's settings record", checked),
+                        document: rel,
+                        page: number(i),
+                        images: r.record["image_sent_sha256"].as_str().map(|s| vec![s.to_string()]).unwrap_or_default(),
+                    })?;
+                    rec["host_region"] = json!(region);
+                    if let Some(id) = id {
+                        rec["transfer"] = json!(id);
+                    }
+                    // with stamps kept, writing on a stamp stays visible
+                    // (the stamp rule lifts any mask there): not the
+                    // review's to mask. Otherwise every spot found is
+                    // masked, its band across a stamp included.
+                    let kept = cfg.mask.stamps == crate::masking::StampRule::Protected;
+                    let (stamped, found_now): (Vec<Found>, Vec<Found>) = r.found.into_iter().partition(|f| kept && on_stamps(f, &p.protected) >= 0.5);
                     if !stamped.is_empty() {
                         rec["on_stamps"] = json!(stamped.iter().map(|f| f.to_value()).collect::<Vec<_>>());
                     }
@@ -354,6 +407,13 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
             report["reason"] = json!(format!("page {}: self-check failed: {}", number(i), cmp.problems.join("; ")));
             return Ok(Outcome { ok: false, report, manifest: None, pdf: None, redacted_pages: vec![], source_pages: vec![] });
         }
+        // and as `verify` will check it: no blacked block inside a
+        // protected region, less the bands recorded across its stamps
+        let hits = crate::verify::protected_hits(&p.protected, &red.luma_blocks, sp.pixels.rows(), sp.pixels.cols())?;
+        if hits > 0 {
+            report["reason"] = json!(format!("page {}: self-check failed: {} blacked block(s) inside protected results regions or stamps", number(i), hits));
+            return Ok(Outcome { ok: false, report, manifest: None, pdf: None, redacted_pages: vec![], source_pages: vec![] });
+        }
         let (h, w) = (sp.pixels.rows(), sp.pixels.cols());
         let src_sha = match &sp.data {
             Some(d) => proof::sha256(d),
@@ -406,7 +466,22 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
                     Some(m) => m.clone(),
                     None => io::decode_bytes(&reds[i].data)?,
                 };
-                Some(clef.orient(&img)?.1)
+                let mut rec = clef.orient(&img)?.1;
+                let images: Vec<String> = rec["asked"].as_array().map(|a| a.iter().filter_map(|q| q["image_sent_sha256"].as_str().map(String::from)).collect()).unwrap_or_default();
+                let (id, region) = cfg.transfer(crate::legal::Transfer {
+                    host: &clef.s.host,
+                    model: &clef.s.model,
+                    purpose: "orientation",
+                    data: format!("the redacted page at most 1024 px long, in {} turn(s): names and parties visible, ID and phone numbers and signatures masked", images.len()),
+                    document: rel,
+                    page: number(i),
+                    images,
+                })?;
+                rec["host_region"] = json!(region);
+                if let Some(id) = id {
+                    rec["transfer"] = json!(id);
+                }
+                Some(rec)
             }
             _ => None,
         };
@@ -431,7 +506,9 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
             (img, sp.page_size, sp.place, (sp.rotate + turn).rem_euclid(360))
         })
         .collect();
-    let pdf = io::build_pdf(&items)?;
+    let out_name = out_rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let notice = cfg.notice.then(|| notice_text(cfg.controller.as_ref().and_then(|c| c.raw["controller"]["name"].as_str()), &source_sha, &out_name));
+    let pdf = io::build_pdf_with(&items, notice.as_deref())?;
     let created = utc_now();
     let pdf = match &cfg.pdf_signer {
         Some(s) => crate::pdfsign::sign_pdf(&pdf, s, &created)?,
@@ -462,12 +539,15 @@ pub fn process_document(src: &str, rel: &str, page: Option<usize>, templates: &[
         "tool": tool_info(),
         "created_at": created,
         "source": source,
-        "output": {"file": out_rel.to_string_lossy(), "pdf_sha256": proof::sha256(&pdf)},
+        "output": {"file": out_rel.to_string_lossy(), "pdf_sha256": proof::sha256(&pdf), "notice": notice},
         "seed": format!("{:x}", seed),
-        "settings": {"hide": cfg.mask.hide, "phone_tail": cfg.mask.phone_tail, "mask_stamps": cfg.mask.mask_stamps,
+        "settings": {"hide": cfg.mask.hide, "phone_tail": cfg.mask.phone_tail, "mask_stamps": cfg.mask.masks_stamps(), "stamps": cfg.mask.stamps.name(),
                      "full_ids": cfg.mask.full_ids, "full_phones": cfg.mask.full_phones,
                      "strict_structure": cfg.strict_structure, "generic": cfg.generic,
                      "align": cfg.align.to_json()},
+        "controller": cfg.controller.as_ref().map(|c| c.summary()),
+        "supersedes": cfg.supersedes.iter().find(|o| o["source"]["sha256"] == source["sha256"] && o["source"]["page"] == source["page"])
+            .map(|o| json!({"manifest_sha256": crate::manifest::digest(o), "output_sha256": o["output"]["pdf_sha256"], "name": o["output"]["file"]})),
         "templates": tmap,
         "pages": mpages,
         "vlm_review": if reviews.is_empty() { Value::Null } else { Value::Array(reviews) },

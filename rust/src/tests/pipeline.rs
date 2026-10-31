@@ -23,7 +23,15 @@ fn templates() -> Vec<Template> {
 }
 
 fn run(scan: &Mat, ts: &[Template]) -> PageResult {
-    redact_page(scan, ts, &AlignSettings::default(), &MaskSettings::default(), &mut PyRandom::new(0), &PageOptions::default()).unwrap()
+    run_with(scan, ts, &MaskSettings::default())
+}
+
+fn run_with(scan: &Mat, ts: &[Template], ms: &MaskSettings) -> PageResult {
+    redact_page(scan, ts, &AlignSettings::default(), ms, &mut PyRandom::new(0), &PageOptions::default()).unwrap()
+}
+
+fn kept() -> MaskSettings {
+    MaskSettings { stamps: masking::StampRule::Protected, ..MaskSettings::default() }
 }
 
 /// A template rectangle as it lies on the scan (shrunk by `shrink`), as an
@@ -98,23 +106,28 @@ fn stamped(g: &Mat) -> Mat {
     img
 }
 
+/// The stamp's disc as it lies on the scan, as a polygon.
+fn stamp_ring(h: &[[f64; 3]; 3]) -> Vec<[f64; 2]> {
+    let (cx, cy, rad) = (STAMP.0 as f64, STAMP.1 as f64, STAMP.2 as f64);
+    (0..72)
+        .map(|k| {
+            let t = 2.0 * std::f64::consts::PI * k as f64 / 72.0;
+            let p = util::project(h, [cx + rad * t.cos(), cy + rad * t.sin()]);
+            [util::round_even(p[0]), util::round_even(p[1])]
+        })
+        .collect()
+}
+
 #[test]
-fn stamp_over_a_signature_is_never_masked() {
+fn with_stamps_kept_a_stamp_over_a_signature_is_never_masked() {
     let ts = templates();
     let form = to_gray(&stamped(&filled_form(3).unwrap()));
     let (scan, h) = simulate_scan(&form, 3, 2.0, 1.3).unwrap();
-    let r = run(&scan, &ts);
+    let r = run_with(&scan, &ts, &kept());
     assert!(r.ok, "{}", r.reason);
     assert!(r.protected.iter().any(|p| p["kind"] == "stamp"), "stamp not recorded as protected");
     // the stamp's disc, as it lies on the scan: not one blacked block may touch it
-    let (cx, cy, rad) = (STAMP.0 as f64, STAMP.1 as f64, STAMP.2 as f64);
-    let ring: Vec<[f64; 2]> = (0..72)
-        .map(|k| {
-            let t = 2.0 * std::f64::consts::PI * k as f64 / 72.0;
-            let p = util::project(&h, [cx + rad * t.cos(), cy + rad * t.sin()]);
-            [util::round_even(p[0]), util::round_even(p[1])]
-        })
-        .collect();
+    let ring = stamp_ring(&h);
     let mut disc = gray(scan.rows(), scan.cols(), 0);
     util::fill_poly(&mut disc, &ring, 255.0).unwrap();
     let blocks = r.blocks.as_ref().unwrap();
@@ -133,11 +146,65 @@ fn stamp_over_a_signature_is_never_masked() {
 }
 
 #[test]
-fn with_stamps_masked_over_the_officers_box_is_masked_stamp_and_all() {
+fn by_default_the_band_across_a_stamp_is_hidden_and_the_rest_of_the_stamp_kept() {
     let ts = templates();
     let form = to_gray(&stamped(&filled_form(3).unwrap()));
     let (scan, h) = simulate_scan(&form, 3, 2.0, 1.3).unwrap();
-    let ms = MaskSettings { mask_stamps: true, ..MaskSettings::default() };
+    let r = run(&scan, &ts);
+    assert!(r.ok, "{}", r.reason);
+    // the officers' boxes are masked whole, across the stamp too
+    let img = r.image.as_ref().unwrap();
+    for (name, rect) in ZONES {
+        let px = region(img, &project(rect.map(|v| v as f64), &h, 0.0));
+        assert!(px.iter().all(|&v| v == 0), "zone {}", name);
+    }
+    // the stamp is still protected, less the blocks of the bands across it
+    let st = r.protected.iter().find(|p| p["kind"] == "stamp").expect("the stamp is protected");
+    let except = st["except_blocks"].as_array().expect("the bands across it are listed");
+    assert!(!except.is_empty());
+    let mut disc = gray(scan.rows(), scan.cols(), 0);
+    util::fill_poly(&mut disc, &stamp_ring(&h), 255.0).unwrap();
+    for e in except {
+        let v: Vec<i32> = e.as_array().unwrap().iter().map(|x| x.as_i64().unwrap() as i32).collect();
+        assert!(v[0] % 8 == 0 && v[1] % 8 == 0 && v[2] % 8 == 0 && v[3] == 8, "whole blocks: {:?}", v);
+        fill_rect(&mut disc, v[0], v[1], v[0] + v[2], v[1] + v[3], 0);
+    }
+    // ... and the rest of its disc is untouched: no blacked block, the same pixels
+    assert!(opencv::core::count_non_zero(&disc).unwrap() > 0, "part of the stamp lies off the bands");
+    let blocks = r.blocks.as_ref().unwrap();
+    assert!(!blocks.and(&proof::to_blocks(&disc).unwrap()).any());
+    let (d, a, b) = (util::bytes(&disc).unwrap(), util::bytes(img).unwrap(), util::bytes(&scan).unwrap());
+    assert!(d.iter().enumerate().filter(|&(_, &v)| v != 0).all(|(i, _)| a[i * 3..i * 3 + 3] == b[i * 3..i * 3 + 3]));
+}
+
+#[test]
+fn the_bands_across_a_stamp_are_listed_out_to_its_edge_as_verify_draws_it() {
+    // the stamp's outline ends 0.3 px short of a block's edge (x = 600), so
+    // drawn in whole px it reaches into that block: the band blocks there
+    // are listed too, and the page passes verify's check
+    for (cx, cy) in [(500.0, 500.0), (499.7, 500.3), (500.3, 499.7)] {
+        let stamp = Stamp::new(cx, cy, 99.7, 1.0, "ring");
+        let ident = masking::homography(util::IDENTITY);
+        let mut bands = gray(1000, 1000, 255);
+        for z in [Zone::new("id", [300.0, 480.0, 400.0, 40.0], "partial"), Zone::new("sig", [480.0, 300.0, 40.0, 400.0], "signature")] {
+            masking::fill(&mut bands, &ident, &masking::band(&z)).unwrap();
+        }
+        let (img, mut canvas) = (bgr(1000, 1000, [255, 255, 255]), gray(1000, 1000, 255));
+        let (_, _, _, records) = protect_stamps(&img, &mut canvas, std::slice::from_ref(&stamp), (40.0, 200.0), None, &MaskSettings::default(), Some(&bands)).unwrap();
+        let hidden: Vec<u8> = util::bytes(&canvas).unwrap().iter().map(|&v| if v == 0 { 255 } else { 0 }).collect();
+        let blocks = proof::to_blocks(&util::from_bytes(1000, 1000, &hidden).unwrap()).unwrap();
+        assert!(blocks.any(), "the bands across the stamp are hidden");
+        assert_eq!(crate::verify::protected_hits(&records, &blocks, 1000, 1000).unwrap(), 0, "stamp at {}, {}", cx, cy);
+    }
+}
+
+#[test]
+fn with_stamps_masked_over_as_before_the_officers_box_is_masked_stamp_and_all() {
+    // the rule older manifests recorded as "mask_stamps": masks stay on the stamp
+    let ts = templates();
+    let form = to_gray(&stamped(&filled_form(3).unwrap()));
+    let (scan, h) = simulate_scan(&form, 3, 2.0, 1.3).unwrap();
+    let ms = MaskSettings { stamps: masking::StampRule::Masked, ..MaskSettings::default() };
     let r = redact_page(&scan, &ts, &AlignSettings::default(), &ms, &mut PyRandom::new(0), &PageOptions::default()).unwrap();
     assert!(r.ok, "{}", r.reason);
     assert!(!r.protected.iter().any(|p| p["kind"] == "stamp"), "no stamp is protected");
@@ -171,13 +238,20 @@ fn with_stamps_masked_over_a_fields_band_across_a_stamp_is_hidden() {
     // nothing is lifted off the stamp; by default the same mask is
     let mut lifted = canvas.clone();
     let page = bgr(1000, 1000, [255, 255, 255]);
-    let ms = MaskSettings { mask_stamps: true, ..MaskSettings::default() };
-    let (found, keep, notes) = protect_stamps(&page, &mut canvas, std::slice::from_ref(&stamp), (60.0, 140.0), None, &ms).unwrap();
+    let ms = MaskSettings { stamps: masking::StampRule::Masked, ..MaskSettings::default() };
+    let (found, keep, notes, _) = protect_stamps(&page, &mut canvas, std::slice::from_ref(&stamp), (60.0, 140.0), None, &ms, Some(&bands)).unwrap();
     assert!(found.is_empty() && opencv::core::count_non_zero(&keep).unwrap() == 0);
     assert_eq!(px(&canvas, 500, 500), 0);
-    assert!(notes.iter().any(|n| n.contains("--mask-stamps")), "{:?}", notes);
-    let (found, _, _) = protect_stamps(&page, &mut lifted, std::slice::from_ref(&stamp), (60.0, 140.0), None, &MaskSettings::default()).unwrap();
+    assert!(notes.iter().any(|n| n.contains("masked over")), "{:?}", notes);
+    let mut kept_canvas = lifted.clone();
+    let (found, _, _, _) = protect_stamps(&page, &mut lifted, std::slice::from_ref(&stamp), (60.0, 140.0), None, &kept(), None).unwrap();
     assert_eq!((found.len(), px(&lifted, 500, 500)), (1, 255));
+    // by default the bands stay hidden and the rest of the stamp is kept
+    let (found, keep, _, records) = protect_stamps(&page, &mut kept_canvas, std::slice::from_ref(&stamp), (60.0, 140.0), None, &MaskSettings::default(), Some(&bands)).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!((px(&kept_canvas, 500, 500), px(&kept_canvas, 500, 420)), (0, 255));
+    assert_eq!((px(&keep, 500, 500), px(&keep, 500, 420)), (0, 255));
+    assert!(records[0]["except_blocks"].as_array().is_some_and(|e| !e.is_empty()));
 }
 
 #[test]
