@@ -1913,11 +1913,11 @@ pub fn redact_generic(img: &Mat, ms: &MaskSettings, rng: &mut PyRandom, verify: 
     let bands = if ms.masks_stamps() {
         let mut bands = util::full_u8(gray.rows(), gray.cols(), 255)?;
         for z in l.fields.iter().flat_map(|fl| fl.zones.iter()) {
-            masking::fill(&mut bands, &f, &masking::band(z))?;
+            masking::fill(&mut bands, &f, &masking::stamp_band(z, ms.stamps))?;
         }
         let ident = masking::homography(util::IDENTITY);
-        for z in &found_zones {
-            masking::fill(&mut bands, &ident, &masking::band(z))?;
+        for z in found_zones.iter().chain(&crate::pipeline::found_signatures(extra, ms)) {
+            masking::fill(&mut bands, &ident, &masking::stamp_band(z, ms.stamps))?;
         }
         Some(bands)
     } else {

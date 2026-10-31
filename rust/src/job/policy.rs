@@ -37,7 +37,8 @@ pub enum Phones {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Stamps {
-    /// a field's line across a stamp hidden, the rest kept and verified
+    /// a number's line, or a line through a signature row's middle, hidden
+    /// across a stamp; the rest kept and verified
     #[default]
     Bands,
     /// never masked: writing under a stamp shows (`--keep-stamps`)
@@ -251,7 +252,7 @@ impl Policy {
                 Phones::Whole => "phone numbers: hidden whole".into(),
             },
             match self.stamps {
-                Stamps::Bands => "stamps: a field's line across a stamp hidden, the rest of the stamp kept and verified unchanged".into(),
+                Stamps::Bands => "stamps: a number's line across a stamp hidden, and a line through the middle of a signature's row; the rest of the stamp kept and verified unchanged".into(),
                 Stamps::Protected => "stamps: never masked; writing under a stamp shows".into(),
             },
             "signatures: a black band through the middle of each".into(),

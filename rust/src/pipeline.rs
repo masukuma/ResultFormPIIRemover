@@ -819,7 +819,7 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
         for (_, cells) in columns.iter().chain(&signatures) {
             let f = mapper(cells)?;
             for z in cells {
-                masking::fill(&mut bands, &f, &masking::band(z))?;
+                masking::fill(&mut bands, &f, &masking::stamp_band(z, ms.stamps))?;
             }
         }
         if let Some(bo) = &blackouts {
@@ -830,12 +830,12 @@ pub fn redact_page_at(img: &Mat, index: usize, templates: &[Template], s: &Align
         for (_, ft) in &free {
             let f = ft.mapper();
             for z in ft.layout.fields.iter().flat_map(|fl| fl.zones.iter()) {
-                masking::fill(&mut bands, &f, &masking::band(z))?;
+                masking::fill(&mut bands, &f, &masking::stamp_band(z, ms.stamps))?;
             }
         }
         let ident = masking::homography(util::IDENTITY);
-        for z in &found_zones {
-            masking::fill(&mut bands, &ident, &masking::band(z))?;
+        for z in found_zones.iter().chain(&found_signatures(extra, ms)) {
+            masking::fill(&mut bands, &ident, &masking::stamp_band(z, ms.stamps))?;
         }
         Some(bands)
     } else {
@@ -947,6 +947,23 @@ pub fn mask_found(canvas: &mut Mat, gray: &Mat, extra: &[Found], ms: &MaskSettin
         }
     }
     Ok(zones)
+}
+
+/// The signatures among a vision review's finds, as zones, for the bands
+/// across stamps (`StampRule::Bands`; the older rule kept their masks on
+/// stamps already).
+pub fn found_signatures(extra: &[Found], ms: &MaskSettings) -> Vec<Zone> {
+    if ms.stamps != masking::StampRule::Bands {
+        return vec![];
+    }
+    extra
+        .iter()
+        .filter(|b| b.label == "signature")
+        .map(|b| {
+            let [x0, y0, x1, y1] = b.rect;
+            Zone::new(&format!("vlm:signature@{:.0},{:.0}", x0, y0), [x0, y0, x1 - x0, y1 - y0], "signature")
+        })
+        .collect()
 }
 
 /// The leak check, over the numbers `mask_found` masked.

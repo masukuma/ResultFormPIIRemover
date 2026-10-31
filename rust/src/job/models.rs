@@ -35,7 +35,7 @@ pub const POLICY_PROMPT: &str = "You compile a requester's instructions for reda
 - ids: \"three\" (the default: 3 characters of each ID or passport number hidden) or \"whole\";
 - phones: \"tail\" (the default: 3 of the last 6 digits of each phone number hidden, its prefix kept) or \"whole\";
 - hide: characters hidden per number (3 by default, at least 3; one setting for IDs and phones, so if the instructions ask different counts, take the larger); phone_tail: digits of a phone number counted from its end within which they are hidden (6);
-- stamps: \"bands\" (the default: where a stamp lies over a field, that field's line across the stamp is hidden and the rest of the stamp kept) or \"protected\" (stamps are never covered, so writing under one shows);
+- stamps: \"bands\" (the default: where a stamp lies over a number, that number's line across the stamp is hidden; over a signature, a line through the middle of its row; the rest of the stamp kept) or \"protected\" (stamps are never covered, so writing under one shows);
 - signatures: \"band\" (the only value: a black band through the middle of each);
 - uncertain_tables: \"widen\" (the default), \"hold\" or \"hide_columns_if_reviewed\";
 - vision_review: \"sample\" (the default) or \"every_page\";

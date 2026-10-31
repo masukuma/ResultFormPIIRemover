@@ -12,8 +12,9 @@ that **nothing but the personal data was touched**.
 - **Phone numbers** keep their first digits; 3 of the last 6 are hidden, or
   every digit with `--full-phones`.
 - **Names, results, stamps and QR codes** stay readable. Where a stamp lies
-  over a signature or a number, only that field's line across the stamp is
-  blacked; the rest of the stamp is kept, and checked unchanged.
+  over a number, that number's line across the stamp is blacked; over a
+  signature, a line through the middle of its row. The rest of the stamp is
+  kept, and checked unchanged.
   `--keep-stamps` never masks a stamp at all.
 
 The only edit ever made is replacing 8×8 blocks with solid black. On KIEMS
@@ -239,9 +240,10 @@ Useful flags:
   time, recipient, justification, a description of the data, and hashes of
   the images sent.
 - `--keep-stamps`: never mask a stamp; an ID, phone number or signature a
-  stamp lies over stays visible. By default each field's band across a
-  stamp is blacked whole, covering that part of the stamp, and the rest of
-  the stamp is listed as protected and checked unchanged by `verify`
+  stamp lies over stays visible. By default each number's line across a
+  stamp is blacked whole, and a signature's row gets a line through its
+  middle (half the row's height), covering that part of the stamp; the rest
+  of the stamp is listed as protected and checked unchanged by `verify`
   (`--mask-stamps` asks for that default, for older scripts). Recorded in
   the manifest (`settings.stamps`), and repeated by `verify --rerun`.
 - `--workers`: number of documents processed at once. With `--vlm-audit`,

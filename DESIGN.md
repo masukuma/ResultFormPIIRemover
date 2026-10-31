@@ -539,10 +539,16 @@ still applies it.
   where publication is required) and the courts' use of the stamp as a mark
   of authenticity are both met by hiding only the line and keeping the
   rest (`legal/C-recommendations.md` §2.6). Each field's band across a stamp
-  (its zone: an ID's or phone number's line, a signature's line, a table
-  cell, a blacked-out zone as masked) is blacked whole, as far out as the
-  stamp is kept clear; the near stamps found around masks are treated the
-  same. What is written under a stamp can't be told from the stamp's own
+  is blacked, as far out as the stamp is kept clear: a number's whole line
+  (an ID's or phone number's zone, a table cell), a blacked-out zone as
+  masked, and for a signature a line through the middle of its row (or of
+  the box a review found it in), `SIG_BAND_H` of the row's height (at least
+  `SIG_BAND_MIN`), as a signature's band is of its ink. The whole row was
+  hidden at first; on the 2022 Forms 34A, where the stamp often sits on the
+  two officers' signature rows, that hid more than half of 38 of 455
+  stamps (78% of one); the middle line hides more than half of one (51%),
+  and the lettering between the lines stays readable. The near stamps found
+  around masks are treated the same. What is written under a stamp can't be told from the stamp's own
   lettering: on Isiolo North-2 p17 the blue pen lies 10–20° of hue from the
   violet stamp, inside the stamp's own spread, and the lettering is as dark
   as the pen. So it isn't read there, and the three-characters rule gives
@@ -1335,8 +1341,9 @@ results don't depend on how the work is split.
   some signatures are missed and a few words are masked (see "Comments on a
   templated form"). Run `--vlm-audit` on them.
 - **Writing under a stamp off a field's line stays visible.** Only each
-  field's band across a stamp is hidden; a signature's flourish or a number
-  written high above its line, inside a stamp, shows. With `--keep-stamps`
+  field's band across a stamp is hidden; a signature's top and bottom
+  beyond the line through its row's middle, its flourish, or a number
+  written high above its line, inside a stamp, show. With `--keep-stamps`
   everything under a stamp shows. The page notes record both.
 - **A stamp the finder misses is not protected.** Rings that are very faint,
   mostly hidden, or far from circular can be missed. The second search near

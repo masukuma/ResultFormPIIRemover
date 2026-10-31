@@ -127,7 +127,7 @@ against this schema. Each field maps to `rfpii` flags:
 | `ids` | `three` (default) · `whole` | `--full-ids` |
 | `phones` | `tail` (default) · `whole` | `--full-phones` |
 | `hide`, `phone_tail` | characters hidden (3), digits counted from the end (6) | `--hide`, `--phone-tail` |
-| `stamps` | `bands` (default: a field's line across a stamp hidden, the rest verified) · `protected` | — · `--keep-stamps` |
+| `stamps` | `bands` (default: a number's line, or a line through a signature row's middle, hidden across a stamp; the rest verified) · `protected` | — · `--keep-stamps` |
 | `signatures` | `band` (only value) | — |
 | `uncertain_tables` | `widen` (default) · `hold` · `hide_columns_if_reviewed` | `--strict-structure` · `--vlm-rescue --vlm-audit` |
 | `vision_review` | `sample` (default, §8) · `every_page` | — · `--vlm-audit` |
@@ -666,6 +666,8 @@ Decided:
 - **Held pages go to a vision model on Ollama Cloud** (§4.7): a triage view
   for every held page, and full resolution to locate fields where that
   could get a page published.
+- **The risk threshold stays at 3.** On the 2022 Forms 34A it sends about
+  41% of pages to the vision review (87 of 214); that share is accepted.
 
 Open:
 - At 50,000 forms, is `--vlm-audit` on every page affordable? If so, the
