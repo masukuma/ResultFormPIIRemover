@@ -119,6 +119,20 @@ fn locate_scales_boxes_back() {
 }
 
 #[test]
+fn locate_reads_a_fenced_reply_and_gemma_boxes() {
+    // gemma answers [y1, x1, y2, x2] on a 0-1000 grid, in a markdown fence
+    let s = stub(vec![json!("```json\n[{\"box_2d\": [500, 250, 600, 750], \"label\": \"id_number\"}]\n```")]);
+    let client = Ollama::new(settings(&s.url, "gemma4:31b")).unwrap();
+    let boxes = client.locate(&page(1288, 896)).unwrap();
+    assert_eq!(boxes.len(), 1);
+    let b = &boxes[0];
+    assert!(b.label == "id_number" && (b.x0 - 224.0).abs() < 1e-6 && (b.y0 - 644.0).abs() < 1e-6 && (b.x1 - 672.0).abs() < 1e-6 && (b.y1 - 772.8).abs() < 1e-6, "{:?}", (b.x0, b.y0, b.x1, b.y1));
+    // prose is no answer
+    let s = stub(vec![json!("I did not find any bounding box detections.")]);
+    assert!(Ollama::new(settings(&s.url, "gemma4:31b")).unwrap().locate(&page(1288, 896)).is_err());
+}
+
+#[test]
 fn qwen3_coords_and_audit_record() {
     let s = stub(vec![json!({"id_number_visible": false, "phone_number_visible": false, "signature_visible": false, "details": ""})]);
     let client = Ollama::new(settings(&s.url, "qwen3-vl:235b")).unwrap();
@@ -310,4 +324,12 @@ fn a_guarded_client_sends_only_registered_images_and_views_cut_from_them() {
     let e = client.chat_json("Is 0712345678 a phone number?", &[], json!({})).unwrap_err();
     assert!(e.to_string().contains("five or more digits"), "{}", e);
     assert_eq!(s.requests.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn a_replys_tokens_are_read_from_ollama_or_openai_fields() {
+    assert_eq!(reply_tokens(&json!({"message": {}, "prompt_eval_count": 1290, "eval_count": 41})), (1290, 41));
+    assert_eq!(reply_tokens(&json!({"usage": {"prompt_tokens": 7, "completion_tokens": 3}})), (7, 3));
+    assert_eq!(reply_tokens(&json!({"usage": {"input_tokens": 5, "output_tokens": 2}})), (5, 2));
+    assert_eq!(reply_tokens(&json!({"answers": {}})), (0, 0));
 }

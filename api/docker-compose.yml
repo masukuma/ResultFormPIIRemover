@@ -1,0 +1,33 @@
+# rfpii-api behind a TLS-terminating proxy, with a volume for its data
+# (database, uploads, job folders) and the signing key mounted read-only.
+# Build the image first (api/Dockerfile). Secrets come from the
+# environment or an .env file beside this one, never from the image.
+services:
+  api:
+    image: rfpii-api
+    command: ["serve", "--workers", "2"]
+    environment:
+      BIND: 0.0.0.0:8080
+      PUBLIC_BASE_URL: https://rfpii.example.co.ke
+      SIGN_KEY: /keys/signing_key.pem
+      RFPII_SIGN_PASSWORD: ${RFPII_SIGN_PASSWORD}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY}
+      TRUST_FORWARDED_FOR: "true"
+      METRICS_TOKEN: ${METRICS_TOKEN}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_PRICE_ID: ${STRIPE_PRICE_ID:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+    volumes:
+      - rfpii-data:/data
+      - ./keys:/keys:ro
+    expose: ["8080"]
+    # running jobs get SHUTDOWN_GRACE_SECS (30) to finish before they are re-queued
+    stop_grace_period: 60s
+    restart: unless-stopped
+  proxy:
+    image: caddy:2
+    command: caddy reverse-proxy --from rfpii.example.co.ke --to api:8080
+    ports: ["80:80", "443:443"]
+    restart: unless-stopped
+volumes:
+  rfpii-data:

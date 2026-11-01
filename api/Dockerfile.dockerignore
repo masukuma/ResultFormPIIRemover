@@ -1,0 +1,11 @@
+# What the image build (context: the repository root) leaves out
+rust/target
+api/target
+.git
+scans
+public
+review
+realdata
+demo
+**/*.zip
+**/*.PDF

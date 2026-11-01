@@ -294,7 +294,7 @@ fn host(answer: impl Fn(&str, &Value) -> Value + Send + 'static) -> Host {
                     Value::String(t) => t,
                     v => v.to_string(),
                 };
-                json!({"message": {"role": "assistant", "content": content}})
+                json!({"message": {"role": "assistant", "content": content}, "prompt_eval_count": 100, "eval_count": 10})
             };
             let data = serde_json::to_vec(&reply).unwrap();
             let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", data.len());
@@ -411,6 +411,12 @@ fn a_job_with_models_reviews_fixes_releases_and_reports() {
     }
     assert!(transfers.iter().all(|t| t["recipient"]["host"] == "127.0.0.2" && !t["images_sha256"].as_array().unwrap().is_empty()));
     canaries(&root, &h);
+    // every answered request's tokens, as the host counted them, by model
+    let usage = r["model_usage"].as_array().unwrap();
+    let chats = h.requests.lock().unwrap().iter().filter(|(p, _)| p == "/api/chat").count() as u64;
+    assert_eq!(usage.iter().map(|u| u["requests"].as_u64().unwrap()).sum::<u64>(), chats);
+    assert!(usage.iter().all(|u| u["input_tokens"].as_u64().unwrap() == 100 * u["requests"].as_u64().unwrap() && u["output_tokens"].as_u64().unwrap() == 10 * u["requests"].as_u64().unwrap()));
+    assert!(usage.iter().any(|u| u["model"] == "orch") && usage.iter().any(|u| u["model"] == "eyes"));
     // the orchestrator saw the pilot's figures, scrubbed but readable
     let note = h.requests.lock().unwrap().iter().find(|(_, b)| asks(b) == "pilot note").map(|(_, b)| b["messages"][0]["content"].as_str().unwrap().to_string()).unwrap();
     assert!(note.contains(r#""group":"photo""#) && note.contains(r#""published":3"#), "{}", note);

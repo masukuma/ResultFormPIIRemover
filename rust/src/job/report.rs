@@ -69,6 +69,7 @@ pub fn figures(job: &Job) -> Value {
         "defects": defects,
         "batch_root": job.batch_root,
         "model_requests": models.len(),
+        "model_usage": crate::vlm::usage(),
         "journal_events": events.len(),
         "left_for_people": job.held.iter().filter(|h| h.action == "people").map(|h| h.unit.name()).collect::<Vec<_>>(),
     })
@@ -141,6 +142,10 @@ pub fn markdown(f: &Value) -> String {
     }
     s += &format!("\n## Defects\n\n{}\n", if f["defects"].as_array().is_none_or(|d| d.is_empty()) { "None.".to_string() } else { f["defects"].as_array().unwrap().iter().filter_map(Value::as_str).map(|d| format!("- `{}`", d)).collect::<Vec<_>>().join("\n") });
     s += &format!("\n## Use\n\nStarted {}, finished {}; {} model request(s); {} journal events.\n", f["started"].as_str().unwrap_or(""), f["finished"].as_str().unwrap_or(""), n(&f["model_requests"]), n(&f["journal_events"]));
+    let usage: Vec<String> = f["model_usage"].as_array().into_iter().flatten().map(|u| format!("- {} on {}: {} request(s), {} input and {} output tokens", u["model"].as_str().unwrap_or(""), u["host"].as_str().unwrap_or(""), n(&u["requests"]), n(&u["input_tokens"]), n(&u["output_tokens"]))).collect();
+    if !usage.is_empty() {
+        s += &format!("\nTokens, as the model hosts counted them:\n\n{}\n", usage.join("\n"));
+    }
     let people: Vec<&str> = f["left_for_people"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     s += &format!("\n## Left for people\n\n{}\n", if people.is_empty() { "Nothing.".to_string() } else { people.iter().map(|p| format!("- {}", p)).collect::<Vec<_>>().join("\n") });
     s
