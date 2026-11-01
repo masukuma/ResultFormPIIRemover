@@ -390,7 +390,9 @@ pub fn released_in(report: &Value) -> i64 {
     report["groups"].as_array().into_iter().flatten().map(|g| g["released"].as_i64().unwrap_or(0)).sum()
 }
 
-/// End a job: record how it ended, settle its usage, record its actual
+/// End a job: record how it ended, settle it against the account's free
+/// forms and the account's credits (only the forms it released count, and
+/// a failed or canceled job releases none), record its actual
 /// cost, queue its webhook, and delete its inputs unless they are kept.
 /// With `owner`, only if that worker still holds the job; without, only a
 /// job no worker holds (queued, or its lease ran out). Ending a job
@@ -415,7 +417,7 @@ pub async fn finalize(state: &AppState, job_id: &str, owner: Option<&str>, f: Fi
             }
             let released = f.report.as_ref().map(released_in).unwrap_or(0);
             let held = f.report.as_ref().map(|r| (r["plan"]["documents"].as_i64().unwrap_or(job.forms_requested) - released).max(0));
-            crate::billing::settle(&tx, &id, released, now)?;
+            crate::billing::settle(&tx, &id, released, now, &prices)?;
             let uses = f.report.as_ref().map(crate::billing::model_uses).unwrap_or_default();
             let (cost, total, per_model) = crate::billing::cost(f.cpu_seconds, &uses, &prices);
             for (u, c) in uses.iter().zip(per_model) {

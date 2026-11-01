@@ -182,7 +182,8 @@ enum Inserted {
 
 /// Make the job's folder (its inputs, controller record and job file),
 /// count its forms with `rfpii inventory`, then, in one transaction, check
-/// the plan's allowance, reserve the forms and queue the job.
+/// them against the account's free forms and credits, reserve
+/// them and queue the job.
 #[allow(clippy::too_many_arguments)]
 async fn prepare_and_insert(
     s: &AppState,
@@ -221,13 +222,14 @@ async fn prepare_and_insert(
                 return Ok(if h == hash { jobs::load(&tx, &account.id, &id)?.map(Inserted::Replay).ok_or_else(key_reused) } else { Err(key_reused()) });
             }
         let period = crate::clock::period_of(now);
-        if let Err(e) = crate::billing::admit(&tx, &account, counted.forms, &period, &s2.prices, &s2.cfg) {
-            return Ok(Err(e));
-        }
+        let reserved = match crate::billing::admit(&tx, &account.id, counted.forms, now, &s2.prices, &s2.cfg) {
+            Ok(r) => r,
+            Err(e) => return Ok(Err(e)),
+        };
         tx.execute(
-            "INSERT INTO jobs (id, account_id, status, request_json, plan, unit_price_microusd, period, forms_requested, reserved_forms, inventory_json, max_attempts, webhook_url, metadata_json, created_at)
-             VALUES (?1, ?2, 'queued', ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![job_id, account.id, stored.to_string(), account.plan, if account.plan == "paid" { s2.prices.unit_microusd } else { 0 }, period, counted.forms,
+            "INSERT INTO jobs (id, account_id, status, request_json, period, forms_requested, reserved_free, reserved_credits, inventory_json, max_attempts, webhook_url, metadata_json, created_at)
+             VALUES (?1, ?2, 'queued', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![job_id, account.id, stored.to_string(), period, counted.forms, reserved.free, reserved.credits,
                     json!(counted).to_string(), s2.cfg.max_attempts, webhook, metadata.map(|m| m.to_string()), now],
         )?;
         for (file, name) in &names {

@@ -8,7 +8,6 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::billing::format_usd;
 use crate::clock::rfc3339;
 use crate::rfpii::PerPage;
 
@@ -89,16 +88,19 @@ pub struct JobRow {
     pub account_id: String,
     pub status: String,
     pub request: Value,
-    pub plan: String,
-    pub unit_price_microusd: i64,
+    /// the month whose free forms the job draws on (its creation's, UTC)
     pub period: String,
     pub forms_requested: i64,
-    pub reserved_forms: i64,
+    /// free forms and credits reserved at creation (kept once settled)
+    pub reserved_free: i64,
+    pub reserved_credits: i64,
     pub settled: bool,
     pub forms_released: Option<i64>,
     pub forms_held: Option<i64>,
-    pub forms_charged: Option<i64>,
-    pub amount_microusd: Option<i64>,
+    /// forms counted at settlement: free forms and credits
+    pub forms_counted: Option<i64>,
+    pub free_forms: Option<i64>,
+    pub credit_forms: Option<i64>,
     pub cost: Option<Value>,
     pub inventory: Option<Value>,
     pub exit_code: Option<i64>,
@@ -119,8 +121,8 @@ pub struct JobRow {
     pub deleted_at: Option<i64>,
 }
 
-pub const COLUMNS: &str = "id, account_id, status, request_json, plan, unit_price_microusd, period, forms_requested, reserved_forms, settled, \
-    forms_released, forms_held, forms_charged, amount_microusd, cost_json, inventory_json, exit_code, error, attempts, max_attempts, \
+pub const COLUMNS: &str = "id, account_id, status, request_json, period, forms_requested, reserved_free, reserved_credits, settled, \
+    forms_released, forms_held, forms_counted, free_forms, credit_forms, cost_json, inventory_json, exit_code, error, attempts, max_attempts, \
     lease_owner, cancel_requested, webhook_url, metadata_json, created_at, started_at, finished_at, inputs_deleted_at, outputs_expire_at, \
     outputs_deleted_at, deleted_at, lease_expires_at";
 
@@ -131,16 +133,16 @@ pub fn from_row(r: &Row) -> rusqlite::Result<JobRow> {
         account_id: r.get(1)?,
         status: r.get(2)?,
         request: json(r.get(3)?).unwrap_or(Value::Null),
-        plan: r.get(4)?,
-        unit_price_microusd: r.get(5)?,
-        period: r.get(6)?,
-        forms_requested: r.get(7)?,
-        reserved_forms: r.get(8)?,
-        settled: r.get::<_, i64>(9)? != 0,
-        forms_released: r.get(10)?,
-        forms_held: r.get(11)?,
-        forms_charged: r.get(12)?,
-        amount_microusd: r.get(13)?,
+        period: r.get(4)?,
+        forms_requested: r.get(5)?,
+        reserved_free: r.get(6)?,
+        reserved_credits: r.get(7)?,
+        settled: r.get::<_, i64>(8)? != 0,
+        forms_released: r.get(9)?,
+        forms_held: r.get(10)?,
+        forms_counted: r.get(11)?,
+        free_forms: r.get(12)?,
+        credit_forms: r.get(13)?,
         cost: json(r.get(14)?),
         inventory: json(r.get(15)?),
         exit_code: r.get(16)?,
@@ -172,29 +174,27 @@ impl JobRow {
         self.deleted_at.is_none() && self.outputs_deleted_at.is_none()
     }
 
-    /// The job as the API returns it.
     /// The job as the operator sees it (`GET /v1/admin/jobs/{id}`): the
     /// customer's resource and what the job cost to run, its CPU time and
-    /// model tokens at the configured prices. Customers see the price, not
-    /// the cost.
+    /// model tokens at the configured prices. Customers see what the job
+    /// counted against their free forms and credits, not the cost.
     pub fn operator_resource(&self) -> Value {
         let mut v = self.resource();
         v["cost"] = json!(self.cost);
         v
     }
 
+    /// The job as the API returns it.
     pub fn resource(&self) -> Value {
         let t = |x: Option<i64>| x.map(rfc3339);
         let path = format!("/v1/jobs/{}", self.id);
-        let paid = self.plan == "paid";
-        let price = json!({
-            "currency": "usd",
-            "plan": self.plan,
-            "unit_microusd": if paid { self.unit_price_microusd } else { 0 },
-            "estimate_microusd": if paid { self.forms_requested * self.unit_price_microusd } else { 0 },
-            "forms_charged": self.forms_charged,
-            "amount_microusd": self.amount_microusd,
-            "amount_usd": self.amount_microusd.map(format_usd),
+        let counted =
+            self.settled.then(|| json!({"forms": self.forms_counted.unwrap_or(0), "free_forms": self.free_forms.unwrap_or(0), "credits": self.credit_forms.unwrap_or(0)}));
+        let billing = json!({
+            "period": self.period,
+            "reserved": {"free_forms": self.reserved_free, "credits": self.reserved_credits},
+            "settled": self.settled,
+            "counted": counted,
         });
         json!({
             "id": self.id,
@@ -212,7 +212,7 @@ impl JobRow {
             "forms_released": self.forms_released,
             "forms_held": self.forms_held,
             "inventory": self.inventory,
-            "price": price,
+            "billing": billing,
             "exit_code": self.exit_code,
             "error": self.error,
             "attempts": self.attempts,

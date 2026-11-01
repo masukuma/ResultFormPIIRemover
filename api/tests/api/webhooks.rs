@@ -17,7 +17,7 @@ fn check_signed(secret: &str, r: &crate::common::Received) -> (String, Value) {
 async fn a_job_event_is_delivered_signed_and_retried() {
     let t = TestServer::start(1, |_| {}).await;
     let rx = Receiver::start(2, json!({"ok": true})).await;
-    let (_, key) = t.account("free", true).await;
+    let (_, key) = t.account(0, true).await;
     let a: Value = t.patch(&key, "/v1/account/settings", &json!({"webhook_url": format!("{}/hook", rx.url)})).await.json().await.unwrap();
     let secret = a["webhook_secret"].as_str().unwrap().to_string();
     assert!(secret.starts_with("whsec_") && a["settings"]["webhook_secret_set"] == true);
@@ -45,7 +45,7 @@ async fn a_jobs_own_webhook_gets_its_events_with_the_rotated_secret() {
     let t = TestServer::start(1, |_| {}).await;
     t.fake("FORMS=1\nRELEASED=1\nDELAY=30\n");
     let rx = Receiver::start(0, json!({})).await;
-    let (_, key) = t.account("free", true).await;
+    let (_, key) = t.account(0, true).await;
     let r: Value = t.post(&key, "/v1/account/webhook-secret", &json!({})).await.json().await.unwrap();
     let old = r["secret"].as_str().unwrap().to_string();
     let r: Value = t.post(&key, "/v1/account/webhook-secret", &json!({})).await.json().await.unwrap();
@@ -71,7 +71,7 @@ async fn a_delivery_that_keeps_failing_is_given_up_after_its_retries() {
     let t = TestServer::start(1, |c| c.webhook_retry_schedule = vec![1, 1]).await;
     t.fake("FORMS=1\nRELEASED=0\nEXIT=1\nNO_REPORT=1\n");
     let rx = Receiver::start(100, json!({})).await;
-    let (_, key) = t.account("free", true).await;
+    let (_, key) = t.account(0, true).await;
     t.patch(&key, "/v1/account/settings", &json!({"webhook_url": format!("{}/hook", rx.url)})).await;
     let j = t.start_job(&key).await;
     t.wait_end(&key, j["id"].as_str().unwrap()).await;

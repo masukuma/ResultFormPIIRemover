@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 #[tokio::test(flavor = "multi_thread")]
 async fn every_error_is_a_problem_naming_its_request() {
     let t = TestServer::start(0, |_| {}).await;
-    let (_, key) = t.account("free", false).await;
+    let (_, key) = t.account(0, false).await;
     let r = t.client.get(t.url("/v1/jobs/job_nope")).bearer_auth(&key).header("x-request-id", "req-abc-123").send().await.unwrap();
     assert_eq!(r.headers()["x-request-id"], "req-abc-123");
     let p = problem(r, 404).await;
@@ -36,7 +36,7 @@ async fn a_key_over_its_rate_gets_429_with_ratelimit_fields() {
         c.public_rate_limit_per_sec = 0.01;
     })
     .await;
-    let (_, key) = t.account("free", false).await;
+    let (_, key) = t.account(0, false).await;
     for left in [2, 1, 0] {
         let r = t.get(&key, "/v1/account").await;
         assert_eq!(r.status(), 200);
@@ -50,7 +50,7 @@ async fn a_key_over_its_rate_gets_429_with_ratelimit_fields() {
     let p = problem(r, 429).await;
     assert!(p["type"].as_str().unwrap().ends_with("#problem-rate-limited"));
     // another key has its own bucket
-    let (_, other) = t.account("free", false).await;
+    let (_, other) = t.account(0, false).await;
     assert_eq!(t.get(&other, "/v1/account").await.status(), 200);
     // the public routes are limited per IP address
     for _ in 0..2 {
@@ -109,7 +109,7 @@ async fn readyz_checks_the_database_the_disk_and_the_binary() {
 #[tokio::test(flavor = "multi_thread")]
 async fn metrics_count_requests_jobs_forms_and_tokens() {
     let t = TestServer::start(1, |c| c.metrics_token = Some("m-token".into())).await;
-    let (_, key) = t.account("paid", true).await;
+    let (_, key) = t.account(1, true).await;
     let j = t.start_job(&key).await;
     t.wait_end(&key, j["id"].as_str().unwrap()).await;
     problem(t.client.get(t.url("/metrics")).send().await.unwrap(), 401).await;
@@ -119,6 +119,8 @@ async fn metrics_count_requests_jobs_forms_and_tokens() {
     assert!(m.contains("rfpii_api_jobs{status=\"succeeded\"} 1") && m.contains("rfpii_api_queue_depth 0"));
     assert!(m.contains("rfpii_api_forms_released_total 3"));
     assert!(m.contains("rfpii_api_model_tokens_total{model=\"gemma4:31b\",direction=\"input\"} 1000"));
+    // the account's package, recorded as paid outside Stripe
+    assert!(m.contains("rfpii_api_purchases{status=\"paid\"} 1"), "{m}");
     t.stop().await;
 }
 
@@ -162,7 +164,7 @@ async fn anyone_can_verify_a_published_form() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_sweeper_deletes_what_is_past_its_time() {
     let t = TestServer::start(1, |_| {}).await;
-    let (account, key) = t.account("free", true).await;
+    let (account, key) = t.account(0, true).await;
     let unused = t.upload(&key, "unused.jpg").await;
     let j = t.start_job(&key).await;
     let id = j["id"].as_str().unwrap().to_string();
@@ -181,7 +183,7 @@ async fn the_sweeper_deletes_what_is_past_its_time() {
     assert_eq!(s.job_outputs, 1);
     problem(t.get(&key, &format!("/v1/jobs/{id}/outputs")).await, 410).await;
     let j: Value = t.get(&key, &format!("/v1/jobs/{id}")).await.json().await.unwrap();
-    assert!(j["outputs_deleted_at"].is_string() && j["price"]["forms_charged"] == 3);
+    assert!(j["outputs_deleted_at"].is_string() && j["billing"]["counted"]["forms"] == 3);
     assert!(!t.dir.join("data/jobs").join(&account).join(&id).exists());
     let n: i64 = t.state.db.call(|c| Ok(c.query_row("SELECT COUNT(*) FROM deletions", [], |r| r.get(0))?)).await.unwrap();
     assert!(n >= 4, "{n}");

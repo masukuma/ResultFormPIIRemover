@@ -1,6 +1,7 @@
 //! Metrics in the Prometheus text format: requests by route and status,
 //! their latency, and, read from the database when scraped, jobs by
-//! status, the queue, forms released and model tokens.
+//! status, the queue, forms released, model tokens, webhooks pending and
+//! purchases by status.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -36,7 +37,8 @@ pub struct DbFigures {
     /// model, input tokens, output tokens
     pub tokens: Vec<(String, i64, i64)>,
     pub webhooks_pending: i64,
-    pub usage_unreported: i64,
+    /// purchases of packages by status
+    pub purchases_by_status: Vec<(String, i64)>,
 }
 
 impl Metrics {
@@ -92,11 +94,10 @@ impl Metrics {
             "# HELP rfpii_api_webhooks_pending Webhook deliveries not yet made.\n# TYPE rfpii_api_webhooks_pending gauge\nrfpii_api_webhooks_pending {}",
             db.webhooks_pending
         );
-        let _ = writeln!(
-            s,
-            "# HELP rfpii_api_usage_unreported Paid usage records not yet reported to Stripe.\n# TYPE rfpii_api_usage_unreported gauge\nrfpii_api_usage_unreported {}",
-            db.usage_unreported
-        );
+        s += "# HELP rfpii_api_purchases Purchases of form packages by status (mismatch: paid, but not the amount quoted).\n# TYPE rfpii_api_purchases gauge\n";
+        for (status, n) in &db.purchases_by_status {
+            let _ = writeln!(s, "rfpii_api_purchases{{status=\"{status}\"}} {n}");
+        }
         s
     }
 }

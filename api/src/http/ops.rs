@@ -57,7 +57,8 @@ fn db_figures(c: &mut rusqlite::Connection) -> anyhow::Result<DbFigures> {
     let mut st = c.prepare("SELECT model, SUM(input_tokens), SUM(output_tokens) FROM job_model_usage GROUP BY model ORDER BY model")?;
     f.tokens = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
     f.webhooks_pending = c.query_row("SELECT COUNT(*) FROM webhook_deliveries WHERE status = 'pending'", [], |r| r.get(0))?;
-    f.usage_unreported = c.query_row("SELECT COUNT(*) FROM usage_records WHERE plan = 'paid' AND forms > 0 AND stripe_reported_at IS NULL", [], |r| r.get(0))?;
+    let mut st = c.prepare("SELECT status, COUNT(*) FROM purchases GROUP BY status ORDER BY status")?;
+    f.purchases_by_status = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     Ok(f)
 }
 

@@ -22,7 +22,7 @@ fn sha256(b: &[u8]) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn uploads_are_told_by_their_first_bytes_and_stored_by_id() {
     let t = TestServer::start(0, |c| c.max_upload_bytes = 4096).await;
-    let (account, key) = t.account("free", false).await;
+    let (account, key) = t.account(0, false).await;
     let pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n".to_vec();
     let r = t.upload_raw(&key, "../../etc/34A form.pdf", pdf.clone()).await;
     assert_eq!(r.status(), 201);
@@ -62,7 +62,7 @@ async fn uploads_are_told_by_their_first_bytes_and_stored_by_id() {
     let id = f["id"].as_str().unwrap();
     let got: Value = t.get(&key, &format!("/v1/files/{id}")).await.json().await.unwrap();
     assert!(got["status"] == "available" && got.get("content").is_none() && got.get("url").is_none());
-    let (_, other) = t.account("free", false).await;
+    let (_, other) = t.account(0, false).await;
     problem(t.get(&other, &format!("/v1/files/{id}")).await, 404).await;
     let list: Value = t.get(&key, "/v1/files").await.json().await.unwrap();
     assert_eq!(list["data"].as_array().unwrap().len(), 3);
@@ -81,7 +81,7 @@ async fn zips_are_checked_for_entries_size_and_paths() {
         c.max_zip_uncompressed_bytes = 10_000;
     })
     .await;
-    let (_, key) = t.account("free", false).await;
+    let (_, key) = t.account(0, false).await;
     let ok = zip_of(&[("Nyeri/a.pdf", b"%PDF-1.4"), ("b.jpg", &jpeg())]);
     let r = t.upload_raw(&key, "county.zip", ok).await;
     assert_eq!(r.status(), 201);

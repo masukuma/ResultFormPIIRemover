@@ -1,27 +1,27 @@
-//! Stripe, when configured: a Checkout Session for the metered price, the
-//! webhook that sets an account's plan, and paid usage reported as billing
-//! meter events. Each meter event's `identifier` is the usage record's id,
-//! so a retry is never counted twice. Without Stripe the operator sets
-//! plans and invoices from `GET /v1/usage`.
+//! Stripe, when configured: a Checkout Session in payment mode for a
+//! purchase of packages (the packages and the card fee as two lines, each
+//! with the VAT tax rate), and the webhook that marks the purchase paid,
+//! and adds its credits, once Stripe says the session was paid for the
+//! quoted amount. Without Stripe, the operator records packages paid
+//! otherwise (`rfpii-api admin add-credits`).
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use axum::http::StatusCode;
 use hmac::{KeyInit, Mac};
 use rusqlite::params;
 use serde_json::{Value, json};
 
+use crate::config::Config;
 use crate::problem::ApiError;
+use crate::purchases::Purchase;
 use crate::server::AppState;
 
 type HmacSha256 = hmac::Hmac<sha2::Sha256>;
 
-/// Seconds before a failed meter event is tried again: 1, 5, 30 minutes,
-/// then hourly.
-const METER_RETRY: [i64; 4] = [60, 300, 1800, 3600];
-
-/// Whether Stripe Checkout is configured.
-pub fn checkout_configured(state: &AppState) -> bool {
-    state.cfg.stripe_secret_key.is_some() && state.cfg.stripe_price_id.is_some()
+/// Whether Stripe Checkout is configured: a secret key, and the tax rate
+/// that puts VAT on each line.
+pub fn checkout_configured(cfg: &Config) -> bool {
+    cfg.stripe_secret_key.is_some() && cfg.stripe_tax_rate_id.is_some()
 }
 
 /// The `Stripe-Signature` value for a payload (tests and tools).
@@ -65,31 +65,60 @@ pub struct ReturnUrls {
     pub cancel: Option<String>,
 }
 
-/// Create a Checkout Session subscribing `account` to the metered price.
-pub async fn checkout(state: &AppState, account: &crate::accounts::Account, back: ReturnUrls) -> Result<Value, ApiError> {
-    let (Some(key), Some(price)) = (&state.cfg.stripe_secret_key, &state.cfg.stripe_price_id) else {
-        return Err(ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            Some("billing-not-configured"),
-            "Billing not configured",
-            "this server has no Stripe account; the operator sets plans and invoices from /v1/usage",
-        ));
-    };
-    let base = state.cfg.public_base_url.trim_end_matches('/');
+/// 501 when Checkout is not configured.
+pub fn not_configured() -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_IMPLEMENTED,
+        Some("billing-not-configured"),
+        "Billing not configured",
+        "this server takes no card payments (it needs STRIPE_SECRET_KEY and STRIPE_TAX_RATE_ID); ask the operator, who adds packages paid otherwise",
+    )
+}
+
+/// The form fields of a Checkout Session for a pending purchase: payment
+/// mode; the packages (the package price, `packages` of them) and the card
+/// fee as lines priced here, each with the VAT tax rate; the account as
+/// `client_reference_id`; the purchase and its packages in the metadata.
+pub fn session_form(cfg: &Config, account: &crate::accounts::Account, p: &Purchase, back: ReturnUrls) -> Vec<(String, String)> {
+    let tax = cfg.stripe_tax_rate_id.clone().unwrap_or_default();
+    let base = cfg.public_base_url.trim_end_matches('/');
+    let q = &p.quote;
     let mut form: Vec<(String, String)> = vec![
-        ("mode".into(), "subscription".into()),
-        ("line_items[0][price]".into(), price.clone()),
+        ("mode".into(), "payment".into()),
         ("client_reference_id".into(), account.id.clone()),
+        ("metadata[purchase_id]".into(), p.id.clone()),
+        ("metadata[packages]".into(), q.packages.to_string()),
         ("metadata[account_id]".into(), account.id.clone()),
-        ("subscription_data[metadata][account_id]".into(), account.id.clone()),
-        ("success_url".into(), back.success.unwrap_or_else(|| format!("{base}/v1/pricing?checkout=success"))),
-        ("cancel_url".into(), back.cancel.unwrap_or_else(|| format!("{base}/v1/pricing?checkout=canceled"))),
+        ("payment_intent_data[metadata][purchase_id]".into(), p.id.clone()),
+        ("line_items[0][price_data][currency]".into(), p.currency.clone()),
+        ("line_items[0][price_data][unit_amount]".into(), q.package_price_cents.to_string()),
+        ("line_items[0][price_data][product_data][name]".into(), format!("{}: package of {} forms", cfg.platform_name, q.package_forms)),
+        ("line_items[0][quantity]".into(), q.packages.to_string()),
+        ("line_items[0][tax_rates][0]".into(), tax.clone()),
     ];
+    if q.card_fee_cents > 0 {
+        form.extend([
+            ("line_items[1][price_data][currency]".into(), p.currency.clone()),
+            ("line_items[1][price_data][unit_amount]".into(), q.card_fee_cents.to_string()),
+            ("line_items[1][price_data][product_data][name]".into(), format!("Card processing fee ({} of the charge)", cfg.rates().card_fee_terms())),
+            ("line_items[1][quantity]".into(), "1".into()),
+            ("line_items[1][tax_rates][0]".into(), tax),
+        ]);
+    }
+    form.push(("success_url".into(), back.success.unwrap_or_else(|| format!("{base}/v1/pricing?checkout=success"))));
+    form.push(("cancel_url".into(), back.cancel.unwrap_or_else(|| format!("{base}/v1/pricing?checkout=canceled"))));
     match (&account.stripe_customer_id, &account.email) {
         (Some(c), _) => form.push(("customer".into(), c.clone())),
         (None, Some(e)) => form.push(("customer_email".into(), e.clone())),
         _ => {}
     }
+    form
+}
+
+/// Create the Checkout Session for a pending purchase; its id and URL.
+pub async fn create_session(state: &AppState, account: &crate::accounts::Account, p: &Purchase, back: ReturnUrls) -> Result<(String, String), ApiError> {
+    let Some(key) = &state.cfg.stripe_secret_key else { return Err(not_configured()) };
+    let form = session_form(&state.cfg, account, p, back);
     let res = state
         .http
         .post(format!("{}/v1/checkout/sessions", state.cfg.stripe_api_base.trim_end_matches('/')))
@@ -100,17 +129,20 @@ pub async fn checkout(state: &AppState, account: &crate::accounts::Account, back
         .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, Some("billing-unavailable"), "Billing unavailable", format!("Stripe could not be reached: {e}")))?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or(Value::Null);
-    if !status.is_success() {
-        tracing::warn!(status = status.as_u16(), "stripe checkout session refused");
-        return Err(ApiError::new(StatusCode::BAD_GATEWAY, Some("billing-unavailable"), "Billing unavailable", format!("Stripe answered {status}")));
+    match (status.is_success(), body["id"].as_str(), body["url"].as_str()) {
+        (true, Some(id), Some(url)) => Ok((id.to_string(), url.to_string())),
+        _ => {
+            tracing::warn!(status = status.as_u16(), "stripe checkout session refused");
+            Err(ApiError::new(StatusCode::BAD_GATEWAY, Some("billing-unavailable"), "Billing unavailable", format!("Stripe answered {status} without a session")))
+        }
     }
-    Ok(json!({"object": "checkout_session", "id": body["id"], "url": body["url"]}))
 }
 
 /// Act on a verified Stripe event; whether it changed anything. Each event
-/// is handled once (its id is recorded).
+/// is handled once (its id is recorded), and each purchase is paid once.
 pub async fn handle_event(state: &AppState, event: Value) -> Result<bool> {
     let now = state.clock.now();
+    let prices = state.prices.clone();
     state
         .db
         .call(move |c| {
@@ -121,143 +153,21 @@ pub async fn handle_event(state: &AppState, event: Value) -> Result<bool> {
             if !fresh {
                 return Ok(false);
             }
-            let changed = apply_event(&tx, now, &kind, &event["data"]["object"])?;
+            let session = &event["data"]["object"];
+            let changed = match kind.as_str() {
+                "checkout.session.completed" | "checkout.session.async_payment_succeeded" => crate::purchases::complete(&tx, now, &prices, session)?,
+                "checkout.session.expired" => crate::purchases::expire(&tx, now, session)?,
+                _ => false,
+            };
             tx.commit()?;
             Ok(changed)
         })
         .await
 }
 
-/// The plan a subscription in `status` gives.
-fn plan_of(status: &str) -> &'static str {
-    match status {
-        "active" | "trialing" | "past_due" => "paid",
-        _ => "free",
-    }
-}
-
-fn apply_event(tx: &rusqlite::Transaction, now: i64, kind: &str, obj: &Value) -> Result<bool> {
-    let set = |account: &str, plan: &str, customer: Option<&str>, subscription: Option<&str>| -> Result<bool> {
-        let n = tx.execute(
-            "UPDATE accounts SET plan = ?2, stripe_customer_id = COALESCE(?3, stripe_customer_id), stripe_subscription_id = COALESCE(?4, stripe_subscription_id) WHERE id = ?1",
-            params![account, plan, customer, subscription],
-        )?;
-        if n > 0 {
-            crate::audit::record(tx, now, Some(account), "stripe", "account.plan_set", &json!({"plan": plan, "event": kind}))?;
-        }
-        Ok(n > 0)
-    };
-    match kind {
-        "checkout.session.completed" => {
-            let account = obj["client_reference_id"].as_str().or(obj["metadata"]["account_id"].as_str()).context("a checkout session without the account")?;
-            set(account, "paid", obj["customer"].as_str(), obj["subscription"].as_str())
-        }
-        "customer.subscription.updated" | "customer.subscription.deleted" => {
-            let Some(customer) = obj["customer"].as_str() else { return Ok(false) };
-            let Some(a) = crate::accounts::by_stripe_customer(tx, customer)? else { return Ok(false) };
-            let plan = if kind.ends_with("deleted") { "free" } else { plan_of(obj["status"].as_str().unwrap_or("")) };
-            set(&a.id, plan, None, obj["id"].as_str())
-        }
-        _ => Ok(false),
-    }
-}
-
-struct Unreported {
-    id: String,
-    customer: String,
-    forms: i64,
-    created_at: i64,
-    attempts: i64,
-}
-
-/// Report paid usage not yet reported as meter events; how many records
-/// were tried. Records of accounts without a Stripe customer wait (the
-/// operator invoices them from /v1/usage).
-pub async fn report_due(state: &AppState) -> Result<usize> {
-    let Some(key) = state.cfg.stripe_secret_key.clone() else { return Ok(0) };
-    let now = state.clock.now();
-    let due = state
-        .db
-        .call(move |c| {
-            let mut st = c.prepare(
-                "UPDATE usage_records SET stripe_claimed_until = ?1 + 120
-                 WHERE id IN (SELECT u.id FROM usage_records u JOIN accounts a ON a.id = u.account_id
-                              WHERE u.plan = 'paid' AND u.forms > 0 AND u.stripe_reported_at IS NULL AND u.stripe_error IS NULL
-                                AND u.stripe_next_at <= ?1 AND (u.stripe_claimed_until IS NULL OR u.stripe_claimed_until < ?1)
-                                AND a.stripe_customer_id IS NOT NULL LIMIT 50)
-                 RETURNING id, (SELECT stripe_customer_id FROM accounts WHERE accounts.id = usage_records.account_id), forms, created_at, stripe_attempts",
-            )?;
-            let rows = st
-                .query_map([now], |r| Ok(Unreported { id: r.get(0)?, customer: r.get(1)?, forms: r.get(2)?, created_at: r.get(3)?, attempts: r.get(4)? }))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
-        })
-        .await?;
-    let n = due.len();
-    for u in due {
-        let outcome = send_meter_event(state, &key, &u).await;
-        settle_report(state, u, outcome).await?;
-    }
-    Ok(n)
-}
-
-/// What Stripe said: reported, try again later, or refused for good.
-enum Outcome {
-    Reported,
-    Retry(String),
-    Refused(String),
-}
-
-async fn send_meter_event(state: &AppState, key: &str, u: &Unreported) -> Outcome {
-    let form = [
-        ("event_name", state.cfg.stripe_meter_event_name.clone()),
-        ("payload[stripe_customer_id]", u.customer.clone()),
-        ("payload[value]", u.forms.to_string()),
-        ("identifier", u.id.clone()),
-        ("timestamp", u.created_at.to_string()),
-    ];
-    let url = format!("{}/v1/billing/meter_events", state.cfg.stripe_api_base.trim_end_matches('/'));
-    let res = match state.http.post(url).bearer_auth(key).form(&form).send().await {
-        Ok(r) => r,
-        Err(e) => return Outcome::Retry(format!("{e}")),
-    };
-    let status = res.status();
-    let body = res.text().await.unwrap_or_default();
-    if status.is_success() {
-        Outcome::Reported
-    } else if status.as_u16() == 429 || status.is_server_error() {
-        Outcome::Retry(format!("Stripe answered {status}"))
-    } else if body.contains("identifier") && (body.contains("already") || body.contains("duplicate")) {
-        // a retry of an event Stripe already has: it is counted once
-        Outcome::Reported
-    } else {
-        Outcome::Refused(format!("Stripe answered {status}: {}", body.chars().take(300).collect::<String>()))
-    }
-}
-
-async fn settle_report(state: &AppState, u: Unreported, outcome: Outcome) -> Result<()> {
-    let now = state.clock.now();
-    state
-        .db
-        .call(move |c| {
-            let attempts = u.attempts + 1;
-            match outcome {
-                Outcome::Reported => {
-                    c.execute("UPDATE usage_records SET stripe_reported_at = ?2, stripe_attempts = ?3, stripe_claimed_until = NULL WHERE id = ?1", params![u.id, now, attempts])?
-                }
-                Outcome::Retry(why) => {
-                    let wait = METER_RETRY[(attempts as usize - 1).min(METER_RETRY.len() - 1)];
-                    tracing::warn!(usage_record = %u.id, error = %why, "meter event not reported; will retry");
-                    c.execute("UPDATE usage_records SET stripe_attempts = ?2, stripe_next_at = ?3, stripe_claimed_until = NULL WHERE id = ?1", params![u.id, attempts, now + wait])?
-                }
-                Outcome::Refused(why) => {
-                    tracing::error!(usage_record = %u.id, error = %why, "meter event refused by Stripe");
-                    c.execute("UPDATE usage_records SET stripe_attempts = ?2, stripe_error = ?3, stripe_claimed_until = NULL WHERE id = ?1", params![u.id, attempts, why])?
-                }
-            };
-            Ok(())
-        })
-        .await
+/// The purchase as a Checkout answer gives it.
+pub fn session_value(id: &str, url: &str, p: &Purchase) -> Value {
+    json!({"object": "checkout_session", "id": id, "url": url, "purchase": p.resource()})
 }
 
 #[cfg(test)]
@@ -276,13 +186,5 @@ mod tests {
         // several signatures (a secret being rolled): one valid is enough
         let two = format!("t=1000,v1=00,{}", h.split(',').nth(1).unwrap());
         assert!(verify_signature(&two, body, "whsec_test", 1_000, 300).is_ok());
-    }
-
-    #[test]
-    fn subscriptions_give_the_paid_plan_while_they_stand() {
-        assert_eq!(plan_of("active"), "paid");
-        assert_eq!(plan_of("past_due"), "paid");
-        assert_eq!(plan_of("canceled"), "free");
-        assert_eq!(plan_of("incomplete_expired"), "free");
     }
 }

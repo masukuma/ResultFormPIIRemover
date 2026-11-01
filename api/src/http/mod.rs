@@ -67,11 +67,11 @@ pub fn router(state: AppState) -> (Router, Vec<(Method, &'static str)>) {
         post(billing::stripe_webhook),
     );
 
-    let public = Routes::new().add(Method::GET, "/v1/openapi.json", get(ops::openapi)).add(Method::GET, "/v1/pricing", get(billing::pricing)).add(
-        Method::POST,
-        "/v1/verify",
-        post(verify::verify).layer(verify_limit),
-    );
+    let public = Routes::new()
+        .add(Method::GET, "/v1/openapi.json", get(ops::openapi))
+        .add(Method::GET, "/v1/pricing", get(billing::pricing))
+        .add(Method::GET, "/v1/billing/quote", get(billing::quote))
+        .add(Method::POST, "/v1/verify", post(verify::verify).layer(verify_limit));
 
     let private = Routes::new()
         .add(Method::POST, "/v1/files", post(files::create).layer(upload_limit))
@@ -96,12 +96,14 @@ pub fn router(state: AppState) -> (Router, Vec<(Method, &'static str)>) {
         .add(Method::POST, "/v1/keys", post(keys::create))
         .add(Method::DELETE, "/v1/keys/{id}", delete(keys::revoke))
         .add(Method::GET, "/v1/usage", get(billing::usage))
-        .add(Method::POST, "/v1/billing/checkout", post(billing::checkout));
+        .add(Method::POST, "/v1/billing/checkout", post(billing::checkout))
+        .add(Method::GET, "/v1/billing/purchases", get(billing::purchases));
 
     let admin = Routes::new()
         .add(Method::GET, "/v1/admin/accounts", get(admin::list_accounts))
         .add(Method::POST, "/v1/admin/accounts", post(admin::create_account))
-        .add(Method::PUT, "/v1/admin/accounts/{id}/plan", put(admin::set_plan))
+        .add(Method::POST, "/v1/admin/accounts/{id}/credits", post(admin::add_credits))
+        .add(Method::POST, "/v1/admin/accounts/{id}/credit-adjustments", post(admin::adjust_credits))
         .add(Method::POST, "/v1/admin/accounts/{id}/keys", post(admin::create_key))
         .add(Method::GET, "/v1/admin/jobs/{id}", get(admin::get_job));
 

@@ -12,9 +12,9 @@
   "tags": [
     {"name": "files", "description": "Uploads. Originals are never served back."},
     {"name": "jobs", "description": "Redaction jobs: long-running operations."},
-    {"name": "account", "description": "Plan, legal records and settings."},
+    {"name": "account", "description": "Free forms, credits, legal records and settings."},
     {"name": "keys", "description": "API keys."},
-    {"name": "billing", "description": "Pricing, usage and Stripe."},
+    {"name": "billing", "description": "The price, quotes, usage, purchases of packages and Stripe."},
     {"name": "verify", "description": "Public verification of a published form."},
     {"name": "admin", "description": "Operator routes (ADMIN_TOKEN)."},
     {"name": "ops", "description": "Health, readiness, metrics, this description."}
@@ -40,9 +40,16 @@
         "responses": {"200": {"description": "OpenAPI 3.1", "content": {"application/json": {"schema": {"type": "object"}}}}, "429": {"$ref": "#/components/responses/TooManyRequests"}}}
     },
     "/v1/pricing": {
-      "get": {"tags": ["billing"], "summary": "The plans and the price per form (public)", "operationId": "getPricing", "security": [],
+      "get": {"tags": ["billing"], "summary": "The free forms, the package, the card fee, VAT and the quote for one package (public)", "operationId": "getPricing", "security": [],
         "responses": {"200": {"description": "Pricing", "headers": {"RateLimit": {"$ref": "#/components/headers/RateLimit"}, "RateLimit-Policy": {"$ref": "#/components/headers/RateLimitPolicy"}},
           "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pricing"}}}}, "429": {"$ref": "#/components/responses/TooManyRequests"}}}
+    },
+    "/v1/billing/quote": {
+      "get": {"tags": ["billing"], "summary": "What a purchase of packages costs, line by line (public)", "operationId": "getQuote", "security": [],
+        "description": "The packages, the card fee (the smallest amount with which the operator keeps the packages' price after the card processor's fee) and VAT on each line, in integer cents. PRICING.md explains it.",
+        "parameters": [{"name": "packages", "in": "query", "required": false, "description": "Packages to buy, 1 to MAX_PACKAGES_PER_PURCHASE (100); 1 if left out", "schema": {"type": "integer", "minimum": 1, "default": 1}}],
+        "responses": {"200": {"description": "The quote", "headers": {"RateLimit": {"$ref": "#/components/headers/RateLimit"}, "RateLimit-Policy": {"$ref": "#/components/headers/RateLimitPolicy"}},
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Quote"}}}}, "400": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/TooManyRequests"}}}
     },
     "/v1/verify": {
       "post": {"tags": ["verify"], "summary": "Verify a published form with rfpii verify (public, free, limited per IP)", "operationId": "verify", "security": [],
@@ -84,7 +91,7 @@
     },
     "/v1/jobs": {
       "post": {"tags": ["jobs"], "summary": "Start a redaction job", "operationId": "createJob",
-        "description": "Counts the forms with rfpii inventory and reserves them against the plan (402 when a free account's month has too few left, or a paid account's spend cap would be passed). 422 until the account has a controller record and a DPIA. Returns 202 Accepted with the job's Location (RFC 9110 §15.3.3). With an Idempotency-Key, the same key and body return the same job; the same key with another body is 422. Scope jobs:write.",
+        "description": "Counts the forms with rfpii inventory and reserves them: the account's free forms first (5, once), then form credits (402 insufficient-credits when both together are too few, naming how to buy). 422 until the account has a controller record and a DPIA. Returns 202 Accepted with the job's Location (RFC 9110 §15.3.3). With an Idempotency-Key, the same key and body return the same job; the same key with another body is 422. Scope jobs:write.",
         "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/JobRequest"}}}},
         "responses": {
@@ -139,7 +146,7 @@
           "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}, "410": {"$ref": "#/components/responses/Problem"}}}
     },
     "/v1/account": {
-      "get": {"tags": ["account"], "summary": "The plan, this month's forms, the free forms left, the price and the spend", "operationId": "getAccount",
+      "get": {"tags": ["account"], "summary": "The account: its free forms left, its credits and purchases, its legal records and settings", "operationId": "getAccount",
         "responses": {"200": {"description": "The account", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Account"}}}}, "401": {"$ref": "#/components/responses/Problem"}}}
     },
     "/v1/account/controller": {
@@ -177,39 +184,62 @@
         "responses": {"200": {"description": "Revoked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiKey"}}}}, "404": {"$ref": "#/components/responses/Problem"}}}
     },
     "/v1/usage": {
-      "get": {"tags": ["billing"], "summary": "Usage records, forms and the amount due for a month", "operationId": "getUsage",
+      "get": {"tags": ["billing"], "summary": "A month's usage records (free forms and credits each job counted), with the credits and purchases now", "operationId": "getUsage",
         "parameters": [{"name": "period", "in": "query", "required": false, "description": "The month, YYYY-MM (UTC); the current one if left out", "schema": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}$"}}],
         "responses": {"200": {"description": "Usage", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Usage"}}}}, "400": {"$ref": "#/components/responses/Problem"}}}
     },
     "/v1/billing/checkout": {
-      "post": {"tags": ["billing"], "summary": "A Stripe Checkout Session for the paid plan", "operationId": "createCheckout",
-        "requestBody": {"required": false, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false,
-          "properties": {"success_url": {"type": "string", "format": "uri", "description": "The client's page Checkout returns to (https)"}, "cancel_url": {"type": "string", "format": "uri"}}}}}},
-        "responses": {"200": {"description": "The session", "content": {"application/json": {"schema": {"type": "object", "properties": {"id": {"type": "string"}, "url": {"type": "string", "format": "uri"}}}}}},
-          "501": {"$ref": "#/components/responses/Problem"}, "502": {"$ref": "#/components/responses/Problem"}}}
+      "post": {"tags": ["billing"], "summary": "Buy packages: a pending purchase at today's quote and its Stripe Checkout Session (payment mode)", "operationId": "createCheckout",
+        "description": "The session has two lines priced here, each with the VAT tax rate (STRIPE_TAX_RATE_ID): the packages (the package price, quantity packages) and the card fee. Send the customer to url; the credits are added when Stripe's webhook says the session was paid for the quoted total. 501 without STRIPE_SECRET_KEY and STRIPE_TAX_RATE_ID. Scope account:admin.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["packages"], "additionalProperties": false,
+          "properties": {"packages": {"type": "integer", "minimum": 1, "description": "1 to MAX_PACKAGES_PER_PURCHASE (100)"},
+                         "success_url": {"type": "string", "format": "uri", "description": "The client's page Checkout returns to (https)"}, "cancel_url": {"type": "string", "format": "uri"}}}}}},
+        "responses": {"200": {"description": "The session and the pending purchase", "content": {"application/json": {"schema": {"type": "object",
+            "properties": {"object": {"const": "checkout_session"}, "id": {"type": "string"}, "url": {"type": "string", "format": "uri"}, "purchase": {"$ref": "#/components/schemas/Purchase"}}}}}},
+          "403": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"}, "501": {"$ref": "#/components/responses/Problem"}, "502": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/billing/purchases": {
+      "get": {"tags": ["billing"], "summary": "The account's purchases of packages, newest first, with their lines and status", "operationId": "listPurchases",
+        "description": "Scope jobs:read or account:admin.",
+        "parameters": [{"$ref": "#/components/parameters/Limit"}, {"$ref": "#/components/parameters/After"}],
+        "responses": {"200": {"description": "A page", "headers": {"Link": {"$ref": "#/components/headers/Link"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PurchaseList"}}}},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"}, "403": {"$ref": "#/components/responses/Problem"}}}
     },
     "/v1/billing/stripe-webhook": {
       "post": {"tags": ["billing"], "summary": "Stripe events (verified by Stripe-Signature)", "operationId": "stripeWebhook", "security": [],
-        "description": "checkout.session.completed, customer.subscription.updated and customer.subscription.deleted set the account's plan. Each event is handled once.",
+        "description": "checkout.session.completed and checkout.session.async_payment_succeeded with payment_status paid: if amount_total and currency are the purchase's quote, the purchase is paid and its forms are added to the account's credits, once; otherwise it is recorded as a mismatch and nothing is added. checkout.session.expired marks the purchase expired. Each event is handled once.",
         "parameters": [{"name": "Stripe-Signature", "in": "header", "required": true, "schema": {"type": "string"}}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object"}}}},
         "responses": {"200": {"description": "Received", "content": {"application/json": {"schema": {"type": "object", "properties": {"received": {"type": "boolean"}, "changed": {"type": "boolean"}}}}}},
           "400": {"$ref": "#/components/responses/Problem"}, "501": {"$ref": "#/components/responses/Problem"}}}
     },
     "/v1/admin/accounts": {
-      "get": {"tags": ["admin"], "summary": "List accounts", "operationId": "adminListAccounts", "security": [{"adminToken": []}],
-        "responses": {"200": {"description": "Accounts", "content": {"application/json": {"schema": {"type": "object"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}},
+      "get": {"tags": ["admin"], "summary": "List accounts, with their credits", "operationId": "adminListAccounts", "security": [{"adminToken": []}],
+        "responses": {"200": {"description": "Accounts", "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "array", "items": {"$ref": "#/components/schemas/AdminAccount"}}}}}}},
+          "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}}},
       "post": {"tags": ["admin"], "summary": "Create an account", "operationId": "adminCreateAccount", "security": [{"adminToken": []}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["name"], "additionalProperties": false,
-          "properties": {"name": {"type": "string"}, "email": {"type": "string"}, "plan": {"$ref": "#/components/schemas/Plan"}}}}}},
-        "responses": {"201": {"description": "Created", "content": {"application/json": {"schema": {"type": "object"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"}}}
+          "properties": {"name": {"type": "string"}, "email": {"type": "string"}}}}}},
+        "responses": {"201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AdminAccount"}}}}, "401": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"}}}
     },
-    "/v1/admin/accounts/{id}/plan": {
+    "/v1/admin/accounts/{id}/credits": {
       "parameters": [{"$ref": "#/components/parameters/Id"}],
-      "put": {"tags": ["admin"], "summary": "Set an account's plan and monthly spend cap", "operationId": "adminSetPlan", "security": [{"adminToken": []}],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["plan"], "additionalProperties": false,
-          "properties": {"plan": {"$ref": "#/components/schemas/Plan"}, "spend_cap_microusd": {"type": ["integer", "null"], "minimum": 0}}}}}},
-        "responses": {"200": {"description": "The account", "content": {"application/json": {"schema": {"type": "object"}}}}, "404": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"}}}
+      "post": {"tags": ["admin"], "summary": "Record packages paid outside Stripe and add their forms to the account's credits", "operationId": "adminAddCredits", "security": [{"adminToken": []}],
+        "description": "A paid purchase (method manual) with VAT and no card fee, named by the payment's reference; audited. As rfpii-api admin add-credits.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["packages", "reference"], "additionalProperties": false,
+          "properties": {"packages": {"type": "integer", "minimum": 1}, "reference": {"type": "string", "minLength": 1, "maxLength": 200, "examples": ["bank transfer 123"]}}}}}},
+        "responses": {"201": {"description": "The purchase and the account's credits", "content": {"application/json": {"schema": {"type": "object",
+            "properties": {"purchase": {"$ref": "#/components/schemas/Purchase"}, "credits": {"$ref": "#/components/schemas/Credits"}}}}}},
+          "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"}}}
+    },
+    "/v1/admin/accounts/{id}/credit-adjustments": {
+      "parameters": [{"$ref": "#/components/parameters/Id"}],
+      "post": {"tags": ["admin"], "summary": "Add credits, or take back available ones, with a reason", "operationId": "adminAdjustCredits", "security": [{"adminToken": []}],
+        "description": "Recorded in the credit ledger and the audit log. A negative adjustment can take only credits that are available. As rfpii-api admin adjust-credits.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["forms", "reason"], "additionalProperties": false,
+          "properties": {"forms": {"type": "integer", "not": {"const": 0}}, "reason": {"type": "string", "minLength": 1}}}}}},
+        "responses": {"201": {"description": "The account's credits", "content": {"application/json": {"schema": {"type": "object", "properties": {"credits": {"$ref": "#/components/schemas/Credits"}}}}}},
+          "401": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"}, "422": {"$ref": "#/components/responses/Problem"}}}
     },
     "/v1/admin/accounts/{id}/keys": {
       "parameters": [{"$ref": "#/components/parameters/Id"}],
@@ -265,7 +295,6 @@
         "properties": {"type": {"type": "string", "description": "A URI naming the problem type (API.md#problem-…), or about:blank"}, "title": {"type": "string"}, "status": {"type": "integer"},
                        "detail": {"type": "string"}, "instance": {"type": "string", "description": "urn:rfpii:request:<X-Request-Id>"}, "request_id": {"type": "string"}},
         "additionalProperties": true},
-      "Plan": {"enum": ["free", "paid"]},
       "Scope": {"enum": ["jobs:write", "jobs:read", "account:admin"]},
       "File": {"type": "object", "properties": {"id": {"type": "string"}, "object": {"const": "file"}, "name": {"type": ["string", "null"]}, "kind": {"enum": ["pdf", "jpeg", "png", "tiff", "zip"]},
         "bytes": {"type": "integer"}, "sha256": {"type": "string"}, "status": {"enum": ["available", "deleted"]}, "created_at": {"type": "string", "format": "date-time"},
@@ -286,8 +315,11 @@
           "held_pages": {"enum": ["none", "cloud"], "description": "The account's setting when the job was created: whether held pages may go to the cloud vision model"}, "webhook_url": {"type": ["string", "null"]}, "metadata": {"type": ["object", "null"]},
           "forms_requested": {"type": "integer"}, "forms_released": {"type": ["integer", "null"]}, "forms_held": {"type": ["integer", "null"]},
           "inventory": {"type": ["object", "null"]},
-          "price": {"type": "object", "properties": {"currency": {"const": "usd"}, "plan": {"$ref": "#/components/schemas/Plan"}, "unit_microusd": {"type": "integer"}, "estimate_microusd": {"type": "integer"},
-                    "forms_charged": {"type": ["integer", "null"]}, "amount_microusd": {"type": ["integer", "null"]}, "amount_usd": {"type": ["string", "null"]}}},
+          "billing": {"type": "object", "description": "What the job reserved at creation and, once it ended, what its released forms counted against",
+            "properties": {"period": {"type": "string", "description": "The month (UTC) whose free forms the job draws on"},
+                           "reserved": {"type": "object", "properties": {"free_forms": {"type": "integer"}, "credits": {"type": "integer"}}},
+                           "settled": {"type": "boolean"},
+                           "counted": {"type": ["object", "null"], "properties": {"forms": {"type": "integer"}, "free_forms": {"type": "integer"}, "credits": {"type": "integer"}}}}},
           "exit_code": {"type": ["integer", "null"]}, "error": {"type": ["string", "null"]}, "attempts": {"type": "integer"},
           "created_at": {"type": "string", "format": "date-time"}, "started_at": {"type": ["string", "null"]}, "finished_at": {"type": ["string", "null"]},
           "inputs_deleted_at": {"type": ["string", "null"]}, "outputs_expire_at": {"type": ["string", "null"]}, "outputs_deleted_at": {"type": ["string", "null"]}, "deleted_at": {"type": ["string", "null"]},
@@ -305,17 +337,56 @@
       "Dpia": {"type": "object", "required": ["reference"], "additionalProperties": false,
         "properties": {"reference": {"type": "string"}, "submitted_on": {"type": "string", "format": "date"}, "status": {"type": "string", "examples": ["submitted", "approved", "deemed approved"]}}},
       "Settings": {"type": "object", "additionalProperties": false, "properties": {"held_pages": {"enum": ["none", "cloud"]}, "webhook_url": {"type": ["string", "null"], "format": "uri"}}},
-      "Account": {"type": "object", "properties": {"id": {"type": "string"}, "plan": {"$ref": "#/components/schemas/Plan"}, "period": {"type": "string"},
-        "forms_released_this_month": {"type": "integer"}, "forms_reserved": {"type": "integer"}, "free_forms_per_month": {"type": "integer"}, "free_forms_left": {"type": "integer"},
-        "price": {"type": "object"}, "spend_this_month_microusd": {"type": "integer"}, "spend_cap_microusd": {"type": ["integer", "null"]},
+      "Account": {"type": "object", "properties": {"id": {"type": "string"}, "object": {"const": "account"}, "name": {"type": "string"}, "email": {"type": ["string", "null"]}, "period": {"type": "string"},
+        "forms_released_this_month": {"type": "integer", "description": "Forms counted this month, free and from credits"},
+        "free_forms": {"$ref": "#/components/schemas/FreeForms"}, "credits": {"$ref": "#/components/schemas/Credits"}, "purchases": {"$ref": "#/components/schemas/PurchasesSummary"},
+        "price": {"type": "object", "properties": {"currency": {"const": "usd"}, "package_forms": {"type": "integer"}, "package_price_cents": {"type": "integer"}, "price_per_form_usd": {"type": "string"},
+          "quote": {"type": "string"}, "pricing": {"type": "string", "format": "uri"}}},
+        "billing": {"type": "object", "properties": {"stripe_customer": {"type": "boolean"}}},
         "settings": {"type": "object"}, "controller": {"type": ["object", "null"]}, "dpia": {"type": ["object", "null"]}, "ready_for_jobs": {"type": "boolean"},
         "missing": {"type": "array", "items": {"enum": ["controller", "dpia"]}}, "webhook_secret": {"type": "string", "description": "Only when PATCH settings just created it"}}},
       "ApiKey": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": ["string", "null"]}, "prefix": {"type": "string"}, "scopes": {"type": "array", "items": {"$ref": "#/components/schemas/Scope"}},
         "created_at": {"type": "string"}, "last_used_at": {"type": ["string", "null"]}, "revoked_at": {"type": ["string", "null"]}}},
       "ApiKeyWithSecret": {"allOf": [{"$ref": "#/components/schemas/ApiKey"}, {"type": "object", "properties": {"secret": {"type": "string", "pattern": "^rfpii_live_[0-9A-Za-z]{43}$"}}}]},
-      "Usage": {"type": "object", "properties": {"period": {"type": "string"}, "records": {"type": "array", "items": {"type": "object"}}, "forms": {"type": "integer"}, "free_forms": {"type": "integer"},
-        "paid_forms": {"type": "integer"}, "free_forms_left": {"type": "integer"}, "reserved_forms": {"type": "integer"}, "amount_due_microusd": {"type": "integer"}, "amount_due_usd": {"type": "string"}}},
-      "Pricing": {"type": "object", "properties": {"currency": {"const": "usd"}, "unit": {"const": "form"}, "plans": {"type": "array", "items": {"type": "object"}}, "how_the_price_was_set": {"type": "string", "format": "uri"}}},
+      "FreeForms": {"type": "object", "description": "The account's free forms (FREE_FORMS): given once, never renewed",
+        "properties": {"allowance": {"type": "integer"}, "renewed": {"type": "boolean", "const": false}, "used": {"type": "integer"}, "reserved": {"type": "integer"}, "left": {"type": "integer"}}},
+      "Credits": {"type": "object", "description": "Form credits, bought in packages; available = bought - used - expired + adjusted - reserved",
+        "properties": {"bought": {"type": "integer"}, "used": {"type": "integer"}, "expired": {"type": "integer"}, "adjusted": {"type": "integer"}, "reserved": {"type": "integer"},
+                       "available": {"type": "integer"}, "expire_after_days": {"type": ["integer", "null"], "description": "CREDIT_EXPIRY_DAYS; null: credits don't expire"}}},
+      "PurchasesSummary": {"type": "object", "properties": {"paid": {"type": "integer"}, "pending": {"type": "integer"}, "expired": {"type": "integer"}, "mismatch": {"type": "integer"},
+        "forms_bought": {"type": "integer"}, "total_paid_cents": {"type": "integer"}, "total_paid_usd": {"type": "string"}, "last_paid_at": {"type": ["string", "null"], "format": "date-time"}}},
+      "QuoteLine": {"type": "object", "properties": {"item": {"enum": ["packages", "card_fee"]}, "description": {"type": "string"}, "quantity": {"type": "integer"},
+        "unit_amount_cents": {"type": "integer"}, "amount_cents": {"type": "integer"}, "vat_rate_basis_points": {"type": "integer"}, "vat_cents": {"type": "integer"}}},
+      "Quote": {"type": "object", "description": "Integer cents. VAT is rounded half up on each line; the card fee is the smallest that leaves the operator the packages' price after the processor's fee.",
+        "properties": {"object": {"const": "quote"}, "currency": {"const": "usd"}, "packages": {"type": "integer"}, "forms": {"type": "integer"},
+          "lines": {"type": "array", "items": {"$ref": "#/components/schemas/QuoteLine"}}, "net_cents": {"type": "integer"}, "card_fee_cents": {"type": "integer"},
+          "vat_rate_basis_points": {"type": "integer"}, "vat_net_cents": {"type": "integer"}, "vat_card_fee_cents": {"type": "integer"}, "vat_cents": {"type": "integer"},
+          "total_cents": {"type": "integer"}, "total_usd": {"type": "string"}, "effective_price_per_form_usd": {"type": "string"}}},
+      "Purchase": {"type": "object", "properties": {"id": {"type": "string"}, "object": {"const": "purchase"}, "status": {"enum": ["pending", "paid", "expired", "mismatch"]},
+        "method": {"enum": ["stripe", "manual"]}, "packages": {"type": "integer"}, "forms": {"type": "integer"}, "currency": {"const": "usd"},
+        "lines": {"type": "array", "items": {"$ref": "#/components/schemas/QuoteLine"}}, "net_cents": {"type": "integer"}, "card_fee_cents": {"type": "integer"},
+        "vat_rate_basis_points": {"type": "integer"}, "vat_cents": {"type": "integer"}, "total_cents": {"type": "integer"}, "total_usd": {"type": "string"},
+        "reference": {"type": ["string", "null"], "description": "The operator's reference of a manual purchase"}, "stripe_session_id": {"type": ["string", "null"]},
+        "amount_received_cents": {"type": ["integer", "null"]}, "currency_received": {"type": ["string", "null"]},
+        "created_at": {"type": "string", "format": "date-time"}, "paid_at": {"type": ["string", "null"]}, "closed_at": {"type": ["string", "null"], "description": "When it was found expired or mismatched"}}},
+      "PurchaseList": {"type": "object", "properties": {"data": {"type": "array", "items": {"$ref": "#/components/schemas/Purchase"}}, "has_more": {"type": "boolean"}, "next_after": {"type": ["string", "null"]}}},
+      "AdminAccount": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "email": {"type": ["string", "null"]}, "credits": {"$ref": "#/components/schemas/Credits"},
+        "ready_for_jobs": {"type": "boolean"}, "stripe_customer": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"}}},
+      "Usage": {"type": "object", "properties": {"period": {"type": "string"},
+        "records": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "job_id": {"type": "string"}, "forms": {"type": "integer"}, "free_forms": {"type": "integer"},
+          "credit_forms": {"type": "integer"}, "created_at": {"type": "string", "format": "date-time"},
+          "legacy": {"type": "object", "description": "Only on records made under the metered plan: its plan, unit price and amount"}}}},
+        "forms": {"type": "integer"}, "free_forms": {"type": "integer"}, "credit_forms": {"type": "integer"},
+        "reserved": {"type": "object", "properties": {"free_forms": {"type": "integer"}, "credits": {"type": "integer"}}},
+        "free": {"$ref": "#/components/schemas/FreeForms"}, "credits": {"$ref": "#/components/schemas/Credits"}, "purchases": {"$ref": "#/components/schemas/PurchasesSummary"}}},
+      "Pricing": {"type": "object", "properties": {"currency": {"const": "usd"}, "unit": {"const": "form"},
+        "free": {"type": "object", "properties": {"forms": {"type": "integer"}, "renewed": {"type": "boolean", "const": false}, "terms": {"type": "string"}}},
+        "package": {"type": "object", "properties": {"forms": {"type": "integer"}, "price_cents": {"type": "integer"}, "price_usd": {"type": "string"}, "price_per_form_usd": {"type": "string"},
+          "max_per_purchase": {"type": "integer"}, "credits_expire_after_days": {"type": ["integer", "null"]}}},
+        "card_fee": {"type": "object", "properties": {"basis_points": {"type": "integer"}, "fixed_cents": {"type": "integer"}, "terms": {"type": "string"}, "paid_by": {"type": "string"}}},
+        "vat": {"type": "object", "properties": {"rate_basis_points": {"type": "integer"}, "rate": {"type": "string"}, "on": {"type": "array", "items": {"type": "string"}}, "included_in_prices": {"const": false}}},
+        "quote": {"$ref": "#/components/schemas/Quote"}, "checkout": {"type": "boolean", "description": "Whether card payments by Stripe Checkout are configured"},
+        "how_the_price_was_set": {"type": "string", "format": "uri"}}},
       "Verification": {"type": "object", "properties": {"verified": {"type": "boolean"}, "checks": {"type": "array", "items": {"type": "object", "properties": {"ok": {"type": "boolean"}, "text": {"type": "string"}}}},
         "notes": {"type": "array", "items": {"type": "string"}}, "result": {"type": ["string", "null"]}}}
     }

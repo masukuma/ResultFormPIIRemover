@@ -40,23 +40,45 @@ JSON lines on stdout (`LOG_FORMAT=text` for people), at `RUST_LOG`'s level
 
 ## Admin
 
-The operator creates accounts and their first key, and sets plans:
+The operator creates accounts and their first key, and records packages
+paid outside Stripe:
 
 ```bash
 rfpii-api admin create-account --name "Example Observer Group" --email ops@example.org   # prints acct_…
 rfpii-api admin create-key --account acct_… --name ops                                    # prints rfpii_live_…, once
 rfpii-api admin create-key --account acct_… --scopes "jobs:read jobs:write"
-rfpii-api admin set-plan --account acct_… --plan paid --spend-cap-microusd 50000000       # $50 a month
-rfpii-api admin set-plan --account acct_… --plan paid --spend-cap-microusd none
-rfpii-api admin list-accounts [--json]
+rfpii-api admin add-credits --account acct_… --packages 2 --reference "bank transfer 123" # 200 forms, $81.20 with VAT
+rfpii-api admin adjust-credits --account acct_… --forms -100 --reason "refund of PR-17"  # or a positive grant
+rfpii-api admin list-accounts [--json]                                                    # with credits available
 ```
 
-With `ADMIN_TOKEN` set, the same is served under `/v1/admin/*` for a bearer
-of that token (`GET`/`POST /v1/admin/accounts`,
-`PUT /v1/admin/accounts/{id}/plan`, `POST /v1/admin/accounts/{id}/keys`),
-and `GET /v1/admin/jobs/{id}` gives any job with what it cost to run.
-Every change is written to the audit log. With Stripe configured, Stripe's
-webhook sets plans as subscriptions start and end.
+`add-credits` records a paid purchase (method `manual`) at the package
+price with VAT and no card fee, named by the payment's reference, and adds
+its forms to the account's credits; `adjust-credits` adds credits or takes
+back available ones. With `ADMIN_TOKEN` set, the same is served under
+`/v1/admin/*` for a bearer of that token (`GET`/`POST /v1/admin/accounts`,
+`POST /v1/admin/accounts/{id}/keys`, `POST /v1/admin/accounts/{id}/credits`,
+`POST /v1/admin/accounts/{id}/credit-adjustments`), and
+`GET /v1/admin/jobs/{id}` gives any job with what it cost to run. Every
+change is written to the audit log. With Stripe configured, customers buy
+packages themselves (`POST /v1/billing/checkout`), and Stripe's webhook adds
+their credits once the payment is in.
+
+### Stripe
+
+1. Create a tax rate in Stripe, in the Dashboard or with
+   `POST /v1/tax_rates` (`display_name=VAT`, `percentage=16`,
+   `inclusive=false`, `country=KE`): 16%, **exclusive**. Its id (`txr_…`)
+   is `STRIPE_TAX_RATE_ID`. The API puts it on both Checkout lines, so Stripe
+   adds 16% to each; a webhook whose total differs from the quote credits
+   nothing (the purchase is recorded as `mismatch`).
+2. Add a webhook endpoint at `https://<host>/v1/billing/stripe-webhook`
+   for `checkout.session.completed`, `checkout.session.async_payment_succeeded`
+   and `checkout.session.expired`; its signing secret is
+   `STRIPE_WEBHOOK_SECRET`.
+3. Set `STRIPE_SECRET_KEY`. Charges are in US dollars; check the card fee
+   (`CARD_FEE_BASIS_POINTS`, `CARD_FEE_FIXED_CENTS`) against the account's
+   pricing (PRICING.md).
 
 ## Configuration
 
@@ -79,8 +101,14 @@ Each setting is an environment variable and a flag of the same name
 | `KENYA_HOSTS` | none | model hosts in Kenya: calls to them are not transfers abroad |
 | `MODEL_REQUESTS_PER_FORM` | `40` | a job's model-request budget, per form |
 | `JOB_TIMEOUT_SECS` | `43200` | a job's wall-clock limit |
-| `FREE_FORMS_PER_MONTH` | `5` | forms a free account may have released each calendar month (UTC) |
-| `PRICE_PER_FORM_MICROUSD` | `4900` | the paid plan's price per released form ($0.0049, PRICING.md) |
+| `FREE_FORMS` | `5` | free forms every account has once (never renewed); after them, forms come from packages |
+| `PACKAGE_FORMS` | `100` | forms in a package (beyond the free forms, forms are sold in packages) |
+| `PACKAGE_PRICE_CENTS` | `3500` | a package's price, before the card fee and VAT ($35.00: $0.35 a form, PRICING.md) |
+| `VAT_RATE_BASIS_POINTS` | `1600` | VAT on every purchase line (16%); Stripe's tax rate must match it |
+| `CARD_FEE_BASIS_POINTS` | `440` | the card processor's rate of the whole charge (4.4%: 2.9% + 1.5% for international cards) |
+| `CARD_FEE_FIXED_CENTS` | `30` | the card processor's fixed fee per charge ($0.30) |
+| `MAX_PACKAGES_PER_PURCHASE` | `100` | the most packages one purchase may hold (1 to 10000) |
+| `CREDIT_EXPIRY_DAYS` | `0` | days credits last once added (0: they never expire); a job keeps what it reserved |
 | `MODEL_PRICES` | `gemma4:31b=140000/400000,gpt-oss:120b=150000/600000` | token prices for the actual cost, micro-dollars per million tokens, input/output |
 | `SERVER_PRICE_PER_VCPU_HOUR_MICROUSD` | `59850` | the server's price per vCPU-hour, for the actual cost |
 | `RETENTION_INPUT_DAYS` | `0` | days a job's inputs are kept after it ends (0: deleted when it ends) |
@@ -102,10 +130,9 @@ Each setting is an environment variable and a flag of the same name
 | `CORS_ALLOW_ORIGINS` | none (CORS off) | origins browsers may call the API from |
 | `ADMIN_TOKEN` | none (routes off) | the token of `/v1/admin/*` |
 | `METRICS_TOKEN` | none (open) | the token of `/metrics` |
-| `STRIPE_SECRET_KEY` | none (no Stripe) | Stripe's secret key: Checkout and meter events |
-| `STRIPE_PRICE_ID` | none | the metered price the paid plan subscribes to |
+| `STRIPE_SECRET_KEY` | none (no Checkout) | Stripe's secret key: Checkout Sessions for purchases |
+| `STRIPE_TAX_RATE_ID` | none (no Checkout) | the Stripe tax rate (`txr_…`, VAT 16% exclusive) put on each Checkout line |
 | `STRIPE_WEBHOOK_SECRET` | none | the signing secret of the Stripe webhook endpoint |
-| `STRIPE_METER_EVENT_NAME` | `rfpii_forms` | the event name of the Stripe billing meter |
 | `STRIPE_API_BASE` | `https://api.stripe.com` | Stripe's API (a stub in tests) |
 | `STRIPE_SIGNATURE_TOLERANCE_SECS` | `300` | the oldest `Stripe-Signature` timestamp accepted |
 | `WEBHOOK_RETRY_SCHEDULE` | `5,30,120,600,3600,21600` | seconds before each webhook retry |
@@ -132,8 +159,10 @@ environment.
 |---|---|
 | `src/http/` | routes and middleware: request id, trace, problem details, timeout, body limit, metrics, keys, rate limits |
 | `src/worker.rs` | leasing, running and settling jobs |
-| `src/billing.rs` | the allowance, reservations, settlement, usage, the actual cost |
-| `src/webhooks.rs`, `src/stripe.rs`, `src/sweeper.rs` | the background tasks |
+| `src/billing.rs` | the free forms, the credit ledger, admission, settlement, usage, the actual cost |
+| `src/quote.rs` | what a purchase of packages costs: the card fee and VAT, in cents |
+| `src/purchases.rs`, `src/stripe.rs` | purchases; Stripe Checkout and its webhook |
+| `src/webhooks.rs`, `src/sweeper.rs` | the background tasks |
 | `src/accounts.rs`, `src/auth.rs` | accounts, the controller record and DPIA; API keys |
 | `src/rfpii.rs` | the `rfpii` subprocess: inventory, verify, the job file |
 | `migrations/` | the database schema, versioned |

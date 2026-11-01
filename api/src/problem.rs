@@ -159,11 +159,12 @@ mod tests {
 
     #[test]
     fn a_problem_has_the_rfc_9457_members_and_its_extensions() {
-        let e = ApiError::new(StatusCode::PAYMENT_REQUIRED, Some("free-allowance-exceeded"), "Free allowance exceeded", "6 forms requested, 2 left").with("forms_left", 2);
+        let e =
+            ApiError::new(StatusCode::PAYMENT_REQUIRED, Some("insufficient-credits"), "Not enough free forms or credits", "6 forms requested, 2 left").with("free_forms_left", 2);
         let b = e.body();
         assert_eq!(b["status"], 402);
-        assert!(b["type"].as_str().unwrap().ends_with("#problem-free-allowance-exceeded"));
-        assert_eq!(b["forms_left"], 2);
+        assert!(b["type"].as_str().unwrap().ends_with("#problem-insufficient-credits"));
+        assert_eq!(b["free_forms_left"], 2);
         assert_eq!(ApiError::new(StatusCode::NOT_FOUND, None, "Not Found", "").body()["type"], "about:blank");
     }
 }

@@ -29,9 +29,20 @@ pub async fn require_token(State(s): State<AppState>, req: Request, next: Next) 
     next.run(req).await
 }
 
-pub fn account_value(a: &Account) -> Value {
-    json!({"id": a.id, "object": "account", "name": a.name, "email": a.email, "plan": a.plan, "spend_cap_microusd": a.spend_cap_microusd,
+/// An account as the operator lists it, with its credits.
+pub fn account_value(a: &Account, credits: &crate::billing::Credits, prices: &crate::billing::Prices) -> Value {
+    json!({"id": a.id, "object": "account", "name": a.name, "email": a.email, "credits": credits.to_value(prices),
            "ready_for_jobs": accounts::missing_for_jobs(a).is_empty(), "stripe_customer": a.stripe_customer_id.is_some(), "created_at": crate::clock::rfc3339(a.created_at)})
+}
+
+/// Every account, with its credits at `now`.
+pub fn accounts_with_credits(c: &rusqlite::Connection, now: i64) -> anyhow::Result<Vec<(Account, crate::billing::Credits)>> {
+    let mut out = Vec::new();
+    for a in accounts::list(c)? {
+        let credits = crate::billing::credits(c, &a.id, now)?;
+        out.push((a, credits));
+    }
+    Ok(out)
 }
 
 /// `GET /v1/admin/jobs/{id}`: a job, whoever's it is, with what it cost.
@@ -44,8 +55,10 @@ pub async fn get_job(State(s): State<AppState>, Path(id): Path<String>) -> ApiRe
 
 /// `GET /v1/admin/accounts`.
 pub async fn list_accounts(State(s): State<AppState>) -> ApiResult<axum::Json<Value>> {
-    let all = db(&s, |c| accounts::list(c)).await?;
-    Ok(axum::Json(json!({"object": "list", "data": all.iter().map(account_value).collect::<Vec<_>>(), "has_more": false})))
+    let now = s.clock.now();
+    let all = db(&s, move |c| accounts_with_credits(c, now)).await?;
+    let data: Vec<Value> = all.iter().map(|(a, cr)| account_value(a, cr, &s.prices)).collect();
+    Ok(axum::Json(json!({"object": "list", "data": data, "has_more": false})))
 }
 
 #[derive(Deserialize, Debug)]
@@ -53,55 +66,124 @@ pub async fn list_accounts(State(s): State<AppState>) -> ApiResult<axum::Json<Va
 pub struct NewAccount {
     pub name: String,
     pub email: Option<String>,
-    #[serde(default = "free")]
-    pub plan: String,
-}
-
-fn free() -> String {
-    "free".into()
 }
 
 /// `POST /v1/admin/accounts`.
 pub async fn create_account(State(s): State<AppState>, ApiJson(a): ApiJson<NewAccount>) -> ApiResult<Response> {
-    if !accounts::is_plan(&a.plan) || a.name.trim().is_empty() {
-        return Err(ApiError::validation("an account needs a name, and plan free or paid"));
+    if a.name.trim().is_empty() {
+        return Err(ApiError::validation("an account needs a name"));
     }
     let now = s.clock.now();
-    let acct = db(&s, move |c| accounts::create(c, now, &a.name, a.email.as_deref(), &a.plan, ACTOR)).await?;
-    Ok((StatusCode::CREATED, axum::Json(account_value(&acct))).into_response())
+    let acct = db(&s, move |c| accounts::create(c, now, &a.name, a.email.as_deref(), ACTOR)).await?;
+    Ok((StatusCode::CREATED, axum::Json(account_value(&acct, &Default::default(), &s.prices))).into_response())
 }
 
+/// `POST /v1/admin/accounts/{id}/credits`'s body.
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
-pub struct Plan {
-    pub plan: String,
-    /// micro-dollars a month; null for no cap; left out to keep it
-    #[serde(default, with = "cap")]
-    pub spend_cap_microusd: Option<Option<i64>>,
+pub struct NewCredits {
+    pub packages: i64,
+    /// the payment's reference ("bank transfer 123")
+    pub reference: String,
 }
 
-mod cap {
-    use serde::{Deserialize, Deserializer};
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<i64>>, D::Error> {
-        Option::<i64>::deserialize(d).map(Some)
-    }
+/// `POST /v1/admin/accounts/{id}/credits`: packages paid outside Stripe,
+/// recorded as a paid purchase with VAT and no card fee, their forms added
+/// to the account's credits.
+pub async fn add_credits(State(s): State<AppState>, Path(id): Path<String>, ApiJson(n): ApiJson<NewCredits>) -> ApiResult<Response> {
+    let (now, prices) = (s.clock.now(), s.prices.clone());
+    let (p, credits) = db(&s, move |c| add_credits_now(c, now, &prices, &id, n.packages, &n.reference, ACTOR)).await?.map_err(Refused::problem)?;
+    Ok((StatusCode::CREATED, axum::Json(json!({"purchase": p.resource(), "credits": credits.to_value(&s.prices)}))).into_response())
 }
 
-/// `PUT /v1/admin/accounts/{id}/plan`.
-pub async fn set_plan(State(s): State<AppState>, Path(id): Path<String>, ApiJson(p): ApiJson<Plan>) -> ApiResult<axum::Json<Value>> {
-    if !accounts::is_plan(&p.plan) || p.spend_cap_microusd.flatten().is_some_and(|c| c < 0) {
-        return Err(ApiError::validation("plan must be free or paid, and a spend cap not negative"));
-    }
-    let now = s.clock.now();
-    let a = db(&s, move |c| {
-        if !accounts::set_plan(c, now, &id, &p.plan, p.spend_cap_microusd, ACTOR)? {
-            return Ok(None);
+/// Why the operator's change to credits was refused.
+#[derive(Debug)]
+pub enum Refused {
+    NoAccount,
+    Invalid(String),
+}
+
+impl Refused {
+    fn problem(self) -> ApiError {
+        match self {
+            Refused::NoAccount => ApiError::new(StatusCode::NOT_FOUND, Some("not-found"), "Not found", "no such account"),
+            Refused::Invalid(why) => ApiError::validation(why),
         }
-        accounts::load(c, &id)
-    })
-    .await?
-    .ok_or_else(|| ApiError::not_found("account"))?;
-    Ok(axum::Json(account_value(&a)))
+    }
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Refused::NoAccount => f.write_str("no such account"),
+            Refused::Invalid(why) => f.write_str(why),
+        }
+    }
+}
+
+/// Record packages paid outside Stripe for `account`, in one IMMEDIATE
+/// transaction; the purchase and the account's credits after it.
+pub fn add_credits_now(
+    c: &mut rusqlite::Connection,
+    now: i64,
+    prices: &crate::billing::Prices,
+    account: &str,
+    packages: i64,
+    reference: &str,
+    actor: &str,
+) -> anyhow::Result<Result<(crate::purchases::Purchase, crate::billing::Credits), Refused>> {
+    let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if accounts::load(&tx, account)?.is_none() {
+        return Ok(Err(Refused::NoAccount));
+    }
+    let p = match crate::purchases::add_manual(&tx, now, prices, account, packages, reference, actor)? {
+        Ok(p) => p,
+        Err(why) => return Ok(Err(Refused::Invalid(why))),
+    };
+    let credits = crate::billing::credits(&tx, account, now)?;
+    tx.commit()?;
+    Ok(Ok((p, credits)))
+}
+
+/// `POST /v1/admin/accounts/{id}/credit-adjustments`'s body.
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Adjustment {
+    /// forms to add (positive) or take back (negative)
+    pub forms: i64,
+    pub reason: String,
+}
+
+/// `POST /v1/admin/accounts/{id}/credit-adjustments`: add or take back
+/// credits with a reason (a goodwill grant; credits of a refunded
+/// payment), recorded in the ledger and the audit log.
+pub async fn adjust_credits(State(s): State<AppState>, Path(id): Path<String>, ApiJson(a): ApiJson<Adjustment>) -> ApiResult<Response> {
+    let (now, prices) = (s.clock.now(), s.prices.clone());
+    let credits = db(&s, move |c| adjust_credits_now(c, now, &prices, &id, a.forms, &a.reason, ACTOR)).await?.map_err(Refused::problem)?;
+    Ok((StatusCode::CREATED, axum::Json(json!({"credits": credits.to_value(&s.prices)}))).into_response())
+}
+
+/// Adjust `account`'s credits by `forms` in one IMMEDIATE transaction; its
+/// credits after.
+pub fn adjust_credits_now(
+    c: &mut rusqlite::Connection,
+    now: i64,
+    prices: &crate::billing::Prices,
+    account: &str,
+    forms: i64,
+    reason: &str,
+    actor: &str,
+) -> anyhow::Result<Result<crate::billing::Credits, Refused>> {
+    let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if accounts::load(&tx, account)?.is_none() {
+        return Ok(Err(Refused::NoAccount));
+    }
+    if let Err(why) = crate::billing::adjust(&tx, account, forms, reason, actor, now, prices)? {
+        return Ok(Err(Refused::Invalid(why)));
+    }
+    let credits = crate::billing::credits(&tx, account, now)?;
+    tx.commit()?;
+    Ok(Ok(credits))
 }
 
 #[derive(Deserialize, Debug, Default)]

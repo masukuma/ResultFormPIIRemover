@@ -9,7 +9,7 @@ use std::time::Duration;
 
 /// The migrations, in order. A version, once released, never changes: a
 /// change to the schema is a new version.
-pub const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_init.sql"))];
+pub const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_init.sql")), (2, include_str!("../migrations/0002_packages.sql"))];
 
 /// How long a statement waits for another connection's write lock.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -101,11 +101,73 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rfpii-api-db-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let db = Db::open(&dir.join("x.sqlite3")).unwrap();
-        assert_eq!(db.migrate().unwrap(), vec![1]);
+        assert_eq!(db.migrate().unwrap(), vec![1, 2]);
         assert!(db.migrate().unwrap().is_empty());
-        assert_eq!(db.version().unwrap(), 1);
+        assert_eq!(db.version().unwrap(), 2);
         let mode: String = db.with(|c| Ok(c.query_row("PRAGMA journal_mode", [], |r| r.get(0))?)).unwrap();
         assert_eq!(mode, "wal");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_metered_plan_migrates_to_packages_and_its_records_stay_readable() {
+        let dir = std::env::temp_dir().join(format!("rfpii-api-db-v1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = Db::open(&dir.join("x.sqlite3")).unwrap();
+        // a database of the metered plan: a free and a paid account, each with
+        // a settled job and its usage record, and a free job still running
+        db.with(|c| {
+            c.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)")?;
+            c.execute_batch(MIGRATIONS[0].1)?;
+            c.execute_batch(
+                "INSERT INTO schema_migrations VALUES (1, 0);
+                 INSERT INTO accounts (id, name, plan, created_at) VALUES ('acct_free', 'Free', 'free', 0);
+                 INSERT INTO accounts (id, name, plan, spend_cap_microusd, stripe_customer_id, stripe_subscription_id, created_at) VALUES ('acct_paid', 'Paid', 'paid', 50000000, 'cus_1', 'sub_1', 0);
+                 INSERT INTO jobs (id, account_id, status, request_json, plan, unit_price_microusd, period, forms_requested, reserved_forms, settled, forms_released, forms_charged, amount_microusd, max_attempts, created_at)
+                   VALUES ('job_f', 'acct_free', 'succeeded', '{}', 'free', 0, '2026-10', 3, 0, 1, 2, 2, 0, 3, 0),
+                          ('job_p', 'acct_paid', 'succeeded', '{}', 'paid', 4900, '2026-10', 3, 0, 1, 2, 2, 9800, 3, 0),
+                          ('job_r', 'acct_free', 'running', '{}', 'free', 0, '2026-10', 2, 2, 0, NULL, NULL, NULL, 3, 0);
+                 INSERT INTO usage_records (id, account_id, job_id, period, plan, forms, unit_price_microusd, amount_microusd, created_at, stripe_reported_at)
+                   VALUES ('usage_f', 'acct_free', 'job_f', '2026-10', 'free', 2, 0, 0, 0, NULL),
+                          ('usage_p', 'acct_paid', 'job_p', '2026-10', 'paid', 2, 4900, 9800, 0, 5);",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(db.migrate().unwrap(), vec![2]);
+        let prices = crate::billing::Prices {
+            free_forms: 5,
+            rates: crate::quote::Rates { package_forms: 100, package_price_cents: 3500, vat_basis_points: 1600, card_fee_basis_points: 440, card_fee_fixed_cents: 30 },
+            max_packages_per_purchase: 100,
+            credit_expiry_days: 0,
+            tokens: Default::default(),
+            vcpu_hour_microusd: 0,
+        };
+        db.with(|c| {
+            // the free account: 2 used, 2 held by the running job
+            let free = crate::billing::free(c, "acct_free", &prices)?;
+            assert_eq!((free.used, free.reserved, free.left), (2, 2, 1));
+            // the paid account keeps nothing special: its metered forms were not free ones
+            assert_eq!(crate::billing::free(c, "acct_paid", &prices)?.left, 5);
+            assert_eq!(crate::billing::credits(c, "acct_paid", 0)?, crate::billing::Credits::default());
+            let a = crate::accounts::load(c, "acct_paid")?.unwrap();
+            assert_eq!(a.stripe_customer_id.as_deref(), Some("cus_1"));
+            // old usage records are read with what the metered plan charged
+            let u = crate::billing::usage(c, "acct_paid", "2026-10", 0, &prices)?;
+            assert_eq!(u["records"][0]["legacy"], serde_json::json!({"plan": "paid", "unit_price_microusd": 4900, "amount_microusd": 9800}));
+            assert_eq!((u["forms"].as_i64(), u["free_forms"].as_i64(), u["credit_forms"].as_i64()), (Some(2), Some(0), Some(0)));
+            let u = crate::billing::usage(c, "acct_free", "2026-10", 0, &prices)?;
+            assert_eq!((u["records"][0]["free_forms"].as_i64(), u["records"][0]["legacy"]["plan"].as_str()), (Some(2), Some("free")));
+            // and old jobs keep what they counted
+            let j = crate::jobs::load_any(c, "job_p")?.unwrap();
+            assert_eq!((j.forms_counted, j.free_forms, j.credit_forms), (Some(2), Some(0), Some(0)));
+            let j = crate::jobs::load_any(c, "job_f")?.unwrap().resource();
+            assert_eq!(j["billing"]["counted"], serde_json::json!({"forms": 2, "free_forms": 2, "credits": 0}));
+            let j = crate::jobs::load_any(c, "job_r")?.unwrap();
+            assert_eq!((j.reserved_free, j.reserved_credits, j.settled), (2, 0, false));
+            Ok(())
+        })
+        .unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

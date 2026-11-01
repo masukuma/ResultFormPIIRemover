@@ -1,6 +1,7 @@
-//! `/v1/account`: the plan and this month's use; the controller record and
-//! DPIA a job needs; settings (held pages to the cloud only on the
-//! customer's opt-in, the webhook URL); the webhook signing secret.
+//! `/v1/account`: the free forms left (given once), the form credits and
+//! the purchases; the controller record and DPIA a job needs; settings (held
+//! pages to the cloud only on the customer's opt-in, the webhook URL); the
+//! webhook signing secret.
 
 use axum::Extension;
 use axum::extract::State;
@@ -11,12 +12,35 @@ use serde_json::{Value, json};
 use super::{ApiJson, db};
 use crate::accounts::{self, Account, Dpia};
 use crate::auth::{Caller, Scope};
-use crate::billing::{self, format_usd};
+use crate::billing::{self, Credits, Free, format_usd};
 use crate::problem::{ApiError, ApiResult};
 use crate::server::AppState;
 
+/// What an account's resource shows of its billing.
+pub struct Balance {
+    pub period: String,
+    pub free: Free,
+    pub credits: Credits,
+    pub purchases: Value,
+    /// forms counted this month (free and credits)
+    pub forms_this_month: i64,
+}
+
+/// The account's billing now.
+pub fn balance(c: &rusqlite::Connection, account: &str, now: i64, prices: &billing::Prices) -> anyhow::Result<Balance> {
+    let period = crate::clock::period_of(now);
+    let forms_this_month: i64 = c.query_row("SELECT COALESCE(SUM(forms), 0) FROM usage_records WHERE account_id = ?1 AND period = ?2", params![account, period], |r| r.get(0))?;
+    Ok(Balance {
+        free: billing::free(c, account, prices)?,
+        credits: billing::credits(c, account, now)?,
+        purchases: crate::purchases::summary(c, account)?,
+        forms_this_month,
+        period,
+    })
+}
+
 /// The account as the API returns it.
-pub fn resource(s: &AppState, a: &Account, month: &billing::Month, period: &str) -> Value {
+pub fn resource(s: &AppState, a: &Account, b: &Balance) -> Value {
     let now = s.clock.now();
     let controller = a.controller.as_ref().map(|c| accounts::effective_controller(c, &a.held_pages, a.dpia.as_ref(), &s.cfg));
     let dpia = a.dpia.as_ref().map(|d| {
@@ -27,16 +51,13 @@ pub fn resource(s: &AppState, a: &Account, month: &billing::Month, period: &str)
     });
     json!({
         "id": a.id, "object": "account", "name": a.name, "email": a.email,
-        "plan": a.plan,
-        "period": period,
-        "forms_released_this_month": month.released_free + month.released_paid,
-        "forms_reserved": month.reserved_free + month.reserved_paid,
-        "free_forms_per_month": s.prices.free_forms_per_month,
-        "free_forms_left": if a.plan == "free" { billing::free_left(month, &s.prices) } else { 0 },
-        "price": {"currency": "usd", "per_form_microusd": s.prices.unit_microusd, "per_form_usd": format_usd(s.prices.unit_microusd), "pricing": s.cfg.pricing_url},
-        "spend_this_month_microusd": month.spend_microusd,
-        "spend_this_month_usd": format_usd(month.spend_microusd),
-        "spend_cap_microusd": a.spend_cap_microusd,
+        "period": b.period,
+        "forms_released_this_month": b.forms_this_month,
+        "free_forms": b.free.to_value(),
+        "credits": b.credits.to_value(&s.prices),
+        "purchases": b.purchases,
+        "price": {"currency": "usd", "package_forms": s.prices.rates.package_forms, "package_price_cents": s.prices.rates.package_price_cents,
+                  "price_per_form_usd": format_usd(s.prices.rates.price_per_form_microusd()), "quote": "/v1/billing/quote", "pricing": s.cfg.pricing_url},
         "settings": {"held_pages": a.held_pages, "webhook_url": a.webhook_url, "webhook_secret_set": a.webhook_secret.is_some()},
         "controller": controller,
         "dpia": dpia,
@@ -48,15 +69,14 @@ pub fn resource(s: &AppState, a: &Account, month: &billing::Month, period: &str)
 }
 
 async fn current(s: &AppState, caller: &Caller) -> ApiResult<Value> {
-    let (id, period) = (caller.account_id.clone(), crate::clock::period_of(s.clock.now()));
-    let p = period.clone();
-    let (a, m) = db(s, move |c| {
+    let (id, now, prices) = (caller.account_id.clone(), s.clock.now(), s.prices.clone());
+    let (a, b) = db(s, move |c| {
         let a = accounts::load(c, &id)?.ok_or_else(|| anyhow::anyhow!("account {id} vanished"))?;
-        let m = billing::month(c, &id, &p)?;
-        Ok((a, m))
+        let b = balance(c, &id, now, &prices)?;
+        Ok((a, b))
     })
     .await?;
-    Ok(resource(s, &a, &m, &period))
+    Ok(resource(s, &a, &b))
 }
 
 /// `GET /v1/account`: any valid key may read it.

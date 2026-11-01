@@ -1,7 +1,8 @@
 //! rfpii-api: the `rfpii` redaction harness (HARNESS.md) served as a paid
 //! HTTP API. Clients upload forms, start jobs and download what the
-//! release gate let out; workers run `rfpii job` for each job; usage is
-//! settled per released form (PRICING.md). See API.md.
+//! release gate let out; workers run `rfpii job` for each job; each
+//! released form is counted against the account's free forms (given once),
+//! then against form credits bought in packages (PRICING.md). See API.md.
 
 pub mod accounts;
 pub mod audit;
@@ -16,6 +17,8 @@ pub mod ids;
 pub mod jobs;
 pub mod metrics;
 pub mod problem;
+pub mod purchases;
+pub mod quote;
 pub mod ratelimit;
 pub mod rfpii;
 pub mod server;
