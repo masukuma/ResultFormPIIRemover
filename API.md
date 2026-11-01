@@ -4,8 +4,9 @@ An HTTP API that sells the `rfpii` redaction harness ([HARNESS.md](HARNESS.md))
 as a service. A customer uploads election result forms, starts a job, and
 downloads what the release gate let out: each published form with its signed
 manifest, its ledger entry and a batch root, so anyone can check that nothing
-but personal data was touched ([VERIFYING.md](VERIFYING.md)). A form costs
-$0.0049 on the paid plan; 5 forms a month are free ([PRICING.md](PRICING.md)).
+but personal data was touched ([VERIFYING.md](VERIFYING.md)). Every account
+has 5 free forms a month; beyond them, forms are bought in packages of 100
+for $35.00 ($0.35 a form), plus the card fee and VAT ([PRICING.md](PRICING.md)).
 
 The server is `rfpii-api`, a Rust crate in [`api/`](api/README.md). It calls
 the `rfpii` binary as a subprocess and does not link it.
@@ -13,7 +14,7 @@ the `rfpii` binary as a subprocess and does not link it.
 Contents: [Architecture](#architecture) · [Resources](#resources) ·
 [Authentication](#authentication) · [Endpoints](#endpoints) ·
 [Job lifecycle](#job-lifecycle) · [Webhooks](#webhooks) ·
-[Plans and billing](#plans-and-billing) · [Rate limits](#rate-limits) ·
+[Free forms, packages and billing](#free-forms-packages-and-billing) · [Rate limits](#rate-limits) ·
 [Errors](#errors) · [Security and privacy](#security-and-privacy) ·
 [Legal points](#legal-points) · [Deployment](#deployment) ·
 [Standards](#standards)
@@ -24,8 +25,8 @@ Contents: [Architecture](#architecture) · [Resources](#resources) ·
    clients ──HTTPS──► reverse proxy (TLS) ──HTTP──► rfpii-api serve
                                                      │  HTTP API (axum)
                                                      │  N workers ──► rfpii job (one process per job)
-   Stripe ◄── checkout, meter events ────────────────┤  webhook deliveries ──► customers' URLs
-   Stripe ──► /v1/billing/stripe-webhook             │  Stripe reporter, retention sweeper
+   Stripe ◄── Checkout Sessions (payment mode) ──────┤  webhook deliveries ──► customers' URLs
+   Stripe ──► /v1/billing/stripe-webhook             │  retention sweeper
                                                      │
                        rfpii-api worker (optional) ──┤  more workers, same database and folder
                                                      ▼
@@ -38,15 +39,18 @@ Contents: [Architecture](#architecture) · [Resources](#resources) ·
 ```
 
 - **The API** checks keys, uploads and requests, counts a job's forms with
-  `rfpii inventory --json`, reserves them against the plan, and queues the
-  job. It runs `rfpii verify` for anyone checking a published form.
+  `rfpii inventory --json`, reserves them against the month's free forms
+  and the account's credits, and queues the job. It sells packages through
+  Stripe Checkout, and runs `rfpii verify` for anyone checking a published
+  form.
 - **Workers** lease queued jobs from SQLite (an atomic `UPDATE … RETURNING`
   with a lease; a heartbeat renews it). Each job runs as one `rfpii job`
   process in its own folder, in its own process group, with a time limit.
-  When it ends, the worker reads `report.json`, settles the usage, records
-  the job's actual cost, queues its webhook and deletes the originals.
-- **Background tasks** in every process deliver webhooks, report paid usage
-  to Stripe, and sweep files past their retention period.
+  When it ends, the worker reads `report.json`, settles the forms it
+  released against the free forms and credits, records the job's actual
+  cost, queues its webhook and deletes the originals.
+- **Background tasks** in every process deliver webhooks and sweep files
+  past their retention period.
 - `rfpii-api serve --workers 0` serves the API alone; `rfpii-api worker`
   runs workers alone. Any number of each can share one database and data
   folder on one machine (SQLite in WAL mode with a busy timeout).
@@ -59,16 +63,19 @@ serves what `rfpii job` put in `public/`.
 
 | Resource | Id | What it is |
 |---|---|---|
-| Account | `acct_…` | A customer: its plan, its controller record and DPIA, its settings |
+| Account | `acct_…` | A customer: its free forms and form credits, its controller record and DPIA, its settings |
 | API key | `key_…` | `rfpii_live_…`, with scopes; only its SHA-256 and prefix are stored |
 | File | `file_…` | An uploaded PDF, JPEG, PNG, TIFF or zip, stored by id; never served back |
-| Job | `job_…` | One run of `rfpii job` on some files: status, forms, price, outputs |
-| Usage record | `usage_…` | The forms a settled job released, at its plan's unit price |
+| Job | `job_…` | One run of `rfpii job` on some files: status, forms, what they counted against, outputs |
+| Purchase | `pur_…` | Packages bought: by Stripe Checkout, or paid otherwise and recorded by the operator; its lines (packages, card fee, VAT on each), total and status |
+| Usage record | `usage_…` | The forms a settled job counted: how many were free, how many credits |
 | Webhook delivery | `msg_…` | One event to one URL, with every attempt |
 
 Ids are a prefix and a UUIDv7, so they sort by creation time. Times are RFC
-3339 in UTC; months are `YYYY-MM` (UTC); money is integer micro-dollars
-(`4900` is $0.0049), with a `*_usd` string beside it where useful.
+3339 in UTC; months are `YYYY-MM` (UTC). Prices, quotes and purchases are
+integer cents (`4315` is $43.15), with a `*_usd` string beside them; rates
+are basis points (`1600` is 16%); the operator's cost of a job is integer
+micro-dollars.
 
 A **form** is a document as `rfpii inventory` counts it, and as `rfpii job`
 plans it (`rust/src/job/plan.rs`): each readable file that is not a copy of
@@ -77,8 +84,8 @@ scan of several pages, or any file with `per_page: yes`).
 
 ## Authentication
 
-Every route under `/v1/` except `/v1/pricing`, `/v1/verify`,
-`/v1/openapi.json` and the Stripe webhook needs an API key:
+Every route under `/v1/` except `/v1/pricing`, `/v1/billing/quote`,
+`/v1/verify`, `/v1/openapi.json` and the Stripe webhook needs an API key:
 
 ```
 Authorization: Bearer rfpii_live_3kTq0sV9cA2bX7mN4pR8wY1zL5dF6gH0jK2eU9iO3tQ
@@ -91,8 +98,8 @@ it is shown once, when it is made. A key has scopes:
 | Scope | Allows |
 |---|---|
 | `jobs:write` | upload and delete files; create, cancel and delete jobs |
-| `jobs:read` | read files, jobs, outputs and usage |
-| `account:admin` | set the controller record, DPIA and settings; rotate the webhook secret; manage keys; start Checkout |
+| `jobs:read` | read files, jobs, outputs, usage and purchases |
+| `account:admin` | set the controller record, DPIA and settings; rotate the webhook secret; manage keys; buy packages (Checkout); read purchases |
 
 `GET /v1/account` takes any valid key. A missing, unknown or revoked key
 gets `401` with `WWW-Authenticate: Bearer`; a key without the scope gets
@@ -114,7 +121,7 @@ controller record and a DPIA: `rfpii job` won't run without the first, and
 its release gate checks the second (HARNESS.md §9, conditions 8 and 9).
 
 ```bash
-# The plan, this month's released forms, the free forms left, the price, the spend
+# This month's free forms, the form credits, the purchases, the legal records and settings
 curl -s $API/v1/account -H "Authorization: Bearer $KEY"
 
 # The controller record: who publishes the forms and on what legal basis.
@@ -200,7 +207,8 @@ required.
 - `metadata`: a JSON object of at most 8 KiB, kept with the job.
 
 On creation the server counts the forms (`rfpii inventory --json`), checks
-them against the plan (`402`, see [Plans and billing](#plans-and-billing)),
+them against the month's free forms and the account's credits (`402`, see
+[Free forms, packages and billing](#free-forms-packages-and-billing)),
 reserves them, and queues the job. The response lists `warnings`: reasons
 the release gate will hold every form (a DPIA submitted less than 60 days
 ago, no vision model configured).
@@ -234,8 +242,8 @@ The job resource:
   "per_page": "auto", "held_pages": "none",
   "forms_requested": 3, "forms_released": 2, "forms_held": 1,
   "inventory": {"files": 1, "pages": 3, "duplicates": 0, "broken": 0, "forms": 3},
-  "price": {"currency": "usd", "plan": "paid", "unit_microusd": 4900, "estimate_microusd": 14700,
-            "forms_charged": 2, "amount_microusd": 9800, "amount_usd": "0.0098"},
+  "billing": {"period": "2026-10", "reserved": {"free_forms": 1, "credits": 2}, "settled": true,
+              "counted": {"forms": 2, "free_forms": 1, "credits": 1}},
   "exit_code": 2, "error": null, "attempts": 1,
   "created_at": "2026-10-31T09:00:00Z", "started_at": "…", "finished_at": "…",
   "inputs_deleted_at": "…", "outputs_expire_at": "2026-11-30T09:01:10Z",
@@ -243,7 +251,9 @@ The job resource:
 }
 ```
 
-Customers see the price, not what the job cost to run. The operator does:
+`billing` says what the job reserved when it was created and, once it has
+ended, what its released forms counted against (`counted` is null until
+then). Customers see that, not what the job cost to run. The operator does:
 `GET /v1/admin/jobs/{id}` (with ADMIN_TOKEN) returns the same resource with
 `cost`, its CPU time (with its child processes', from `wait4`) at
 `SERVER_PRICE_PER_VCPU_HOUR_MICROUSD`, and each model's tokens (from the
@@ -300,18 +310,48 @@ curl -s -X DELETE $API/v1/keys/$KEY_ID -H "Authorization: Bearer $KEY"   # revok
 ### Usage and billing
 
 ```bash
-curl -s "$API/v1/usage?period=2026-10" -H "Authorization: Bearer $KEY"   # records, forms, amount due
-curl -s $API/v1/pricing                                                  # public
-# Stripe Checkout for the paid plan (501 without Stripe); the body is optional:
-# the pages Checkout returns to (else the API's /v1/pricing)
+curl -s $API/v1/pricing                                # public: free forms, the package, the card fee, VAT, one package's quote
+curl -s "$API/v1/billing/quote?packages=10"            # public: what 10 packages cost, line by line
+curl -s "$API/v1/usage?period=2026-10" -H "Authorization: Bearer $KEY"     # the month's records; credits and purchases now
+curl -s "$API/v1/billing/purchases?limit=20" -H "Authorization: Bearer $KEY"   # purchases, newest first
+
+# Buy 10 packages by card (501 without Stripe). The return URLs are optional
+# (else the API's /v1/pricing).
 curl -s -X POST $API/v1/billing/checkout -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d '{"success_url": "https://observers.example.org/billing/done", "cancel_url": "https://observers.example.org/billing"}'
+  -d '{"packages": 10, "success_url": "https://observers.example.org/billing/done", "cancel_url": "https://observers.example.org/billing"}'
 ```
 
-The answer is `{id, url}`: send the customer to `url`.
+The quote, in cents:
 
-`POST /v1/billing/stripe-webhook` is for Stripe; see
-[Plans and billing](#plans-and-billing).
+```json
+{
+  "object": "quote", "currency": "usd", "packages": 10, "forms": 1000,
+  "lines": [
+    {"item": "packages", "description": "10 package(s) of 100 forms", "quantity": 10, "unit_amount_cents": 3500,
+     "amount_cents": 35000, "vat_rate_basis_points": 1600, "vat_cents": 5600},
+    {"item": "card_fee", "description": "card processing fee (the processor's 4.4% + $0.30 of the charge)", "quantity": 1,
+     "unit_amount_cents": 1914, "amount_cents": 1914, "vat_rate_basis_points": 1600, "vat_cents": 306}
+  ],
+  "net_cents": 35000, "card_fee_cents": 1914, "vat_rate_basis_points": 1600,
+  "vat_net_cents": 5600, "vat_card_fee_cents": 306, "vat_cents": 5906,
+  "total_cents": 42820, "total_usd": "428.20", "effective_price_per_form_usd": "0.4282"
+}
+```
+
+Checkout answers `{object: "checkout_session", id, url, purchase}`: send the
+customer to `url`. The purchase is `pending` until Stripe's webhook says the
+session was paid; then it is `paid` and its forms are the account's
+credits. A purchase has the quote's lines and totals, its `method`
+(`stripe`, or `manual` for one the operator recorded), its `status`
+(`pending`, `paid`, `expired`, `mismatch`), the Checkout Session or the
+operator's `reference`, and when it was made, paid or closed.
+
+`GET /v1/account` and `GET /v1/usage` give the free forms (`per_month`,
+`used`, `reserved`, `left`), the credits (`bought`, `used`, `expired`,
+`adjusted`, `reserved`, `available`) and a summary of the purchases (how
+many in each status, forms bought, total paid). `POST
+/v1/billing/stripe-webhook` is for Stripe; see
+[Free forms, packages and billing](#free-forms-packages-and-billing).
 
 ### Operations
 
@@ -324,8 +364,10 @@ curl -s $API/metrics -H "Authorization: Bearer $METRICS_TOKEN"   # Prometheus te
 `/metrics` has requests by route template and status
 (`rfpii_api_http_requests_total`), their latency
 (`rfpii_api_http_request_duration_seconds`), jobs by status, the queue
-depth, forms released, model tokens by model, webhooks pending and paid
-usage not yet reported to Stripe. Keep it off the public proxy, or set
+depth, forms released, model tokens by model, webhooks pending and
+purchases by status (`rfpii_api_purchases`; a `mismatch` is a payment
+that wasn't the quoted amount and needs the operator). Keep it off the
+public proxy, or set
 `METRICS_TOKEN`.
 
 ## Job lifecycle
@@ -355,8 +397,9 @@ usage not yet reported to Stripe. Keep it off the public proxy, or set
 3. **Ended**: `succeeded` when `rfpii job` exits 0 (everything released) or
    2 (something held) and wrote its report; `failed` otherwise. Forms
    released are the sum of the report's `groups[].released`; forms held are
-   the plan's documents less those. The usage is settled, the cost recorded,
-   the webhook queued, and the inputs deleted.
+   the plan's documents less those. The job is settled against the free
+   forms and credits, the cost recorded, the webhook queued, and the inputs
+   deleted.
 
 At shutdown (SIGTERM or SIGINT) workers stop leasing; running jobs get
 `SHUTDOWN_GRACE_SECS` to finish, then are stopped and put back in the queue
@@ -406,53 +449,84 @@ def verify(secret: str, headers: dict, body: bytes, tolerance: int = 300) -> boo
 The Standard Webhooks libraries (`standardwebhooks` for Python,
 JavaScript, Go, Rust and others) do the same.
 
-## Plans and billing
+## Free forms, packages and billing
 
-| Plan | Price | What it includes |
+| | Price | What it includes |
 |---|---|---|
-| Free | $0 | 5 forms a calendar month (UTC) |
-| Paid | $0.0049 per form, billed monthly | every form released; optional monthly spend cap |
+| Free | $0 | 5 forms a calendar month (UTC), for every account |
+| Package | $35.00 ($0.35 a form), plus the card fee and VAT | 100 form credits |
 
-How the price was set is in [PRICING.md](PRICING.md); both values are
-configuration (`FREE_FORMS_PER_MONTH`, `PRICE_PER_FORM_MICROUSD`).
+Accounts have no plan. Every account has the month's free forms; beyond
+them, a job's forms are drawn from the account's **form credits**, bought
+in packages. A purchase of *n* packages costs the packages, a card-fee line
+(the smallest amount with which the operator keeps the packages' price
+after the card processor's 4.4% + $0.30), and 16% VAT on each line: $43.15
+for one package, $428.20 for ten. How the price was set and the quote are
+in [PRICING.md](PRICING.md); every figure is configuration
+([`api/README.md`](api/README.md#configuration)).
 
 - **Only released forms count.** A held form, or one in a group the gate
-  held, is not charged and doesn't use the free allowance. A job is never
-  charged for more forms than it reserved (if the orchestrator chose to read
-  a file page by page where the count read it whole, the extra forms are
-  free).
-- **Reserve, then settle.** A job reserves its forms when it is created. A
-  free account whose request is more than its month has left gets `402
-  free-allowance-exceeded`, naming the forms requested, the forms left and
-  how to upgrade. A paid account with a spend cap gets `402
-  spend-cap-reached` if the job, at its estimate, could pass the cap. When
-  the job ends, the forms it released are recorded (a usage record at the
-  unit price of its creation) and the rest of the reservation is let go. A
-  failed or cancelled job is not charged. A job's forms count in the month
-  it was created.
-- **With Stripe** (`STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`,
-  `STRIPE_WEBHOOK_SECRET`): `POST /v1/billing/checkout` makes a Checkout
-  Session subscribing the account to the metered price. Stripe's webhook
+  held, uses neither a free form nor a credit. A job never counts more forms
+  than it reserved (if the orchestrator chose to read a file page by page
+  where the count read it whole, the extra forms are free).
+- **Reserve, then settle.** A job reserves its forms when it is created:
+  the free forms its month has left first, then credits that are available
+  (bought, less used, expired and reserved). When both together are too
+  few, the job is refused with `402 insufficient-credits`, naming the forms
+  requested, the free forms left, the credits available, and how to buy
+  (`packages_needed`, `GET /v1/billing/quote`, `POST /v1/billing/checkout`).
+  When the job ends, the forms it released are counted: as free forms, as
+  many as its month has left (its own reservation included), then as
+  credits (never more than it reserved); one usage record says how many of
+  each, and the rest of the reservation is let go. A failed or canceled job
+  counts nothing. A job draws on the free forms of the month it was created
+  in; a new month brings new free forms, and leaves credits as they are.
+  Admission and settlement each run in one `IMMEDIATE` SQLite transaction,
+  so jobs started at once never reserve more than there is.
+- **Credits** are kept in a ledger of signed entries (a purchase adds its
+  forms; a settled job, an expiry or the operator's adjustment takes
+  some), so the balance is their sum and every change can be traced.
+  Credits don't expire unless `CREDIT_EXPIRY_DAYS` is set; then a purchase's
+  credits expire that many days after it, except what a running job holds,
+  and jobs use the soonest-expiring credits first.
+- **With Stripe** (`STRIPE_SECRET_KEY`, `STRIPE_TAX_RATE_ID`,
+  `STRIPE_WEBHOOK_SECRET`): `POST /v1/billing/checkout` with `{packages}`
+  records a pending purchase at today's quote and makes a Checkout Session
+  in `payment` mode with two lines priced in the request (`price_data`): the
+  packages (`unit_amount` the package price, `quantity` the packages) and
+  the card fee (quantity 1), each with the tax rate `STRIPE_TAX_RATE_ID`;
+  `client_reference_id` is the account and the metadata names the purchase
+  and its packages. The operator creates that tax rate in Stripe once (in
+  the Dashboard, or `POST /v1/tax_rates` with `percentage=16`,
+  `inclusive=false`, `display_name=VAT`, `country=KE`): 16%, **exclusive**,
+  so Stripe adds it to each line ([`api/README.md`](api/README.md#stripe)). Stripe's webhook
   (`POST /v1/billing/stripe-webhook`, its `Stripe-Signature` checked with a
-  300-second tolerance, each event handled once) sets the plan:
-  `checkout.session.completed` makes the account paid and records its
-  customer; `customer.subscription.updated` keeps it paid while the
-  subscription is active, trialing or past due; `customer.subscription.deleted`
-  makes it free. A background task reports each paid usage record as a
-  [billing meter event](https://docs.stripe.com/api/billing/meter-event/create)
-  (`event_name`, `payload[stripe_customer_id]`, `payload[value]` = forms,
-  `identifier` = the usage record's id, so a retry is never counted twice),
-  retrying after 1, 5 and 30 minutes, then hourly. Stripe invoices monthly;
-  a bill below its minimum charge is carried to the next month, as PRICING.md
-  says.
-- **Without Stripe** the operator sets plans (`rfpii-api admin set-plan`)
-  and invoices from `GET /v1/usage?period=YYYY-MM`.
+  300-second tolerance, each event handled once) settles the purchase:
+  `checkout.session.completed` (or `checkout.session.async_payment_succeeded`)
+  with `payment_status: paid` marks it paid and adds `packages × 100` forms
+  to the account's credits, once, if the session's `amount_total` is the
+  quote's total and its currency `usd`; otherwise the purchase becomes
+  `mismatch`, what Stripe charged is recorded, nothing is added, and the
+  operator settles it by hand (a tax rate that isn't 16% exclusive does
+  this). `checkout.session.expired` marks the purchase expired. Send those
+  three events to the endpoint. Without `STRIPE_SECRET_KEY` and
+  `STRIPE_TAX_RATE_ID`, Checkout answers `501`.
+- **Without Stripe** the operator records packages paid otherwise (a bank
+  transfer): `rfpii-api admin add-credits --account acct_… --packages 2
+  --reference "bank transfer 123"` (or `POST /v1/admin/accounts/{id}/credits`)
+  records a paid purchase with VAT and no card fee and adds its forms;
+  `admin adjust-credits` adds credits or takes back available ones, with a
+  reason. Both are in the audit log.
+- **Tax invoices.** The platform issues none; each purchase carries what a
+  KRA eTIMS invoice needs (buyer, date, lines with quantity, unit price and
+  VAT, totals, reference), for the operator (PRICING.md).
 
 ## Rate limits
 
 A token bucket per API key (`RATE_LIMIT_BURST` requests, refilled at
 `RATE_LIMIT_PER_SEC`), and one per client IP address on the public routes
-(`/v1/verify`, `/v1/pricing`, `/v1/openapi.json`). Responses carry the
+(`/v1/verify`, `/v1/pricing`, `/v1/billing/quote`, `/v1/openapi.json`).
+Responses carry the
 header fields of
 [draft-ietf-httpapi-ratelimit-headers-11](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/):
 
@@ -474,14 +548,15 @@ application/problem+json`:
 
 ```json
 {
-  "type": "https://github.com/masukuma/ResultFormPIIRemover/blob/main/API.md#problem-free-allowance-exceeded",
-  "title": "Free allowance exceeded",
+  "type": "https://github.com/masukuma/ResultFormPIIRemover/blob/main/API.md#problem-insufficient-credits",
+  "title": "Not enough free forms or credits",
   "status": 402,
-  "detail": "this job has 3 form(s) and the free plan has 2 of its 5 left in 2026-10; upgrade to the paid plan ($0.0049 per form) with POST /v1/billing/checkout, or ask the operator",
+  "detail": "this job has 3 form(s); the account has 2 of its 5 free forms left in 2026-10 and 0 credit(s) available. Buy 1 package(s) of 100 forms ($35.00 each before the card fee and VAT): GET /v1/billing/quote?packages=1 gives the price, POST /v1/billing/checkout takes the payment; or ask the operator",
   "instance": "urn:rfpii:request:0b7e1c1e-5d1f-4a43-9a1e-2f3c1c9d7a10",
   "request_id": "0b7e1c1e-5d1f-4a43-9a1e-2f3c1c9d7a10",
-  "forms_requested": 3, "forms_left": 2, "free_forms_per_month": 5, "period": "2026-10",
-  "upgrade": {"checkout": "POST /v1/billing/checkout", "pricing": "https://…/PRICING.md", "price_per_form_microusd": 4900}
+  "forms_requested": 3, "free_forms_left": 2, "free_forms_per_month": 5, "credits_available": 0, "period": "2026-10",
+  "buy": {"packages_needed": 1, "package_forms": 100, "package_price_cents": 3500, "quote": "GET /v1/billing/quote?packages=1",
+          "checkout": "POST /v1/billing/checkout", "checkout_available": true, "pricing": "https://…/PRICING.md"}
 }
 ```
 
@@ -508,11 +583,10 @@ too large, timeout, a panic) are problem documents too, of type
 | <a id="problem-account-not-ready"></a>`account-not-ready` | 422 | no controller record or DPIA yet (`missing`) |
 | <a id="problem-invalid-controller"></a>`invalid-controller` | 422 | the controller record lacks a required field |
 | <a id="problem-idempotency-key-reused"></a>`idempotency-key-reused` | 422 | the key was used with another request in the last 24 hours |
-| <a id="problem-free-allowance-exceeded"></a>`free-allowance-exceeded` | 402 | more forms than the free month has left |
-| <a id="problem-spend-cap-reached"></a>`spend-cap-reached` | 402 | the job could pass the paid account's monthly cap |
+| <a id="problem-insufficient-credits"></a>`insufficient-credits` | 402 | more forms than the month's free forms left and the credits available together (`forms_requested`, `free_forms_left`, `credits_available`, `buy`) |
 | <a id="problem-rate-limited"></a>`rate-limited` | 429 | over the rate limit (`retry_after`) |
 | <a id="problem-invalid-signature"></a>`invalid-signature` | 400 | a Stripe webhook whose signature doesn't verify |
-| <a id="problem-billing-not-configured"></a>`billing-not-configured` | 501 | Stripe is not configured |
+| <a id="problem-billing-not-configured"></a>`billing-not-configured` | 501 | Stripe Checkout is not configured (`STRIPE_SECRET_KEY` and `STRIPE_TAX_RATE_ID`), or the webhook has no secret |
 | <a id="problem-billing-unavailable"></a>`billing-unavailable` | 502 | Stripe refused or could not be reached |
 | <a id="problem-unavailable"></a>`unavailable` | 503 | `/readyz`: a check failed (`checks`) |
 
@@ -539,8 +613,10 @@ too large, timeout, a panic) are problem documents too, of type
 - **Logs** are JSON lines with the request id, method, path (ids only),
   status and latency; never headers, keys, query strings, file contents or
   personal data.
-- **The audit log** records every change to keys, plans, the controller
-  record, the DPIA, settings and the webhook secret: who (key, admin
+- **The audit log** records every change to keys, purchases and credits
+  (checkout started, paid, mismatched or expired; credits added or
+  adjusted by the operator), the controller record, the DPIA, settings
+  and the webhook secret: who (key, admin
   command, admin API, Stripe), what and when.
 - **Limits.** Body sizes (`MAX_JSON_BYTES`, `MAX_UPLOAD_BYTES`,
   `MAX_VERIFY_BYTES`), zip checks, a request timeout
@@ -633,7 +709,7 @@ services:
       TRUST_FORWARDED_FOR: "true"
       METRICS_TOKEN: ${METRICS_TOKEN}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
-      STRIPE_PRICE_ID: ${STRIPE_PRICE_ID:-}
+      STRIPE_TAX_RATE_ID: ${STRIPE_TAX_RATE_ID:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
     volumes:
       - rfpii-data:/data
@@ -671,7 +747,8 @@ volumes:
 | [draft-ietf-httpapi-ratelimit-headers-11](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/) | `RateLimit` and `RateLimit-Policy` |
 | [draft-ietf-httpapi-idempotency-key-header](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/) | `Idempotency-Key` on `POST /v1/jobs` |
 | [Standard Webhooks](https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md) | webhook headers, signatures and retries |
-| [Stripe billing meter events](https://docs.stripe.com/api/billing/meter-event/create) | paid usage, with `identifier` for idempotency |
+| [Stripe Checkout Sessions](https://docs.stripe.com/api/checkout/sessions/create) | purchases of packages: `mode=payment`, `line_items[].price_data`, `line_items[].tax_rates` |
+| [Stripe tax rates](https://docs.stripe.com/api/tax_rates) | VAT (16%, exclusive) on each Checkout line |
 | [Stripe webhook signatures](https://docs.stripe.com/webhooks#verify-manually) | `Stripe-Signature` |
 | [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) Bearer tokens | `Authorization: Bearer`, `WWW-Authenticate` |
 | [RFC 8288](https://www.rfc-editor.org/rfc/rfc8288) Web Linking | `Link: rel="next"` on lists |
