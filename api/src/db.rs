@@ -136,7 +136,7 @@ mod tests {
         .unwrap();
         assert_eq!(db.migrate().unwrap(), vec![2]);
         let prices = crate::billing::Prices {
-            free_forms_per_month: 5,
+            free_forms: 5,
             rates: crate::quote::Rates { package_forms: 100, package_price_cents: 3500, vat_basis_points: 1600, card_fee_basis_points: 440, card_fee_fixed_cents: 30 },
             max_packages_per_purchase: 100,
             credit_expiry_days: 0,
@@ -144,11 +144,11 @@ mod tests {
             vcpu_hour_microusd: 0,
         };
         db.with(|c| {
-            // the free account's month: 2 used, 2 held by the running job
-            let free = crate::billing::free(c, "acct_free", "2026-10", &prices)?;
+            // the free account: 2 used, 2 held by the running job
+            let free = crate::billing::free(c, "acct_free", &prices)?;
             assert_eq!((free.used, free.reserved, free.left), (2, 2, 1));
             // the paid account keeps nothing special: its metered forms were not free ones
-            assert_eq!(crate::billing::free(c, "acct_paid", "2026-10", &prices)?.left, 5);
+            assert_eq!(crate::billing::free(c, "acct_paid", &prices)?.left, 5);
             assert_eq!(crate::billing::credits(c, "acct_paid", 0)?, crate::billing::Credits::default());
             let a = crate::accounts::load(c, "acct_paid")?.unwrap();
             assert_eq!(a.stripe_customer_id.as_deref(), Some("cus_1"));

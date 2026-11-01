@@ -1,5 +1,5 @@
-//! `/v1/account`: this month's free forms, the form credits and the
-//! purchases; the controller record and DPIA a job needs; settings (held
+//! `/v1/account`: the free forms left (given once), the form credits and
+//! the purchases; the controller record and DPIA a job needs; settings (held
 //! pages to the cloud only on the customer's opt-in, the webhook URL); the
 //! webhook signing secret.
 
@@ -31,7 +31,7 @@ pub fn balance(c: &rusqlite::Connection, account: &str, now: i64, prices: &billi
     let period = crate::clock::period_of(now);
     let forms_this_month: i64 = c.query_row("SELECT COALESCE(SUM(forms), 0) FROM usage_records WHERE account_id = ?1 AND period = ?2", params![account, period], |r| r.get(0))?;
     Ok(Balance {
-        free: billing::free(c, account, &period, prices)?,
+        free: billing::free(c, account, prices)?,
         credits: billing::credits(c, account, now)?,
         purchases: crate::purchases::summary(c, account)?,
         forms_this_month,
@@ -53,7 +53,7 @@ pub fn resource(s: &AppState, a: &Account, b: &Balance) -> Value {
         "id": a.id, "object": "account", "name": a.name, "email": a.email,
         "period": b.period,
         "forms_released_this_month": b.forms_this_month,
-        "free_forms": b.free.to_value(&b.period),
+        "free_forms": b.free.to_value(),
         "credits": b.credits.to_value(&s.prices),
         "purchases": b.purchases,
         "price": {"currency": "usd", "package_forms": s.prices.rates.package_forms, "package_price_cents": s.prices.rates.package_price_cents,

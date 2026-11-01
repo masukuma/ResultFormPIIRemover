@@ -182,7 +182,7 @@ enum Inserted {
 
 /// Make the job's folder (its inputs, controller record and job file),
 /// count its forms with `rfpii inventory`, then, in one transaction, check
-/// them against the month's free forms and the account's credits, reserve
+/// them against the account's free forms and credits, reserve
 /// them and queue the job.
 #[allow(clippy::too_many_arguments)]
 async fn prepare_and_insert(
@@ -222,7 +222,7 @@ async fn prepare_and_insert(
                 return Ok(if h == hash { jobs::load(&tx, &account.id, &id)?.map(Inserted::Replay).ok_or_else(key_reused) } else { Err(key_reused()) });
             }
         let period = crate::clock::period_of(now);
-        let reserved = match crate::billing::admit(&tx, &account.id, counted.forms, &period, now, &s2.prices, &s2.cfg) {
+        let reserved = match crate::billing::admit(&tx, &account.id, counted.forms, now, &s2.prices, &s2.cfg) {
             Ok(r) => r,
             Err(e) => return Ok(Err(e)),
         };

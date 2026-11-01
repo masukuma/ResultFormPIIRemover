@@ -101,7 +101,7 @@ Each setting is an environment variable and a flag of the same name
 | `KENYA_HOSTS` | none | model hosts in Kenya: calls to them are not transfers abroad |
 | `MODEL_REQUESTS_PER_FORM` | `40` | a job's model-request budget, per form |
 | `JOB_TIMEOUT_SECS` | `43200` | a job's wall-clock limit |
-| `FREE_FORMS_PER_MONTH` | `5` | forms every account may have released free each calendar month (UTC) |
+| `FREE_FORMS` | `5` | free forms every account has once (never renewed); after them, forms come from packages |
 | `PACKAGE_FORMS` | `100` | forms in a package (beyond the free forms, forms are sold in packages) |
 | `PACKAGE_PRICE_CENTS` | `3500` | a package's price, before the card fee and VAT ($35.00: $0.35 a form, PRICING.md) |
 | `VAT_RATE_BASIS_POINTS` | `1600` | VAT on every purchase line (16%); Stripe's tax rate must match it |

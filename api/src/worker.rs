@@ -390,7 +390,7 @@ pub fn released_in(report: &Value) -> i64 {
     report["groups"].as_array().into_iter().flatten().map(|g| g["released"].as_i64().unwrap_or(0)).sum()
 }
 
-/// End a job: record how it ended, settle it against the month's free
+/// End a job: record how it ended, settle it against the account's free
 /// forms and the account's credits (only the forms it released count, and
 /// a failed or canceled job releases none), record its actual
 /// cost, queue its webhook, and delete its inputs unless they are kept.

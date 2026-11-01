@@ -5,8 +5,8 @@ as a service. A customer uploads election result forms, starts a job, and
 downloads what the release gate let out: each published form with its signed
 manifest, its ledger entry and a batch root, so anyone can check that nothing
 but personal data was touched ([VERIFYING.md](VERIFYING.md)). Every account
-has 5 free forms a month; beyond them, forms are bought in packages of 100
-for $35.00 ($0.35 a form), plus the card fee and VAT ([PRICING.md](PRICING.md)).
+has 5 free forms, once; after them, forms are bought in packages of 100 for
+$35.00 ($0.35 a form), plus the card fee and VAT ([PRICING.md](PRICING.md)).
 
 The server is `rfpii-api`, a Rust crate in [`api/`](api/README.md). It calls
 the `rfpii` binary as a subprocess and does not link it.
@@ -39,8 +39,8 @@ Contents: [Architecture](#architecture) · [Resources](#resources) ·
 ```
 
 - **The API** checks keys, uploads and requests, counts a job's forms with
-  `rfpii inventory --json`, reserves them against the month's free forms
-  and the account's credits, and queues the job. It sells packages through
+  `rfpii inventory --json`, reserves them against the account's free forms
+  and its credits, and queues the job. It sells packages through
   Stripe Checkout, and runs `rfpii verify` for anyone checking a published
   form.
 - **Workers** lease queued jobs from SQLite (an atomic `UPDATE … RETURNING`
@@ -121,7 +121,7 @@ controller record and a DPIA: `rfpii job` won't run without the first, and
 its release gate checks the second (HARNESS.md §9, conditions 8 and 9).
 
 ```bash
-# This month's free forms, the form credits, the purchases, the legal records and settings
+# The free forms left, the form credits, the purchases, the legal records and settings
 curl -s $API/v1/account -H "Authorization: Bearer $KEY"
 
 # The controller record: who publishes the forms and on what legal basis.
@@ -207,7 +207,7 @@ required.
 - `metadata`: a JSON object of at most 8 KiB, kept with the job.
 
 On creation the server counts the forms (`rfpii inventory --json`), checks
-them against the month's free forms and the account's credits (`402`, see
+them against the account's free forms and credits (`402`, see
 [Free forms, packages and billing](#free-forms-packages-and-billing)),
 reserves them, and queues the job. The response lists `warnings`: reasons
 the release gate will hold every form (a DPIA submitted less than 60 days
@@ -346,8 +346,8 @@ credits. A purchase has the quote's lines and totals, its `method`
 (`pending`, `paid`, `expired`, `mismatch`), the Checkout Session or the
 operator's `reference`, and when it was made, paid or closed.
 
-`GET /v1/account` and `GET /v1/usage` give the free forms (`per_month`,
-`used`, `reserved`, `left`), the credits (`bought`, `used`, `expired`,
+`GET /v1/account` and `GET /v1/usage` give the free forms (`allowance`,
+`renewed: false`, `used`, `reserved`, `left`), the credits (`bought`, `used`, `expired`,
 `adjusted`, `reserved`, `available`) and a summary of the purchases (how
 many in each status, forms bought, total paid). `POST
 /v1/billing/stripe-webhook` is for Stripe; see
@@ -453,12 +453,13 @@ JavaScript, Go, Rust and others) do the same.
 
 | | Price | What it includes |
 |---|---|---|
-| Free | $0 | 5 forms a calendar month (UTC), for every account |
+| Free | $0 | 5 forms, once per account (not renewed) |
 | Package | $35.00 ($0.35 a form), plus the card fee and VAT | 100 form credits |
 
-Accounts have no plan. Every account has the month's free forms; beyond
-them, a job's forms are drawn from the account's **form credits**, bought
-in packages. A purchase of *n* packages costs the packages, a card-fee line
+Accounts have no plan. Every account has 5 free forms, once, to try the
+service; once they are used, a job's forms are drawn from the account's
+**form credits**, bought in packages, and an account with neither must buy
+a package to start a job. A purchase of *n* packages costs the packages, a card-fee line
 (the smallest amount with which the operator keeps the packages' price
 after the card processor's 4.4% + $0.30), and 16% VAT on each line: $43.15
 for one package, $428.20 for ten. How the price was set and the quote are
@@ -470,17 +471,17 @@ in [PRICING.md](PRICING.md); every figure is configuration
   than it reserved (if the orchestrator chose to read a file page by page
   where the count read it whole, the extra forms are free).
 - **Reserve, then settle.** A job reserves its forms when it is created:
-  the free forms its month has left first, then credits that are available
+  the free forms the account has left first, then credits that are available
   (bought, less used, expired and reserved). When both together are too
   few, the job is refused with `402 insufficient-credits`, naming the forms
   requested, the free forms left, the credits available, and how to buy
   (`packages_needed`, `GET /v1/billing/quote`, `POST /v1/billing/checkout`).
   When the job ends, the forms it released are counted: as free forms, as
-  many as its month has left (its own reservation included), then as
+  many as the account has left (its own reservation included), then as
   credits (never more than it reserved); one usage record says how many of
   each, and the rest of the reservation is let go. A failed or canceled job
-  counts nothing. A job draws on the free forms of the month it was created
-  in; a new month brings new free forms, and leaves credits as they are.
+  counts nothing. The free forms are given once and never renewed: a new
+  month brings no more.
   Admission and settlement each run in one `IMMEDIATE` SQLite transaction,
   so jobs started at once never reserve more than there is.
 - **Credits** are kept in a ledger of signed entries (a purchase adds its
@@ -551,10 +552,10 @@ application/problem+json`:
   "type": "https://github.com/masukuma/ResultFormPIIRemover/blob/main/API.md#problem-insufficient-credits",
   "title": "Not enough free forms or credits",
   "status": 402,
-  "detail": "this job has 3 form(s); the account has 2 of its 5 free forms left in 2026-10 and 0 credit(s) available. Buy 1 package(s) of 100 forms ($35.00 each before the card fee and VAT): GET /v1/billing/quote?packages=1 gives the price, POST /v1/billing/checkout takes the payment; or ask the operator",
+  "detail": "this job has 3 form(s); the account has 2 of its 5 free forms left (they are not renewed) and 0 credit(s) available. Buy 1 package(s) of 100 forms ($35.00 each before the card fee and VAT): GET /v1/billing/quote?packages=1 gives the price, POST /v1/billing/checkout takes the payment; or ask the operator",
   "instance": "urn:rfpii:request:0b7e1c1e-5d1f-4a43-9a1e-2f3c1c9d7a10",
   "request_id": "0b7e1c1e-5d1f-4a43-9a1e-2f3c1c9d7a10",
-  "forms_requested": 3, "free_forms_left": 2, "free_forms_per_month": 5, "credits_available": 0, "period": "2026-10",
+  "forms_requested": 3, "free_forms_left": 2, "free_forms": 5, "credits_available": 0,
   "buy": {"packages_needed": 1, "package_forms": 100, "package_price_cents": 3500, "quote": "GET /v1/billing/quote?packages=1",
           "checkout": "POST /v1/billing/checkout", "checkout_available": true, "pricing": "https://…/PRICING.md"}
 }
@@ -583,7 +584,7 @@ too large, timeout, a panic) are problem documents too, of type
 | <a id="problem-account-not-ready"></a>`account-not-ready` | 422 | no controller record or DPIA yet (`missing`) |
 | <a id="problem-invalid-controller"></a>`invalid-controller` | 422 | the controller record lacks a required field |
 | <a id="problem-idempotency-key-reused"></a>`idempotency-key-reused` | 422 | the key was used with another request in the last 24 hours |
-| <a id="problem-insufficient-credits"></a>`insufficient-credits` | 402 | more forms than the month's free forms left and the credits available together (`forms_requested`, `free_forms_left`, `credits_available`, `buy`) |
+| <a id="problem-insufficient-credits"></a>`insufficient-credits` | 402 | more forms than the account's free forms left and the credits available together (`forms_requested`, `free_forms_left`, `credits_available`, `buy`) |
 | <a id="problem-rate-limited"></a>`rate-limited` | 429 | over the rate limit (`retry_after`) |
 | <a id="problem-invalid-signature"></a>`invalid-signature` | 400 | a Stripe webhook whose signature doesn't verify |
 | <a id="problem-billing-not-configured"></a>`billing-not-configured` | 501 | Stripe Checkout is not configured (`STRIPE_SECRET_KEY` and `STRIPE_TAX_RATE_ID`), or the webhook has no secret |

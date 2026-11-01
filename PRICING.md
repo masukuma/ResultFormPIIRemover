@@ -9,7 +9,7 @@ basis), and the price the API charges: $0.35 a form, sold in packages of
 
 | | Price | What it includes |
 |---|---|---|
-| Free | $0 | 5 forms a calendar month (UTC), for every account |
+| Free | $0 | 5 forms, once per account (not renewed) |
 | Package | **$35.00 for 100 forms** ($0.35 a form), before the card fee and VAT | 100 form credits |
 
 The owner set the price at $0.35 a form, sold only in packages of 100. A
@@ -21,8 +21,9 @@ purchase: the packages and the card fee.
 A form is a document as `rfpii inventory` counts it: a file, or one page of
 a scanned batch read page by page. Only forms a job **releases** are
 counted: a held form, or one in a group the release gate holds back, uses
-neither a free form nor a credit. A job's forms come from the month's free
-forms first, then from credits; credits don't expire (an operator can set
+neither a free form nor a credit. A job's forms come from the account's
+free forms first, while it has any, then from credits; once the 5 free
+forms are used, the account must buy a package to start another job; credits don't expire (an operator can set
 an expiry, `CREDIT_EXPIRY_DAYS`). How jobs reserve and settle forms is in
 [API.md](API.md#free-forms-packages-and-billing).
 
@@ -186,7 +187,7 @@ The price and rates are configuration (`api/README.md`): forms and price
 of a package (`PACKAGE_FORMS`, `PACKAGE_PRICE_CENTS`), VAT
 (`VAT_RATE_BASIS_POINTS`), the processor's fee (`CARD_FEE_BASIS_POINTS`,
 `CARD_FEE_FIXED_CENTS`), the most packages in one purchase
-(`MAX_PACKAGES_PER_PURCHASE`), free forms a month (`FREE_FORMS_PER_MONTH`),
+(`MAX_PACKAGES_PER_PURCHASE`), the free forms each account has once (`FREE_FORMS`),
 credit expiry (`CREDIT_EXPIRY_DAYS`), and, for the cost, token prices per
 model and the server's price per vCPU-hour. A purchase keeps the quote it
 was made at. The API records each job's actual cost from its CPU time and

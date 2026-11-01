@@ -1,8 +1,8 @@
 //! The free allowance, form credits, admission, settlement, usage and the
 //! actual cost (PRICING.md). A form is a document as `rfpii inventory`
 //! counts it; only forms a job releases are counted. Every account has
-//! `FREE_FORMS_PER_MONTH` free forms a calendar month (UTC); beyond them,
-//! forms are drawn from its form credits, bought in packages. A job
+//! `FREE_FORMS` free forms once, when it starts (they are not renewed);
+//! beyond them, forms are drawn from its form credits, bought in packages. A job
 //! reserves its forms when it is created (free forms first, then credits)
 //! and settles when it ends: the forms it released are counted (free forms
 //! first, then credits) and the rest of the reservation is let go. Credits
@@ -26,7 +26,8 @@ use crate::quote::Rates;
 /// The prices and rates in force.
 #[derive(Clone, Debug)]
 pub struct Prices {
-    pub free_forms_per_month: i64,
+    /// Free forms each account has once (never renewed).
+    pub free_forms: i64,
     pub rates: Rates,
     pub max_packages_per_purchase: i64,
     /// Days credits last once added; 0: forever.
@@ -38,7 +39,7 @@ pub struct Prices {
 impl Prices {
     pub fn from_config(cfg: &Config) -> Result<Prices> {
         Ok(Prices {
-            free_forms_per_month: cfg.free_forms_per_month,
+            free_forms: cfg.free_forms,
             rates: cfg.rates(),
             max_packages_per_purchase: cfg.max_packages_per_purchase,
             credit_expiry_days: cfg.credit_expiry_days,
@@ -53,29 +54,30 @@ impl Prices {
     }
 }
 
-/// An account's free forms in a month.
+/// An account's free forms: the ones it has once, and what is left of them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Free {
-    pub per_month: i64,
-    /// counted by settled jobs of the month
+    /// free forms the account has in all (`FREE_FORMS`, never renewed)
+    pub allowance: i64,
+    /// counted by its settled jobs, ever
     pub used: i64,
-    /// held by jobs of the month not yet settled
+    /// held by its jobs not yet settled
     pub reserved: i64,
     pub left: i64,
 }
 
 impl Free {
-    pub fn to_value(&self, period: &str) -> Value {
-        json!({"period": period, "per_month": self.per_month, "used": self.used, "reserved": self.reserved, "left": self.left})
+    pub fn to_value(&self) -> Value {
+        json!({"allowance": self.allowance, "renewed": false, "used": self.used, "reserved": self.reserved, "left": self.left})
     }
 }
 
-/// Free forms of `account` in `period`.
-pub fn free(conn: &Connection, account: &str, period: &str, prices: &Prices) -> Result<Free> {
-    let used: i64 = conn.query_row("SELECT COALESCE(SUM(free_forms), 0) FROM usage_records WHERE account_id = ?1 AND period = ?2", params![account, period], |r| r.get(0))?;
-    let reserved: i64 =
-        conn.query_row("SELECT COALESCE(SUM(reserved_free), 0) FROM jobs WHERE account_id = ?1 AND period = ?2 AND settled = 0", params![account, period], |r| r.get(0))?;
-    Ok(Free { per_month: prices.free_forms_per_month, used, reserved, left: (prices.free_forms_per_month - used - reserved).max(0) })
+/// Free forms of `account`: its allowance less what its jobs have counted
+/// or hold, over its whole life.
+pub fn free(conn: &Connection, account: &str, prices: &Prices) -> Result<Free> {
+    let used: i64 = conn.query_row("SELECT COALESCE(SUM(free_forms), 0) FROM usage_records WHERE account_id = ?1", [account], |r| r.get(0))?;
+    let reserved: i64 = conn.query_row("SELECT COALESCE(SUM(reserved_free), 0) FROM jobs WHERE account_id = ?1 AND settled = 0", [account], |r| r.get(0))?;
+    Ok(Free { allowance: prices.free_forms, used, reserved, left: (prices.free_forms - used - reserved).max(0) })
 }
 
 /// An account's form credits.
@@ -260,12 +262,12 @@ pub struct Reservation {
     pub credits: i64,
 }
 
-/// Whether `account` may start a job of `forms` forms in `period`: within
-/// the free forms its month has left and the credits it has available,
-/// free forms first. 402 Payment Required otherwise, saying how to buy.
-pub fn admit(tx: &Transaction, account: &str, forms: i64, period: &str, now: i64, prices: &Prices, cfg: &Config) -> Result<Reservation, ApiError> {
+/// Whether `account` may start a job of `forms` forms: within the free
+/// forms it has left and the credits it has available, free forms first.
+/// 402 Payment Required otherwise, saying how to buy.
+pub fn admit(tx: &Transaction, account: &str, forms: i64, now: i64, prices: &Prices, cfg: &Config) -> Result<Reservation, ApiError> {
     expire_due(tx, account, now)?;
-    let free = free(tx, account, period, prices)?;
+    let free = free(tx, account, prices)?;
     let credits = credits(tx, account, now)?;
     if forms <= free.left + credits.available {
         let f = forms.min(free.left);
@@ -288,11 +290,11 @@ pub fn admit(tx: &Transaction, account: &str, forms: i64, period: &str, now: i64
         Some("insufficient-credits"),
         "Not enough free forms or credits",
         format!(
-            "this job has {forms} form(s); the account has {} of its {} free forms left in {period} and {} credit(s) available. \
+            "this job has {forms} form(s); the account has {} of its {} free forms left (they are not renewed) and {} credit(s) available. \
              Buy {packages} package(s) of {} forms (${} each before the card fee and VAT): GET /v1/billing/quote?packages={packages} gives the price, \
              POST /v1/billing/checkout takes the payment; or ask the operator",
             free.left,
-            free.per_month,
+            free.allowance,
             credits.available,
             r.package_forms,
             crate::quote::format_cents(r.package_price_cents),
@@ -300,9 +302,8 @@ pub fn admit(tx: &Transaction, account: &str, forms: i64, period: &str, now: i64
     )
     .with("forms_requested", forms)
     .with("free_forms_left", free.left)
-    .with("free_forms_per_month", free.per_month)
+    .with("free_forms", free.allowance)
     .with("credits_available", credits.available)
-    .with("period", period)
     .with("buy", buy))
 }
 
@@ -316,7 +317,7 @@ pub struct Settlement {
 }
 
 /// Settle a job: of the forms it released (never more than it reserved),
-/// as many as its month has free forms left (its own reservation
+/// as many as its account has free forms left (its own reservation
 /// included) are counted as free, the rest are taken from its credits (at
 /// most what it reserved); the rest of its reservation is let go.
 /// Settling twice changes nothing.
@@ -331,13 +332,10 @@ pub fn settle(tx: &Transaction, job_id: &str, released: i64, now: i64, prices: &
         return Ok(Settlement { forms_counted: counted.unwrap_or(0), free_forms: free_forms.unwrap_or(0), credit_forms: credit_forms.unwrap_or(0), usage_record: record });
     }
     let forms = released.clamp(0, requested);
-    let used: i64 = tx.query_row("SELECT COALESCE(SUM(free_forms), 0) FROM usage_records WHERE account_id = ?1 AND period = ?2", params![account, period], |r| r.get(0))?;
-    let others: i64 = tx.query_row(
-        "SELECT COALESCE(SUM(reserved_free), 0) FROM jobs WHERE account_id = ?1 AND period = ?2 AND settled = 0 AND id <> ?3",
-        params![account, period, job_id],
-        |r| r.get(0),
-    )?;
-    let free = forms.min((prices.free_forms_per_month - used - others).max(0));
+    let used: i64 = tx.query_row("SELECT COALESCE(SUM(free_forms), 0) FROM usage_records WHERE account_id = ?1", [&account], |r| r.get(0))?;
+    let others: i64 =
+        tx.query_row("SELECT COALESCE(SUM(reserved_free), 0) FROM jobs WHERE account_id = ?1 AND settled = 0 AND id <> ?2", params![account, job_id], |r| r.get(0))?;
+    let free = forms.min((prices.free_forms - used - others).max(0));
     let wanted = (forms - free).min(reserved_credits);
     let credit = if wanted > 0 { draw(tx, &account, wanted, Cause { job: Some(job_id), ..Cause::of("job", "settlement") }, now)? } else { 0 };
     let mut record = None;
@@ -409,7 +407,7 @@ pub fn cost(cpu_seconds: f64, uses: &[ModelUse], prices: &Prices) -> (Value, i64
 }
 
 /// An account's usage in a month: its records (one per settled job that
-/// counted forms), its free forms then, and its credits and purchases now.
+/// counted forms), and its free forms, credits and purchases now.
 pub fn usage(conn: &Connection, account: &str, period: &str, now: i64, prices: &Prices) -> Result<Value> {
     let mut st = conn.prepare(
         "SELECT id, job_id, forms, free_forms, credit_forms, created_at, legacy_plan, legacy_unit_price_microusd, legacy_amount_microusd
@@ -434,7 +432,7 @@ pub fn usage(conn: &Connection, account: &str, period: &str, now: i64, prices: &
     }
     let reserved_credits: i64 =
         conn.query_row("SELECT COALESCE(SUM(reserved_credits), 0) FROM jobs WHERE account_id = ?1 AND period = ?2 AND settled = 0", params![account, period], |r| r.get(0))?;
-    let free = free(conn, account, period, prices)?;
+    let free = free(conn, account, prices)?;
     Ok(json!({
         "object": "usage", "period": period,
         "records": records,
@@ -442,7 +440,7 @@ pub fn usage(conn: &Connection, account: &str, period: &str, now: i64, prices: &
         "free_forms": free_forms,
         "credit_forms": credit_forms,
         "reserved": {"free_forms": free.reserved, "credits": reserved_credits},
-        "free": free.to_value(period),
+        "free": free.to_value(),
         "credits": credits(conn, account, now)?.to_value(prices),
         "purchases": crate::purchases::summary(conn, account)?,
     }))
@@ -465,7 +463,7 @@ mod tests {
 
     fn prices() -> Prices {
         Prices {
-            free_forms_per_month: 5,
+            free_forms: 5,
             rates: Rates { package_forms: 100, package_price_cents: 3500, vat_basis_points: 1600, card_fee_basis_points: 440, card_fee_fixed_cents: 30 },
             max_packages_per_purchase: 100,
             credit_expiry_days: 0,

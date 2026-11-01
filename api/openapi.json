@@ -91,7 +91,7 @@
     },
     "/v1/jobs": {
       "post": {"tags": ["jobs"], "summary": "Start a redaction job", "operationId": "createJob",
-        "description": "Counts the forms with rfpii inventory and reserves them: the month's free forms first, then form credits (402 insufficient-credits when both together are too few, naming how to buy). 422 until the account has a controller record and a DPIA. Returns 202 Accepted with the job's Location (RFC 9110 §15.3.3). With an Idempotency-Key, the same key and body return the same job; the same key with another body is 422. Scope jobs:write.",
+        "description": "Counts the forms with rfpii inventory and reserves them: the account's free forms first (5, once), then form credits (402 insufficient-credits when both together are too few, naming how to buy). 422 until the account has a controller record and a DPIA. Returns 202 Accepted with the job's Location (RFC 9110 §15.3.3). With an Idempotency-Key, the same key and body return the same job; the same key with another body is 422. Scope jobs:write.",
         "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/JobRequest"}}}},
         "responses": {
@@ -146,7 +146,7 @@
           "404": {"$ref": "#/components/responses/Problem"}, "409": {"$ref": "#/components/responses/Problem"}, "410": {"$ref": "#/components/responses/Problem"}}}
     },
     "/v1/account": {
-      "get": {"tags": ["account"], "summary": "The account: this month's free forms, its credits and purchases, its legal records and settings", "operationId": "getAccount",
+      "get": {"tags": ["account"], "summary": "The account: its free forms left, its credits and purchases, its legal records and settings", "operationId": "getAccount",
         "responses": {"200": {"description": "The account", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Account"}}}}, "401": {"$ref": "#/components/responses/Problem"}}}
     },
     "/v1/account/controller": {
@@ -348,8 +348,8 @@
       "ApiKey": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": ["string", "null"]}, "prefix": {"type": "string"}, "scopes": {"type": "array", "items": {"$ref": "#/components/schemas/Scope"}},
         "created_at": {"type": "string"}, "last_used_at": {"type": ["string", "null"]}, "revoked_at": {"type": ["string", "null"]}}},
       "ApiKeyWithSecret": {"allOf": [{"$ref": "#/components/schemas/ApiKey"}, {"type": "object", "properties": {"secret": {"type": "string", "pattern": "^rfpii_live_[0-9A-Za-z]{43}$"}}}]},
-      "FreeForms": {"type": "object", "description": "The month's free forms (FREE_FORMS_PER_MONTH, calendar month UTC)",
-        "properties": {"period": {"type": "string"}, "per_month": {"type": "integer"}, "used": {"type": "integer"}, "reserved": {"type": "integer"}, "left": {"type": "integer"}}},
+      "FreeForms": {"type": "object", "description": "The account's free forms (FREE_FORMS): given once, never renewed",
+        "properties": {"allowance": {"type": "integer"}, "renewed": {"type": "boolean", "const": false}, "used": {"type": "integer"}, "reserved": {"type": "integer"}, "left": {"type": "integer"}}},
       "Credits": {"type": "object", "description": "Form credits, bought in packages; available = bought - used - expired + adjusted - reserved",
         "properties": {"bought": {"type": "integer"}, "used": {"type": "integer"}, "expired": {"type": "integer"}, "adjusted": {"type": "integer"}, "reserved": {"type": "integer"},
                        "available": {"type": "integer"}, "expire_after_days": {"type": ["integer", "null"], "description": "CREDIT_EXPIRY_DAYS; null: credits don't expire"}}},
@@ -380,7 +380,7 @@
         "reserved": {"type": "object", "properties": {"free_forms": {"type": "integer"}, "credits": {"type": "integer"}}},
         "free": {"$ref": "#/components/schemas/FreeForms"}, "credits": {"$ref": "#/components/schemas/Credits"}, "purchases": {"$ref": "#/components/schemas/PurchasesSummary"}}},
       "Pricing": {"type": "object", "properties": {"currency": {"const": "usd"}, "unit": {"const": "form"},
-        "free": {"type": "object", "properties": {"forms_per_month": {"type": "integer"}, "period": {"type": "string"}}},
+        "free": {"type": "object", "properties": {"forms": {"type": "integer"}, "renewed": {"type": "boolean", "const": false}, "terms": {"type": "string"}}},
         "package": {"type": "object", "properties": {"forms": {"type": "integer"}, "price_cents": {"type": "integer"}, "price_usd": {"type": "string"}, "price_per_form_usd": {"type": "string"},
           "max_per_purchase": {"type": "integer"}, "credits_expire_after_days": {"type": ["integer", "null"]}}},
         "card_fee": {"type": "object", "properties": {"basis_points": {"type": "integer"}, "fixed_cents": {"type": "integer"}, "terms": {"type": "string"}, "paid_by": {"type": "string"}}},

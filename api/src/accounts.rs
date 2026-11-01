@@ -2,7 +2,7 @@
 //! it runs anything (HARNESS.md §9 conditions 8 and 9): the controller
 //! record and the DPIA. The customer is the controller; the platform's
 //! operator is its processor (`legal/C-recommendations.md` §2.9). An
-//! account has no plan: it has the month's free forms and the form credits
+//! account has no plan: it has its free forms (once) and the form credits
 //! it bought (`billing`).
 
 use anyhow::Result;

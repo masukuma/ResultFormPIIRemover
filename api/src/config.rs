@@ -51,9 +51,9 @@ pub struct Config {
     #[arg(long, env = "JOB_TIMEOUT_SECS", default_value_t = 12 * 3600)]
     pub job_timeout_secs: u64,
 
-    /// Forms every account may have released free each calendar month (UTC)
-    #[arg(long, env = "FREE_FORMS_PER_MONTH", default_value_t = 5)]
-    pub free_forms_per_month: i64,
+    /// Free forms every account has once, when it starts (never renewed)
+    #[arg(long, env = "FREE_FORMS", default_value_t = 5)]
+    pub free_forms: i64,
     /// Forms in a package (beyond the free forms, forms are sold in packages)
     #[arg(long, env = "PACKAGE_FORMS", default_value_t = 100)]
     pub package_forms: i64,
@@ -253,8 +253,8 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         self.token_prices()?;
         self.rates().check().map_err(anyhow::Error::msg)?;
-        if self.free_forms_per_month < 0 || self.credit_expiry_days < 0 {
-            bail!("FREE_FORMS_PER_MONTH and CREDIT_EXPIRY_DAYS can't be negative");
+        if self.free_forms < 0 || self.credit_expiry_days < 0 {
+            bail!("FREE_FORMS and CREDIT_EXPIRY_DAYS can't be negative");
         }
         if !(1..=10_000).contains(&self.max_packages_per_purchase) {
             bail!("MAX_PACKAGES_PER_PURCHASE must be from 1 to 10000");

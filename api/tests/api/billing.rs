@@ -1,5 +1,5 @@
-//! Free forms and credits: the monthly free allowance (5 released forms a
-//! calendar month), form credits bought in packages, reservation at
+//! Free forms and credits: the free allowance (5 released forms once per
+//! account, never renewed), form credits bought in packages, reservation at
 //! creation and settlement at the end (free forms first, then credits),
 //! the 402 that says how to buy, expiry when configured, the public price
 //! and quote, purchases, and the admin CLI and API.
@@ -41,10 +41,7 @@ async fn free_forms_are_reserved_first_then_credits_and_402_says_how_to_buy() {
     // 3 more: 2 free forms left and no credits
     let p = problem(job_of(&t, &key, 3).await, 402).await;
     assert!(p["type"].as_str().unwrap().ends_with("#problem-insufficient-credits"), "{p}");
-    assert_eq!(
-        (p["forms_requested"].as_i64(), p["free_forms_left"].as_i64(), p["credits_available"].as_i64(), p["free_forms_per_month"].as_i64()),
-        (Some(3), Some(2), Some(0), Some(5))
-    );
+    assert_eq!((p["forms_requested"].as_i64(), p["free_forms_left"].as_i64(), p["credits_available"].as_i64(), p["free_forms"].as_i64()), (Some(3), Some(2), Some(0), Some(5)));
     assert_eq!(p["buy"]["packages_needed"], 1);
     assert_eq!((p["buy"]["quote"].as_str(), p["buy"]["checkout"].as_str()), (Some("GET /v1/billing/quote?packages=1"), Some("POST /v1/billing/checkout")));
     assert_eq!((p["buy"]["package_forms"].as_i64(), p["buy"]["package_price_cents"].as_i64(), p["buy"]["checkout_available"].as_bool()), (Some(100), Some(3500), Some(false)));
@@ -133,25 +130,44 @@ async fn a_worker_settles_a_job_on_free_forms_and_credits() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_new_month_resets_the_free_forms_but_not_the_credits() {
+async fn the_free_forms_come_once_and_a_new_month_brings_no_more() {
     let t = TestServer::start(0, |_| {}).await;
     let (_, key) = t.account(1, true).await;
     let period = rfpii_api::clock::period_of(t.state.clock.now());
     let j = accepted(&t, &key, 8).await;
     settle(&t, j["id"].as_str().unwrap(), 8).await;
     let acct = t.account_now(&key).await;
-    assert_eq!((acct["free_forms"]["left"].as_i64(), acct["credits"]["available"].as_i64()), (Some(0), Some(97)));
+    assert_eq!((acct["free_forms"]["left"].as_i64(), acct["free_forms"]["renewed"].as_bool(), acct["credits"]["available"].as_i64()), (Some(0), Some(false), Some(97)));
 
+    // a month later: still no free forms; the job is drawn from credits
     t.state.clock.advance(32 * 86_400);
     let acct = t.account_now(&key).await;
     assert_ne!(acct["period"], period.as_str());
-    assert_eq!((acct["free_forms"]["left"].as_i64(), acct["free_forms"]["used"].as_i64(), acct["credits"]["available"].as_i64()), (Some(5), Some(0), Some(97)));
+    assert_eq!(
+        (acct["free_forms"]["allowance"].as_i64(), acct["free_forms"]["used"].as_i64(), acct["free_forms"]["left"].as_i64(), acct["credits"]["available"].as_i64()),
+        (Some(5), Some(5), Some(0), Some(97))
+    );
     let j = accepted(&t, &key, 6).await;
-    assert_eq!(j["billing"]["reserved"], json!({"free_forms": 5, "credits": 1}));
-    // the old month's usage is still there
+    assert_eq!(j["billing"]["reserved"], json!({"free_forms": 0, "credits": 6}));
+    // the first month's usage is still there
     let u: Value = t.get(&key, &format!("/v1/usage?period={period}")).await.json().await.unwrap();
     assert_eq!((u["free_forms"].as_i64(), u["credit_forms"].as_i64(), u["free"]["left"].as_i64()), (Some(5), Some(3), Some(0)));
     problem(t.get(&key, "/v1/usage?period=2026-13").await, 400).await;
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn once_the_free_forms_are_used_a_job_needs_a_package() {
+    let t = TestServer::start(0, |_| {}).await;
+    let (_, key) = t.account(0, true).await;
+    let j = accepted(&t, &key, 5).await;
+    settle(&t, j["id"].as_str().unwrap(), 5).await;
+    // months later, with no package: refused, and told to buy one
+    t.state.clock.advance(400 * 86_400);
+    let p = problem(job_of(&t, &key, 1).await, 402).await;
+    assert_eq!((p["free_forms_left"].as_i64(), p["free_forms"].as_i64(), p["credits_available"].as_i64()), (Some(0), Some(5), Some(0)));
+    assert_eq!(p["buy"]["packages_needed"], 1);
+    assert!(p["detail"].as_str().unwrap().contains("not renewed"), "{p}");
     t.stop().await;
 }
 
@@ -181,7 +197,7 @@ async fn concurrent_jobs_never_reserve_more_than_there_is() {
 async fn credits_expire_when_configured_but_not_while_a_job_holds_them() {
     let t = TestServer::start(0, |c| {
         c.credit_expiry_days = 30;
-        c.free_forms_per_month = 0;
+        c.free_forms = 0;
     })
     .await;
     let (account, key) = t.account(1, true).await;
@@ -211,7 +227,7 @@ async fn credits_expire_when_configured_but_not_while_a_job_holds_them() {
 async fn pricing_and_quotes_are_public() {
     let t = TestServer::start(0, |_| {}).await;
     let p: Value = t.client.get(t.url("/v1/pricing")).send().await.unwrap().json().await.unwrap();
-    assert_eq!(p["free"]["forms_per_month"], 5);
+    assert_eq!((p["free"]["forms"].as_i64(), p["free"]["renewed"].as_bool()), (Some(5), Some(false)));
     assert_eq!(
         (p["package"]["forms"].as_i64(), p["package"]["price_cents"].as_i64(), p["package"]["price_per_form_usd"].as_str(), p["package"]["price_usd"].as_str()),
         (Some(100), Some(3500), Some("0.35"), Some("35.00"))

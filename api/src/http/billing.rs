@@ -27,7 +27,7 @@ pub async fn pricing(State(s): State<AppState>) -> axum::Json<Value> {
         "currency": "usd",
         "unit": "form",
         "form": "a document as rfpii inventory counts it: a file, or one page of a scanned batch read page by page; only forms a job releases are counted",
-        "free": {"forms_per_month": p.free_forms_per_month, "period": "calendar month, UTC"},
+        "free": {"forms": p.free_forms, "renewed": false, "terms": "once per account; then forms are bought in packages"},
         "package": {
             "forms": r.package_forms,
             "price_cents": r.package_price_cents,
