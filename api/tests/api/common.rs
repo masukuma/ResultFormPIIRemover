@@ -109,21 +109,24 @@ impl TestServer {
         format!("{}{}", self.base, path)
     }
 
-    /// An account on `plan` and a key with every scope; with a controller
-    /// record and an approved DPIA when `ready`.
-    pub async fn account(&self, plan: &str, ready: bool) -> (String, String) {
+    /// An account with `packages` packages of form credits (recorded as paid
+    /// outside Stripe) and a key with every scope; with a controller record
+    /// and an approved DPIA when `ready`.
+    pub async fn account(&self, packages: i64, ready: bool) -> (String, String) {
         let now = self.state.clock.now();
-        let plan = plan.to_string();
         let (id, key) = self
             .state
             .db
             .call(move |c| {
-                let a = rfpii_api::accounts::create(c, now, "Example Observer Group", Some("ops@example.org"), &plan, "test")?;
+                let a = rfpii_api::accounts::create(c, now, "Example Observer Group", Some("ops@example.org"), "test")?;
                 let (_, key) = rfpii_api::auth::create(c, now, &a.id, Some("test"), &rfpii_api::auth::ALL_SCOPES, "test")?;
                 Ok((a.id, key))
             })
             .await
             .unwrap();
+        if packages > 0 {
+            self.add_credits(&id, packages).await;
+        }
         if ready {
             let r = self.put(&key, "/v1/account/controller", &controller()).await;
             assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
@@ -131,6 +134,24 @@ impl TestServer {
             assert_eq!(r.status(), 200);
         }
         (id, key)
+    }
+
+    /// Add `packages` packages of credits to `account`, as the operator does
+    /// for a bank transfer.
+    pub async fn add_credits(&self, account: &str, packages: i64) {
+        let (now, account, prices) = (self.state.clock.now(), account.to_string(), self.state.prices.clone());
+        self.state
+            .db
+            .call(move |c| rfpii_api::http::admin::add_credits_now(c, now, &prices, &account, packages, "test transfer", "test")?.map_err(|e| anyhow::anyhow!("{e}")))
+            .await
+            .unwrap();
+    }
+
+    /// `GET /v1/account`.
+    pub async fn account_now(&self, key: &str) -> Value {
+        let r = self.get(key, "/v1/account").await;
+        assert_eq!(r.status(), 200);
+        r.json().await.unwrap()
     }
 
     /// A key of `account` with only `scopes`.
@@ -261,19 +282,28 @@ pub struct Receiver {
 
 impl Receiver {
     pub async fn start(fail: usize, reply: Value) -> Receiver {
+        Self::start_with(fail, move |_| reply.clone()).await
+    }
+
+    /// A receiver whose answer to its `n`th request (from 1) is `reply(n)`.
+    pub async fn start_with(fail: usize, reply: impl Fn(usize) -> Value + Clone + Send + Sync + 'static) -> Receiver {
         let got: Arc<Mutex<Vec<Received>>> = Arc::default();
         let failures = Arc::new(AtomicUsize::new(fail));
         let (g, f) = (got.clone(), failures.clone());
         let app = axum::Router::new().fallback(move |headers: axum::http::HeaderMap, body: String| {
             let (g, f, reply) = (g.clone(), f.clone(), reply.clone());
             async move {
-                g.lock().unwrap().push(Received { headers, body });
+                let n = {
+                    let mut all = g.lock().unwrap();
+                    all.push(Received { headers, body });
+                    all.len()
+                };
                 let left = f.load(Ordering::SeqCst);
                 if left > 0 {
                     f.store(left - 1, Ordering::SeqCst);
                     return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(json!({"error": "try later"})));
                 }
-                (axum::http::StatusCode::OK, axum::Json(reply))
+                (axum::http::StatusCode::OK, axum::Json(reply(n)))
             }
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

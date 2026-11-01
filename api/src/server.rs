@@ -1,6 +1,6 @@
 //! The process: shared state, and starting and stopping the HTTP server,
-//! the workers and the background tasks (webhook deliveries, Stripe meter
-//! events, retention sweeps). Shutdown is graceful: no new job is leased,
+//! the workers and the background tasks (webhook deliveries, retention
+//! sweeps). Shutdown is graceful: no new job is leased,
 //! running jobs get SHUTDOWN_GRACE_SECS to finish and are re-queued if
 //! they don't, and the HTTP server finishes the requests it has.
 
@@ -115,7 +115,6 @@ pub async fn start_with(state: AppState, opts: Options) -> Result<Server> {
     let workers = crate::worker::spawn(&state, opts.workers, &rx);
     let background = vec![
         every(&state, &rx, "webhook deliveries", |s| Box::pin(async move { crate::webhooks::deliver_due(&s).await })),
-        every(&state, &rx, "Stripe meter events", |s| Box::pin(async move { crate::stripe::report_due(&s).await })),
         tokio::spawn(crate::sweeper::run(state.clone(), rx.clone())),
     ];
     tracing::info!(addr = ?addr, workers = opts.workers, "started");

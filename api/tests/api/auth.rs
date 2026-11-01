@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 #[tokio::test(flavor = "multi_thread")]
 async fn requests_without_a_valid_key_get_401() {
     let t = TestServer::start(0, |_| {}).await;
-    let (_, key) = t.account("free", false).await;
+    let (_, key) = t.account(0, false).await;
     let r = t.client.get(t.url("/v1/account")).send().await.unwrap();
     assert_eq!(r.headers()["www-authenticate"], "Bearer realm=\"rfpii\"");
     let p = problem(r, 401).await;
@@ -34,7 +34,7 @@ async fn requests_without_a_valid_key_get_401() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_key_without_the_scope_gets_403() {
     let t = TestServer::start(0, |_| {}).await;
-    let (account, admin) = t.account("free", true).await;
+    let (account, admin) = t.account(0, true).await;
     let reader = t.key_with(&account, &[Scope::JobsRead]).await;
     let p = problem(t.post(&reader, "/v1/jobs", &json!({"file_ids": ["file_x"]})).await, 403).await;
     assert_eq!(p["required_scope"], "jobs:write");
@@ -54,7 +54,7 @@ async fn a_key_without_the_scope_gets_403() {
     let p = problem(t.post(&admin, "/v1/keys", &json!({"scopes": ["jobs:delete"]})).await, 422).await;
     assert!(p["detail"].as_str().unwrap().contains("unknown scope"));
     // another account's key can't be revoked from here
-    let (_, other) = t.account("free", false).await;
+    let (_, other) = t.account(0, false).await;
     problem(t.delete(&other, &format!("/v1/keys/{}", k["id"].as_str().unwrap())).await, 404).await;
     t.stop().await;
 }

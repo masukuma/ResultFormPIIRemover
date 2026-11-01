@@ -51,12 +51,30 @@ pub struct Config {
     #[arg(long, env = "JOB_TIMEOUT_SECS", default_value_t = 12 * 3600)]
     pub job_timeout_secs: u64,
 
-    /// Forms a free account may have released each calendar month (UTC)
+    /// Forms every account may have released free each calendar month (UTC)
     #[arg(long, env = "FREE_FORMS_PER_MONTH", default_value_t = 5)]
     pub free_forms_per_month: i64,
-    /// Price of one released form on the paid plan, in micro-dollars
-    #[arg(long, env = "PRICE_PER_FORM_MICROUSD", default_value_t = 4900)]
-    pub price_per_form_microusd: i64,
+    /// Forms in a package (beyond the free forms, forms are sold in packages)
+    #[arg(long, env = "PACKAGE_FORMS", default_value_t = 100)]
+    pub package_forms: i64,
+    /// A package's price in cents, before the card fee and VAT
+    #[arg(long, env = "PACKAGE_PRICE_CENTS", default_value_t = 3500)]
+    pub package_price_cents: i64,
+    /// VAT on every purchase, in basis points (1600: 16%)
+    #[arg(long, env = "VAT_RATE_BASIS_POINTS", default_value_t = 1600)]
+    pub vat_rate_basis_points: i64,
+    /// The card processor's rate, in basis points of the charge (440: 4.4%)
+    #[arg(long, env = "CARD_FEE_BASIS_POINTS", default_value_t = 440)]
+    pub card_fee_basis_points: i64,
+    /// The card processor's fixed fee per charge, in cents
+    #[arg(long, env = "CARD_FEE_FIXED_CENTS", default_value_t = 30)]
+    pub card_fee_fixed_cents: i64,
+    /// Most packages one purchase may hold
+    #[arg(long, env = "MAX_PACKAGES_PER_PURCHASE", default_value_t = 100)]
+    pub max_packages_per_purchase: i64,
+    /// Days form credits last once added (0: they never expire)
+    #[arg(long, env = "CREDIT_EXPIRY_DAYS", default_value_t = 0)]
+    pub credit_expiry_days: i64,
     /// Token prices per model, micro-dollars per million tokens: MODEL=IN/OUT,...
     #[arg(long, env = "MODEL_PRICES", default_value = "gemma4:31b=140000/400000,gpt-oss:120b=150000/600000")]
     pub model_prices: String,
@@ -132,18 +150,15 @@ pub struct Config {
     #[arg(long, env = "METRICS_TOKEN", hide_env_values = true)]
     pub metrics_token: Option<String>,
 
-    /// Stripe secret key (unset: no Stripe; plans are set by the admin)
+    /// Stripe secret key (unset: no Checkout; the operator adds packages paid otherwise)
     #[arg(long, env = "STRIPE_SECRET_KEY", hide_env_values = true)]
     pub stripe_secret_key: Option<String>,
-    /// The Stripe price of the metered subscription
-    #[arg(long, env = "STRIPE_PRICE_ID")]
-    pub stripe_price_id: Option<String>,
+    /// The Stripe tax rate for VAT (16%, exclusive), set on every Checkout line
+    #[arg(long, env = "STRIPE_TAX_RATE_ID")]
+    pub stripe_tax_rate_id: Option<String>,
     /// The signing secret of the Stripe webhook endpoint
     #[arg(long, env = "STRIPE_WEBHOOK_SECRET", hide_env_values = true)]
     pub stripe_webhook_secret: Option<String>,
-    /// The event name of the Stripe billing meter
-    #[arg(long, env = "STRIPE_METER_EVENT_NAME", default_value = "rfpii_forms")]
-    pub stripe_meter_event_name: String,
     /// Stripe's API base URL (a stub in tests)
     #[arg(long, env = "STRIPE_API_BASE", default_value = "https://api.stripe.com")]
     pub stripe_api_base: String,
@@ -207,6 +222,17 @@ impl Config {
         parse_model_prices(&self.model_prices)
     }
 
+    /// The rates purchases are quoted at.
+    pub fn rates(&self) -> crate::quote::Rates {
+        crate::quote::Rates {
+            package_forms: self.package_forms,
+            package_price_cents: self.package_price_cents,
+            vat_basis_points: self.vat_rate_basis_points,
+            card_fee_basis_points: self.card_fee_basis_points,
+            card_fee_fixed_cents: self.card_fee_fixed_cents,
+        }
+    }
+
     /// Trim the lists and drop their empty items: `VISION_MODELS=` means
     /// no vision model, not a model named "".
     pub fn normalize(&mut self) {
@@ -226,8 +252,12 @@ impl Config {
     /// The checks every command runs before it starts.
     pub fn validate(&self) -> Result<()> {
         self.token_prices()?;
-        if self.price_per_form_microusd < 0 || self.free_forms_per_month < 0 {
-            bail!("PRICE_PER_FORM_MICROUSD and FREE_FORMS_PER_MONTH can't be negative");
+        self.rates().check().map_err(anyhow::Error::msg)?;
+        if self.free_forms_per_month < 0 || self.credit_expiry_days < 0 {
+            bail!("FREE_FORMS_PER_MONTH and CREDIT_EXPIRY_DAYS can't be negative");
+        }
+        if !(1..=10_000).contains(&self.max_packages_per_purchase) {
+            bail!("MAX_PACKAGES_PER_PURCHASE must be from 1 to 10000");
         }
         if self.rate_limit_per_sec <= 0.0 || self.public_rate_limit_per_sec <= 0.0 {
             bail!("rate limits must be above zero");

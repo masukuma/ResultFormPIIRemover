@@ -1,7 +1,9 @@
-//! Accounts: the customer, its plan, and the legal records `rfpii job`
-//! needs before it runs anything (HARNESS.md §9 conditions 8 and 9): the
-//! controller record and the DPIA. The customer is the controller; the
-//! platform's operator is its processor (`legal/C-recommendations.md` §2.9).
+//! Accounts: the customer, and the legal records `rfpii job` needs before
+//! it runs anything (HARNESS.md §9 conditions 8 and 9): the controller
+//! record and the DPIA. The customer is the controller; the platform's
+//! operator is its processor (`legal/C-recommendations.md` §2.9). An
+//! account has no plan: it has the month's free forms and the form credits
+//! it bought (`billing`).
 
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -15,20 +17,16 @@ pub struct Account {
     pub id: String,
     pub name: String,
     pub email: Option<String>,
-    pub plan: String,
-    pub spend_cap_microusd: Option<i64>,
     pub controller: Option<Value>,
     pub dpia: Option<Value>,
     pub held_pages: String,
     pub webhook_url: Option<String>,
     pub webhook_secret: Option<String>,
     pub stripe_customer_id: Option<String>,
-    pub stripe_subscription_id: Option<String>,
     pub created_at: i64,
 }
 
-const COLUMNS: &str =
-    "id, name, email, plan, spend_cap_microusd, controller_json, dpia_json, held_pages, webhook_url, webhook_secret, stripe_customer_id, stripe_subscription_id, created_at";
+const COLUMNS: &str = "id, name, email, controller_json, dpia_json, held_pages, webhook_url, webhook_secret, stripe_customer_id, created_at";
 
 fn from_row(r: &Row) -> rusqlite::Result<Account> {
     let json = |s: Option<String>| s.and_then(|s| serde_json::from_str(&s).ok());
@@ -36,25 +34,18 @@ fn from_row(r: &Row) -> rusqlite::Result<Account> {
         id: r.get(0)?,
         name: r.get(1)?,
         email: r.get(2)?,
-        plan: r.get(3)?,
-        spend_cap_microusd: r.get(4)?,
-        controller: json(r.get(5)?),
-        dpia: json(r.get(6)?),
-        held_pages: r.get(7)?,
-        webhook_url: r.get(8)?,
-        webhook_secret: r.get(9)?,
-        stripe_customer_id: r.get(10)?,
-        stripe_subscription_id: r.get(11)?,
-        created_at: r.get(12)?,
+        controller: json(r.get(3)?),
+        dpia: json(r.get(4)?),
+        held_pages: r.get(5)?,
+        webhook_url: r.get(6)?,
+        webhook_secret: r.get(7)?,
+        stripe_customer_id: r.get(8)?,
+        created_at: r.get(9)?,
     })
 }
 
 pub fn load(conn: &Connection, id: &str) -> Result<Option<Account>> {
     Ok(conn.query_row(&format!("SELECT {COLUMNS} FROM accounts WHERE id = ?1"), [id], from_row).optional()?)
-}
-
-pub fn by_stripe_customer(conn: &Connection, customer: &str) -> Result<Option<Account>> {
-    Ok(conn.query_row(&format!("SELECT {COLUMNS} FROM accounts WHERE stripe_customer_id = ?1"), [customer], from_row).optional()?)
 }
 
 pub fn list(conn: &Connection) -> Result<Vec<Account>> {
@@ -63,33 +54,13 @@ pub fn list(conn: &Connection) -> Result<Vec<Account>> {
     Ok(rows)
 }
 
-/// Whether `plan` is a plan.
-pub fn is_plan(plan: &str) -> bool {
-    plan == "free" || plan == "paid"
-}
-
 /// A new account, recorded in the audit log.
-pub fn create(conn: &Connection, now: i64, name: &str, email: Option<&str>, plan: &str, actor: &str) -> Result<Account> {
-    anyhow::ensure!(is_plan(plan), "plan must be free or paid");
+pub fn create(conn: &Connection, now: i64, name: &str, email: Option<&str>, actor: &str) -> Result<Account> {
     anyhow::ensure!(!name.trim().is_empty(), "an account needs a name");
     let id = crate::ids::new_id("acct");
-    conn.execute("INSERT INTO accounts (id, name, email, plan, created_at) VALUES (?1, ?2, ?3, ?4, ?5)", params![id, name.trim(), email, plan, now])?;
-    crate::audit::record(conn, now, Some(&id), actor, "account.created", &json!({"plan": plan}))?;
+    conn.execute("INSERT INTO accounts (id, name, email, created_at) VALUES (?1, ?2, ?3, ?4)", params![id, name.trim(), email, now])?;
+    crate::audit::record(conn, now, Some(&id), actor, "account.created", &json!({"name": name.trim()}))?;
     load(conn, &id)?.ok_or_else(|| anyhow::anyhow!("account {id} vanished"))
-}
-
-/// Set an account's plan and, if given, its monthly spend cap (None in
-/// the option: no cap). Whether the account exists.
-pub fn set_plan(conn: &Connection, now: i64, id: &str, plan: &str, cap: Option<Option<i64>>, actor: &str) -> Result<bool> {
-    anyhow::ensure!(is_plan(plan), "plan must be free or paid");
-    let n = match cap {
-        Some(c) => conn.execute("UPDATE accounts SET plan = ?2, spend_cap_microusd = ?3 WHERE id = ?1", params![id, plan, c])?,
-        None => conn.execute("UPDATE accounts SET plan = ?2 WHERE id = ?1", params![id, plan])?,
-    };
-    if n > 0 {
-        crate::audit::record(conn, now, Some(id), actor, "account.plan_set", &json!({"plan": plan, "spend_cap_microusd": cap}))?;
-    }
-    Ok(n > 0)
 }
 
 /// The fields a controller record can't go without, checked as

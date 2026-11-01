@@ -10,7 +10,7 @@ use std::time::Duration;
 #[tokio::test(flavor = "multi_thread")]
 async fn a_job_needs_a_controller_record_and_a_dpia() {
     let t = TestServer::start(0, |_| {}).await;
-    let (_, key) = t.account("free", false).await;
+    let (_, key) = t.account(0, false).await;
     let f = t.upload(&key, "a.jpg").await;
     let p = problem(t.create_job(&key, json!({"file_ids": [f]})).await, 422).await;
     assert!(p["type"].as_str().unwrap().ends_with("#problem-account-not-ready"));
@@ -47,7 +47,7 @@ async fn a_job_needs_a_controller_record_and_a_dpia() {
 async fn a_job_runs_to_its_outputs() {
     let t = TestServer::start(1, |_| {}).await;
     t.fake("FORMS=3\nRELEASED=2\n");
-    let (account, key) = t.account("free", true).await;
+    let (account, key) = t.account(0, true).await;
     let f = t.upload(&key, "1_34_A_007029014000102_F230450M00203609_20220810_132155.jpg").await;
     let r = t.create_job(&key, json!({"file_ids": [f], "policy": {"full_ids": true}, "metadata": {"batch": "Nyeri"}})).await;
     assert_eq!(r.status(), 202);
@@ -61,7 +61,7 @@ async fn a_job_runs_to_its_outputs() {
     assert_eq!(j["status"], "succeeded", "{j}");
     assert_eq!((j["forms_released"].as_i64(), j["forms_held"].as_i64(), j["exit_code"].as_i64()), (Some(2), Some(1), Some(2)));
     assert_eq!(j["metadata"]["batch"], "Nyeri");
-    // the customer sees the price, the operator the cost too
+    // the customer sees what was counted, the operator the cost too
     assert!(j.get("cost").is_none(), "{j}");
     assert_eq!(t.operator_job(&id).await["cost"]["models"][0]["model"], "gemma4:31b");
     assert!(j["outputs_expire_at"].is_string());
@@ -125,7 +125,7 @@ async fn a_job_runs_to_its_outputs() {
 async fn a_job_that_released_nothing_keeps_its_transfers_record() {
     let t = TestServer::start(1, |_| {}).await;
     t.fake("FORMS=2\nRELEASED=0\n");
-    let (_, key) = t.account("free", true).await;
+    let (_, key) = t.account(0, true).await;
     let j = t.start_job(&key).await;
     let id = j["id"].as_str().unwrap();
     let j = t.wait_end(&key, id).await;
@@ -135,15 +135,16 @@ async fn a_job_that_released_nothing_keeps_its_transfers_record() {
     assert_eq!(outs["data"][0]["path"], "transfers.jsonl");
     let r = t.get(&key, &format!("/v1/jobs/{id}/outputs/transfers.jsonl")).await;
     assert!(r.text().await.unwrap().contains("ollama.com"));
-    let a: Value = t.get(&key, "/v1/account").await.json().await.unwrap();
-    assert_eq!(a["free_forms_left"], 5);
+    let a = t.account_now(&key).await;
+    assert_eq!(a["free_forms"]["left"], 5);
+    assert_eq!(j["billing"]["counted"], json!({"forms": 0, "free_forms": 0, "credits": 0}));
     t.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn idempotency_keys_replay_the_same_job() {
     let t = TestServer::start(0, |_| {}).await;
-    let (_, key) = t.account("paid", true).await;
+    let (_, key) = t.account(1, true).await;
     let f = t.upload(&key, "a.jpg").await;
     let send = |body: String, k: &'static str| {
         t.client.post(t.url("/v1/jobs")).bearer_auth(&key).header("idempotency-key", k).header("content-type", "application/json").body(body).send()
@@ -170,7 +171,7 @@ async fn idempotency_keys_replay_the_same_job() {
 #[tokio::test(flavor = "multi_thread")]
 async fn job_requests_are_validated() {
     let t = TestServer::start(0, |_| {}).await;
-    let (_, key) = t.account("free", true).await;
+    let (_, key) = t.account(0, true).await;
     let f = t.upload(&key, "a.jpg").await;
     problem(t.create_job(&key, json!({"file_ids": []})).await, 422).await;
     problem(t.create_job(&key, json!({"file_ids": [f, f]})).await, 422).await;
@@ -196,7 +197,7 @@ async fn job_requests_are_validated() {
 #[tokio::test(flavor = "multi_thread")]
 async fn jobs_are_listed_newest_first_with_a_cursor() {
     let t = TestServer::start(0, |_| {}).await;
-    let (_, key) = t.account("paid", true).await;
+    let (_, key) = t.account(1, true).await;
     let mut ids = Vec::new();
     for _ in 0..3 {
         ids.push(t.start_job(&key).await["id"].as_str().unwrap().to_string());
@@ -213,7 +214,7 @@ async fn jobs_are_listed_newest_first_with_a_cursor() {
     assert_eq!((p2["data"][0]["id"].as_str(), p2["has_more"].as_bool()), (Some(ids[0].as_str()), Some(false)));
     problem(t.get(&key, "/v1/jobs?limit=500").await, 400).await;
     // another account sees none of them
-    let (_, other) = t.account("free", false).await;
+    let (_, other) = t.account(0, false).await;
     let none: Value = t.get(&other, "/v1/jobs").await.json().await.unwrap();
     assert!(none["data"].as_array().unwrap().is_empty());
     problem(t.get(&other, &format!("/v1/jobs/{}", ids[0])).await, 404).await;
@@ -229,7 +230,7 @@ fn alive(pid: i32) -> bool {
 async fn cancel_kills_the_process() {
     let t = TestServer::start(1, |_| {}).await;
     t.fake("FORMS=2\nRELEASED=2\nDELAY=30\n");
-    let (_, key) = t.account("free", true).await;
+    let (_, key) = t.account(0, true).await;
     let id = t.start_job(&key).await["id"].as_str().unwrap().to_string();
     t.wait_job(&key, &id, |j| j["status"] == "running").await;
     let start = std::time::Instant::now();
@@ -245,25 +246,23 @@ async fn cancel_kills_the_process() {
     let j = t.wait_end(&key, &id).await;
     assert_eq!(j["status"], "canceled");
     assert!(!alive(pid), "rfpii job still runs");
-    assert_eq!((j["price"]["forms_charged"].as_i64(), j["forms_released"].as_i64()), (Some(0), Some(0)));
+    assert_eq!((j["billing"]["counted"]["forms"].as_i64(), j["forms_released"].as_i64()), (Some(0), Some(0)));
     problem(t.post(&key, &format!("/v1/jobs/{id}/cancel"), &json!({})).await, 409).await;
-    let a: Value = t.get(&key, "/v1/account").await.json().await.unwrap();
-    assert_eq!((a["free_forms_left"].as_i64(), a["forms_reserved"].as_i64()), (Some(5), Some(0)));
+    let a = t.account_now(&key).await;
+    assert_eq!((a["free_forms"]["left"].as_i64(), a["free_forms"]["reserved"].as_i64()), (Some(5), Some(0)));
     t.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_queued_job_is_canceled_at_once() {
     let t = TestServer::start(0, |_| {}).await;
-    let (_, key) = t.account("free", true).await;
+    let (_, key) = t.account(0, true).await;
     let id = t.start_job(&key).await["id"].as_str().unwrap().to_string();
-    let a: Value = t.get(&key, "/v1/account").await.json().await.unwrap();
-    assert_eq!(a["free_forms_left"], 2);
+    assert_eq!(t.account_now(&key).await["free_forms"]["left"], 2);
     let r = t.post(&key, &format!("/v1/jobs/{id}/cancel"), &json!({})).await;
     assert_eq!(r.status(), 200);
     assert_eq!(r.json::<Value>().await.unwrap()["status"], "canceled");
-    let a: Value = t.get(&key, "/v1/account").await.json().await.unwrap();
-    assert_eq!(a["free_forms_left"], 5);
+    assert_eq!(t.account_now(&key).await["free_forms"]["left"], 5);
     // a canceled job's outputs: there are none, but it has ended
     let outs: Value = t.get(&key, &format!("/v1/jobs/{id}/outputs")).await.json().await.unwrap();
     assert!(outs["data"].as_array().unwrap().is_empty());
@@ -275,20 +274,20 @@ async fn a_queued_job_is_canceled_at_once() {
 async fn delete_erases_the_files_and_keeps_the_billing_record() {
     let t = TestServer::start(1, |_| {}).await;
     t.fake("FORMS=3\nRELEASED=2\nDELAY=1\n");
-    let (account, key) = t.account("paid", true).await;
+    let (account, key) = t.account(1, true).await;
     let id = t.start_job(&key).await["id"].as_str().unwrap().to_string();
     problem(t.delete(&key, &format!("/v1/jobs/{id}")).await, 409).await;
     t.wait_end(&key, &id).await;
     let r = t.delete(&key, &format!("/v1/jobs/{id}")).await;
     let j: Value = r.json().await.unwrap();
     assert!(j["deleted_at"].is_string() && j["instructions"].is_null());
-    assert_eq!(j["price"]["amount_microusd"], 9800);
+    assert_eq!(j["billing"]["counted"], json!({"forms": 2, "free_forms": 2, "credits": 0}));
     assert!(!t.dir.join("data/jobs").join(&account).join(&id).exists());
     problem(t.get(&key, &format!("/v1/jobs/{id}/outputs")).await, 410).await;
     problem(t.get(&key, &format!("/v1/jobs/{id}/report")).await, 410).await;
     problem(t.get(&key, &format!("/v1/jobs/{id}/archive")).await, 410).await;
     let u: Value = t.get(&key, "/v1/usage").await.json().await.unwrap();
-    assert_eq!((u["records"][0]["job_id"].as_str(), u["amount_due_microusd"].as_i64()), (Some(id.as_str()), Some(9800)));
+    assert_eq!((u["records"][0]["job_id"].as_str(), u["records"][0]["forms"].as_i64()), (Some(id.as_str()), Some(2)));
     let id2 = id.clone();
     let deletions: i64 = t.state.db.call(move |c| Ok(c.query_row("SELECT COUNT(*) FROM deletions WHERE job_id = ?1", [id2], |r| r.get(0))?)).await.unwrap();
     assert!(deletions >= 2, "{deletions}");
@@ -299,22 +298,25 @@ async fn delete_erases_the_files_and_keeps_the_billing_record() {
 async fn a_failed_job_is_not_charged() {
     let t = TestServer::start(1, |_| {}).await;
     t.fake("FORMS=2\nRELEASED=2\nEXIT=1\nNO_REPORT=1\n");
-    let (_, key) = t.account("paid", true).await;
+    let (_, key) = t.account(1, true).await;
     let id = t.start_job(&key).await["id"].as_str().unwrap().to_string();
     let j = t.wait_end(&key, &id).await;
     assert_eq!(j["status"], "failed");
     let err = j["error"].as_str().unwrap();
     assert!(err.contains("exited with code 1") && err.contains("the fake was told to fail"), "{err}");
-    assert_eq!((j["price"]["amount_microusd"].as_i64(), j["forms_released"].as_i64()), (Some(0), Some(0)));
+    assert_eq!((j["billing"]["counted"]["forms"].as_i64(), j["forms_released"].as_i64()), (Some(0), Some(0)));
     let u: Value = t.get(&key, "/v1/usage").await.json().await.unwrap();
     assert!(u["records"].as_array().unwrap().is_empty());
+    // its reservation is let go: the free forms and the package's credits are all there
+    let a = t.account_now(&key).await;
+    assert_eq!((a["free_forms"]["left"].as_i64(), a["credits"]["available"].as_i64(), a["credits"]["used"].as_i64()), (Some(5), Some(100), Some(0)));
     t.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_expired_lease_requeues_the_job() {
     let t = TestServer::start(0, |c| c.max_attempts = 2).await;
-    let (_, key) = t.account("paid", true).await;
+    let (_, key) = t.account(1, true).await;
     let id = t.start_job(&key).await["id"].as_str().unwrap().to_string();
     // a worker leased it, then vanished: its lease ran out a second ago
     let (jid, now) = (id.clone(), t.state.clock.now());
@@ -348,8 +350,8 @@ async fn an_expired_lease_requeues_the_job() {
     let j: Value = t.get(&key, &format!("/v1/jobs/{id}")).await.json().await.unwrap();
     assert_eq!(j["status"], "failed");
     assert!(j["error"].as_str().unwrap().contains("lease expired"));
-    let a: Value = t.get(&key, "/v1/account").await.json().await.unwrap();
-    assert_eq!(a["forms_reserved"], 0);
+    let a = t.account_now(&key).await;
+    assert_eq!((a["free_forms"]["reserved"].as_i64(), a["credits"]["reserved"].as_i64()), (Some(0), Some(0)));
     t.stop().await;
 }
 
@@ -357,7 +359,7 @@ async fn an_expired_lease_requeues_the_job() {
 async fn shutdown_requeues_a_running_job() {
     let mut t = TestServer::start(1, |_| {}).await;
     t.fake("FORMS=1\nRELEASED=1\nDELAY=30\n");
-    let (_, key) = t.account("free", true).await;
+    let (_, key) = t.account(0, true).await;
     let id = t.start_job(&key).await["id"].as_str().unwrap().to_string();
     t.wait_job(&key, &id, |j| j["status"] == "running").await;
     while t.fake_file("job.pid").is_none() {
@@ -376,7 +378,7 @@ async fn shutdown_requeues_a_running_job() {
 #[tokio::test(flavor = "multi_thread")]
 async fn held_pages_go_to_the_cloud_only_on_opt_in() {
     let t = TestServer::start(1, |c| c.vision_models = vec!["gemma4:31b".into()]).await;
-    let (_, key) = t.account("paid", true).await;
+    let (_, key) = t.account(1, true).await;
     let a: Value = t.get(&key, "/v1/account").await.json().await.unwrap();
     assert_eq!(a["settings"]["held_pages"], "none");
     assert!(a["controller"]["processors"][1]["service"].as_str().unwrap().contains("redacted pages only"));
