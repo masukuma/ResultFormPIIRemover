@@ -271,7 +271,7 @@ released form against 5 free forms (once per account), then against form credits
 in packages of 100 at $0.35 a form, plus the card fee and VAT
 ([PRICING.md](PRICING.md)). See [API.md](API.md).
 
-## A local neural network (design)
+## A local neural network (design; its data built)
 
 [NEURAL.md](NEURAL.md) designs four small CNNs, run on the CPU with ONNX
 Runtime, that find the fields, stamps, ink and characters the pipeline
@@ -280,7 +280,12 @@ programming (a local language model reading and editing their weights),
 starting from the pipeline's own rules; the rest is trained. Round by
 round they are brought to this pipeline's results, then promoted stage by
 stage from a shadow, to a local replacement for the cloud review, to the
-primary reader. Not built yet.
+primary reader. The networks are not built yet; their data is:
+`rfpii dataset synth` draws synthetic forms with exact labels (and, with
+`--redacted`, redacted ones that say what still shows), `rfpii dataset
+build` takes the pipeline's own labels from its manifests, and [`nn/`](nn/README.md)
+reads them, plans the gold set and shows labelled pages in a local,
+read-only viewer.
 
 ## Adding a form type
 

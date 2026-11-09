@@ -16,9 +16,11 @@
 //!   are (`lines[].hidden`: which of how many), which also gives each
 //!   character's slot; a signature's band is its middle half, so the box is
 //!   the band grown to twice its height. A cell the masking found empty is
-//!   `empty: true`. The alignment is the page's; a table column snapped to
-//!   its printed rules can sit a few pixels off it, which the blocks correct
-//!   where there are any.
+//!   `empty: true`, unless a stamp lies over it and its band across the
+//!   stamp was blacked (the stamp rule): then what is under the stamp isn't
+//!   known, and the cell is labelled from its blocks with `stamp_band: true`. The alignment is the
+//!   page's; a table column snapped to its printed rules can sit a few
+//!   pixels off it, which the blocks correct where there are any.
 //! - **stamps** and **results regions** from `protected`; the **agents
 //!   table**, **comments** and **declaration** areas from the template and
 //!   `layout.rs`; the vision review's finds (`vlm_found`) and spot masks
@@ -245,6 +247,16 @@ fn template_boxes(t: &Template, mp: &Value, w: f64, hh: f64, boxes: &mut Vec<Val
     let ax = util::project(&h, [1.0, 0.0]);
     let a0 = util::project(&h, [0.0, 0.0]);
     let upright = (ax[0] - a0[0]) > 2.0 * (ax[1] - a0[1]).abs();
+    let stamps: Vec<[f64; 3]> = mp["protected"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["kind"] == "stamp")
+        .filter_map(|p| {
+            let c: Vec<f64> = p["circle"].as_array()?.iter().filter_map(|x| x.as_f64()).collect();
+            (c.len() == 3).then(|| [c[0], c[1], c[2]])
+        })
+        .collect();
     let mut used = vec![false; tb.centres.len()];
     // the zones, column by column
     let mut keys: Vec<&str> = Vec::new();
@@ -282,12 +294,23 @@ fn template_boxes(t: &Template, mp: &Value, w: f64, hh: f64, boxes: &mut Vec<Val
             if let Some(r) = rule {
                 v["rule"] = json!(r);
             }
-            if mode == "empty" {
+            let blocks: Vec<[f64; 4]> = mine[k].iter().map(|&i| tb.boxes[i]).collect();
+            // blocks in a cell read as empty are a stamp band only where a
+            // stamp lies over the cell; elsewhere they spill from a neighbour
+            let stamped = stamps.iter().any(|c| {
+                let (nx, ny) = (c[0].clamp(cell[0], cell[2]), c[1].clamp(cell[1], cell[3]));
+                (nx - c[0]).hypot(ny - c[1]) < c[2]
+            });
+            if mode == "empty" && (blocks.is_empty() || !stamped) {
                 v["empty"] = json!(true);
                 boxes.push(v);
                 continue;
             }
-            let blocks: Vec<[f64; 4]> = mine[k].iter().map(|&i| tb.boxes[i]).collect();
+            if mode == "empty" {
+                // read as empty, but its band across a stamp was hidden:
+                // what is under the stamp isn't known
+                v["stamp_band"] = json!(true);
+            }
             if blocks.is_empty() || mode == "whole" || mode == "blackout" {
                 boxes.push(v);
                 continue;
@@ -296,7 +319,10 @@ fn template_boxes(t: &Template, mp: &Value, w: f64, hh: f64, boxes: &mut Vec<Val
                 used[i] = true;
             }
             let u = bounds(&blocks.iter().flat_map(|b| [[b[0], b[1]], [b[2], b[3]]]).collect::<Vec<_>>());
-            let tbox = if class == "signature" {
+            let tbox = if mode == "empty" {
+                let a = search_area(z, pad);
+                [u[0].max(a[0]), u[1].max(a[1]), u[2].min(a[2]), u[3].min(a[3])]
+            } else if class == "signature" {
                 // the band is the middle half of the signature
                 let (cy, bh) = ((u[1] + u[3]) / 2.0, u[3] - u[1]);
                 let a = search_area(z, pad);
@@ -724,6 +750,48 @@ mod tests {
         assert_eq!(capture(&m, "x.PDF"), "kiems");
         assert_eq!(capture(&json!({}), "x.pdf"), "scan");
         assert_eq!(capture(&json!({}), "z.zip::x.jpg"), "photo");
+    }
+
+    /// A page of the layout A block, aligned as drawn (identity): cells
+    /// read as empty, under a stamp or not, and a partly hidden number.
+    #[test]
+    fn empty_cells_stamp_bands_and_fitted_numbers() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates/form34b_2022_block");
+        let t = crate::templates::load_template(&root).unwrap();
+        let (w, h) = (t.image.cols(), t.image.rows());
+        let mut g = Grid::new((h as usize).div_ceil(BLOCK), (w as usize).div_ceil(BLOCK));
+        let mut fill = |x0: usize, x1: usize, y0: usize, y1: usize| {
+            for r in y0 / BLOCK..y1 / BLOCK {
+                for c in x0 / BLOCK..x1 / BLOCK {
+                    g.set(r, c, true);
+                }
+            }
+        };
+        fill(600, 700, 180, 220); // agent_id[0]: under a stamp
+        fill(600, 700, 260, 300); // agent_id[1]: no stamp there
+        // agent_id[2]: 8 characters 25 px apart from x 560; 1, 4 and 5
+        // hidden, in whole blocks (585-610 and 660-710)
+        fill(584, 616, 344, 376);
+        fill(656, 712, 344, 376);
+        let stamp: Vec<Value> = (0..8).map(|k| json!([650.0 + 40.0 * (k as f64).cos(), 200.0 + 40.0 * (k as f64).sin()])).collect();
+        let mp = json!({
+            "alignment": {"H": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]},
+            "blocks": crate::proof::pack(&g),
+            "masks": [{"zone": "agent_id[0]", "mode": "empty", "role": "agent"}, {"zone": "agent_id[1]", "mode": "empty", "role": "agent"},
+                      {"zone": "agent_id[2]", "mode": "partial", "rule": "id", "role": "agent", "lines": [{"slots": 8, "hidden": [1, 4, 5]}]}],
+            "protected": [{"kind": "stamp", "circle": [650.0, 200.0, 40.0], "polygon": stamp}],
+        });
+        let (mut boxes, mut notes) = (Vec::new(), Vec::new());
+        template_boxes(&t, &mp, w as f64, h as f64, &mut boxes, &mut notes).unwrap();
+        let get = |z: &str| boxes.iter().find(|b| b["zone"] == z && b["class"] == "id_number").unwrap().clone();
+        let (a, b, c) = (get("agent_id[0]"), get("agent_id[1]"), get("agent_id[2]"));
+        assert!(a["empty"].is_null() && a["stamp_band"] == true && a["source"] == "blocks", "{a}");
+        assert_eq!(b["empty"], true, "{b}");
+        assert_eq!(c["source"], "blocks");
+        let x0 = c["box"][0].as_f64().unwrap();
+        assert!((x0 - 560.0).abs() < 8.0, "{c}");
+        assert_eq!(c["slots"].as_array().unwrap().len(), 8);
+        assert!(boxes.iter().any(|b| b["class"] == "agents_table") && boxes.iter().any(|b| b["class"] == "declaration"));
     }
 
     #[test]

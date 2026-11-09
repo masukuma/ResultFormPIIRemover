@@ -197,10 +197,12 @@ Pages the pipeline holds are left out (`parameters.held_by_pipeline`).
 OCR must be available for Form 34A pages (their comments are read with
 it); without it they are held.
 
-**Size and speed** on this machine (4 cores), measured with milestone 1:
-see NEURAL.md, "Where it stands". In short: a full-size synthetic page
-takes about 1.2 MB (JPEG 1.1 MB, mask 0.1 MB, labels 12 kB); at
-`--max-side 1280` about 0.4 MB, so 10,000 pages take about 4 GB.
+**Size and speed** on a 4-core machine (NEURAL.md, "Where it stands"): a
+full-size synthetic page takes about 1.1 MB (JPEG 1 MB, mask 0.1 MB,
+labels 11 kB); at `--max-side 1280`, 212 kB (JPEG 160 kB, mask 36 kB,
+labels 11 kB), so 10,000 pages take about 2.1 GB. `synth` writes 5 to 6
+pages a second either way; `--redacted` about 0.3, as it runs the
+pipeline on every page.
 
 ## Teacher datasets
 

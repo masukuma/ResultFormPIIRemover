@@ -127,10 +127,10 @@ pub struct PageOut {
     pub labels: Value,
 }
 
-/// Counts of each class among a page's boxes.
+/// Counts of each class among a page's boxes, empty cells left out.
 pub fn class_counts(labels: &Value) -> Map<String, Value> {
     let mut m = Map::new();
-    for b in labels["boxes"].as_array().into_iter().flatten() {
+    for b in labels["boxes"].as_array().into_iter().flatten().filter(|b| b["empty"] != true) {
         let c = b["class"].as_str().unwrap_or("?").to_string();
         let n = m.get(&c).and_then(|v| v.as_u64()).unwrap_or(0);
         m.insert(c, json!(n + 1));
