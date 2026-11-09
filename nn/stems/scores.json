@@ -1,0 +1,691 @@
+{
+ "schema": "rfpii/nn-stem-scores/1",
+ "pages": {
+  "training": 74,
+  "held_out": 32
+ },
+ "note": "agreement and IoU of each mask against the pipeline (rfpii dataset ink), at 1,280 px; groups: 2013 Forms 34 (scans), 2022 Forms 34A (KIEMS), 2022 Forms 34B, synthetic",
+ "stems": {
+  "written": {
+   "file": "written.npz",
+   "train": {
+    "pages": 74,
+    "passes_99": false,
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538,
+     "recall": 1.0,
+     "precision": 0.00538,
+     "ink_share": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837,
+     "recall": 1.0,
+     "precision": 0.13837,
+     "ink_share": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225,
+     "recall": 1.0,
+     "precision": 0.07225,
+     "ink_share": 0.07225
+    },
+    "by_group": {
+     "2013-34": {
+      "pages": 14,
+      "stamp": {
+       "agreement": 0.01645,
+       "iou": 0.01645
+      },
+      "dark": {
+       "agreement": 0.15113,
+       "iou": 0.15113
+      },
+      "rule": {
+       "agreement": 0.08042,
+       "iou": 0.08042
+      }
+     },
+     "2022-34A": {
+      "pages": 14,
+      "stamp": {
+       "agreement": 0.0,
+       "iou": 0.0
+      },
+      "dark": {
+       "agreement": 0.13772,
+       "iou": 0.13772
+      },
+      "rule": {
+       "agreement": 0.05245,
+       "iou": 0.05245
+      }
+     },
+     "2022-34B": {
+      "pages": 8,
+      "stamp": {
+       "agreement": 0.00275,
+       "iou": 0.00275
+      },
+      "dark": {
+       "agreement": 0.17808,
+       "iou": 0.17808
+      },
+      "rule": {
+       "agreement": 0.08812,
+       "iou": 0.08812
+      }
+     },
+     "synthetic": {
+      "pages": 38,
+      "stamp": {
+       "agreement": 0.00388,
+       "iou": 0.00388
+      },
+      "dark": {
+       "agreement": 0.12599,
+       "iou": 0.12599
+      },
+      "rule": {
+       "agreement": 0.07315,
+       "iou": 0.07315
+      }
+     }
+    }
+   },
+   "held": {
+    "pages": 32,
+    "passes_99": false,
+    "stamp": {
+     "agreement": 0.00779,
+     "iou": 0.00779,
+     "recall": 1.0,
+     "precision": 0.00779,
+     "ink_share": 0.00779
+    },
+    "dark": {
+     "agreement": 0.14389,
+     "iou": 0.14389,
+     "recall": 1.0,
+     "precision": 0.14389,
+     "ink_share": 0.14389
+    },
+    "rule": {
+     "agreement": 0.06807,
+     "iou": 0.06807,
+     "recall": 1.0,
+     "precision": 0.06807,
+     "ink_share": 0.06807
+    },
+    "by_group": {
+     "2013-34": {
+      "pages": 8,
+      "stamp": {
+       "agreement": 0.02453,
+       "iou": 0.02453
+      },
+      "dark": {
+       "agreement": 0.19043,
+       "iou": 0.19043
+      },
+      "rule": {
+       "agreement": 0.09019,
+       "iou": 0.09019
+      }
+     },
+     "2022-34A": {
+      "pages": 12,
+      "stamp": {
+       "agreement": 0.0,
+       "iou": 0.0
+      },
+      "dark": {
+       "agreement": 0.12939,
+       "iou": 0.12939
+      },
+      "rule": {
+       "agreement": 0.04361,
+       "iou": 0.04361
+      }
+     },
+     "2022-34B": {
+      "pages": 2,
+      "stamp": {
+       "agreement": 0.00013,
+       "iou": 0.00013
+      },
+      "dark": {
+       "agreement": 0.11982,
+       "iou": 0.11982
+      },
+      "rule": {
+       "agreement": 0.05659,
+       "iou": 0.05659
+      }
+     },
+     "synthetic": {
+      "pages": 10,
+      "stamp": {
+       "agreement": 0.00541,
+       "iou": 0.00541
+      },
+      "dark": {
+       "agreement": 0.12959,
+       "iou": 0.12959
+      },
+      "rule": {
+       "agreement": 0.08136,
+       "iou": 0.08136
+      }
+     }
+    }
+   },
+   "onnx_parity": [
+    {
+     "group": "2022-34A",
+     "pixels": 1158400,
+     "stamp": {
+      "max_abs": 1.7881393432617188e-07,
+      "mask_differs": 0
+     },
+     "dark": {
+      "max_abs": 1.1920928955078125e-07,
+      "mask_differs": 0
+     },
+     "rule": {
+      "max_abs": 1.1920928955078125e-07,
+      "mask_differs": 0
+     }
+    },
+    {
+     "group": "2022-34A",
+     "pixels": 1158400,
+     "stamp": {
+      "max_abs": 1.7881393432617188e-07,
+      "mask_differs": 0
+     },
+     "dark": {
+      "max_abs": 1.1920928955078125e-07,
+      "mask_differs": 0
+     },
+     "rule": {
+      "max_abs": 1.1920928955078125e-07,
+      "mask_differs": 0
+     }
+    },
+    {
+     "group": "synthetic",
+     "pixels": 1180160,
+     "stamp": {
+      "max_abs": 1.7881393432617188e-07,
+      "mask_differs": 0
+     },
+     "dark": {
+      "max_abs": 1.7881393432617188e-07,
+      "mask_differs": 0
+     },
+     "rule": {
+      "max_abs": 1.1920928955078125e-07,
+      "mask_differs": 0
+     }
+    }
+   ]
+  },
+  "hand": {
+   "file": "hand.npz",
+   "train": {
+    "pages": 74,
+    "passes_99": true,
+    "stamp": {
+     "agreement": 0.99704,
+     "iou": 0.58132,
+     "recall": 0.76418,
+     "precision": 0.70841,
+     "ink_share": 0.00538
+    },
+    "dark": {
+     "agreement": 0.99886,
+     "iou": 0.99177,
+     "recall": 0.99601,
+     "precision": 0.99573,
+     "ink_share": 0.13837
+    },
+    "rule": {
+     "agreement": 0.99922,
+     "iou": 0.98923,
+     "recall": 0.99585,
+     "precision": 0.99332,
+     "ink_share": 0.07225
+    },
+    "by_group": {
+     "2013-34": {
+      "pages": 14,
+      "stamp": {
+       "agreement": 0.99805,
+       "iou": 0.8842
+      },
+      "dark": {
+       "agreement": 0.99939,
+       "iou": 0.99595
+      },
+      "rule": {
+       "agreement": 0.99958,
+       "iou": 0.99486
+      }
+     },
+     "2022-34A": {
+      "pages": 14,
+      "stamp": {
+       "agreement": 1.0,
+       "iou": 0.0
+      },
+      "dark": {
+       "agreement": 0.99798,
+       "iou": 0.98541
+      },
+      "rule": {
+       "agreement": 0.99888,
+       "iou": 0.97883
+      }
+     },
+     "2022-34B": {
+      "pages": 8,
+      "stamp": {
+       "agreement": 0.99567,
+       "iou": 0.29941
+      },
+      "dark": {
+       "agreement": 0.99796,
+       "iou": 0.98864
+      },
+      "rule": {
+       "agreement": 0.99869,
+       "iou": 0.98532
+      }
+     },
+     "synthetic": {
+      "pages": 38,
+      "stamp": {
+       "agreement": 0.99591,
+       "iou": 0.34819
+      },
+      "dark": {
+       "agreement": 0.99916,
+       "iou": 0.99338
+      },
+      "rule": {
+       "agreement": 0.99931,
+       "iou": 0.99066
+      }
+     }
+    }
+   },
+   "held": {
+    "pages": 32,
+    "passes_99": true,
+    "stamp": {
+     "agreement": 0.99798,
+     "iou": 0.76977,
+     "recall": 0.86723,
+     "precision": 0.8726,
+     "ink_share": 0.00779
+    },
+    "dark": {
+     "agreement": 0.99866,
+     "iou": 0.99073,
+     "recall": 0.99537,
+     "precision": 0.99532,
+     "ink_share": 0.14389
+    },
+    "rule": {
+     "agreement": 0.9993,
+     "iou": 0.98978,
+     "recall": 0.99598,
+     "precision": 0.99376,
+     "ink_share": 0.06807
+    },
+    "by_group": {
+     "2013-34": {
+      "pages": 8,
+      "stamp": {
+       "agreement": 0.99795,
+       "iou": 0.91877
+      },
+      "dark": {
+       "agreement": 0.99916,
+       "iou": 0.99558
+      },
+      "rule": {
+       "agreement": 0.99947,
+       "iou": 0.99413
+      }
+     },
+     "2022-34A": {
+      "pages": 12,
+      "stamp": {
+       "agreement": 1.0,
+       "iou": 1.0
+      },
+      "dark": {
+       "agreement": 0.99796,
+       "iou": 0.98435
+      },
+      "rule": {
+       "agreement": 0.99908,
+       "iou": 0.97917
+      }
+     },
+     "2022-34B": {
+      "pages": 2,
+      "stamp": {
+       "agreement": 0.99298,
+       "iou": 0.0137
+      },
+      "dark": {
+       "agreement": 0.99765,
+       "iou": 0.98064
+      },
+      "rule": {
+       "agreement": 0.99912,
+       "iou": 0.98455
+      }
+     },
+     "synthetic": {
+      "pages": 10,
+      "stamp": {
+       "agreement": 0.99664,
+       "iou": 0.49088
+      },
+      "dark": {
+       "agreement": 0.99928,
+       "iou": 0.99443
+      },
+      "rule": {
+       "agreement": 0.99946,
+       "iou": 0.99337
+      }
+     }
+    }
+   },
+   "onnx_parity": [
+    {
+     "group": "2022-34A",
+     "pixels": 1158400,
+     "stamp": {
+      "max_abs": 8.931237971410155e-09,
+      "mask_differs": 0
+     },
+     "dark": {
+      "max_abs": 0.0013274550437927246,
+      "mask_differs": 2
+     },
+     "rule": {
+      "max_abs": 4.307832568883896e-06,
+      "mask_differs": 0
+     }
+    },
+    {
+     "group": "2022-34A",
+     "pixels": 1158400,
+     "stamp": {
+      "max_abs": 3.1483068596571684e-08,
+      "mask_differs": 0
+     },
+     "dark": {
+      "max_abs": 0.0013307929039001465,
+      "mask_differs": 0
+     },
+     "rule": {
+      "max_abs": 0.04954099655151367,
+      "mask_differs": 0
+     }
+    },
+    {
+     "group": "synthetic",
+     "pixels": 1180160,
+     "stamp": {
+      "max_abs": 0.000540316104888916,
+      "mask_differs": 0
+     },
+     "dark": {
+      "max_abs": 0.0022261738777160645,
+      "mask_differs": 0
+     },
+     "rule": {
+      "max_abs": 0.03299623727798462,
+      "mask_differs": 0
+     }
+    }
+   ]
+  },
+  "trained": {
+   "file": "trained.npz",
+   "train": {
+    "pages": 74,
+    "passes_99": false,
+    "stamp": {
+     "agreement": 0.99462,
+     "iou": 0.0,
+     "recall": 0.0,
+     "precision": 1.0,
+     "ink_share": 0.00538
+    },
+    "dark": {
+     "agreement": 0.97765,
+     "iou": 0.85442,
+     "recall": 0.9482,
+     "precision": 0.89626,
+     "ink_share": 0.13837
+    },
+    "rule": {
+     "agreement": 0.98434,
+     "iou": 0.80503,
+     "recall": 0.89493,
+     "precision": 0.88906,
+     "ink_share": 0.07225
+    },
+    "by_group": {
+     "2013-34": {
+      "pages": 14,
+      "stamp": {
+       "agreement": 0.98355,
+       "iou": 0.0
+      },
+      "dark": {
+       "agreement": 0.97657,
+       "iou": 0.86081
+      },
+      "rule": {
+       "agreement": 0.98458,
+       "iou": 0.82873
+      }
+     },
+     "2022-34A": {
+      "pages": 14,
+      "stamp": {
+       "agreement": 1.0,
+       "iou": 1.0
+      },
+      "dark": {
+       "agreement": 0.97461,
+       "iou": 0.83016
+      },
+      "rule": {
+       "agreement": 0.98459,
+       "iou": 0.73297
+      }
+     },
+     "2022-34B": {
+      "pages": 8,
+      "stamp": {
+       "agreement": 0.99725,
+       "iou": 0.0
+      },
+      "dark": {
+       "agreement": 0.95711,
+       "iou": 0.79539
+      },
+      "rule": {
+       "agreement": 0.97371,
+       "iou": 0.75222
+      }
+     },
+     "synthetic": {
+      "pages": 38,
+      "stamp": {
+       "agreement": 0.99612,
+       "iou": 0.0
+      },
+      "dark": {
+       "agreement": 0.98328,
+       "iou": 0.87916
+      },
+      "rule": {
+       "agreement": 0.98633,
+       "iou": 0.82837
+      }
+     }
+    }
+   },
+   "held": {
+    "pages": 32,
+    "passes_99": false,
+    "stamp": {
+     "agreement": 0.99221,
+     "iou": 0.0,
+     "recall": 0.0,
+     "precision": 1.0,
+     "ink_share": 0.00779
+    },
+    "dark": {
+     "agreement": 0.97448,
+     "iou": 0.84038,
+     "recall": 0.93367,
+     "precision": 0.89374,
+     "ink_share": 0.14389
+    },
+    "rule": {
+     "agreement": 0.98386,
+     "iou": 0.78936,
+     "recall": 0.88862,
+     "precision": 0.87603,
+     "ink_share": 0.06807
+    },
+    "by_group": {
+     "2013-34": {
+      "pages": 8,
+      "stamp": {
+       "agreement": 0.97547,
+       "iou": 0.0
+      },
+      "dark": {
+       "agreement": 0.96503,
+       "iou": 0.83832
+      },
+      "rule": {
+       "agreement": 0.97688,
+       "iou": 0.77923
+      }
+     },
+     "2022-34A": {
+      "pages": 12,
+      "stamp": {
+       "agreement": 1.0,
+       "iou": 1.0
+      },
+      "dark": {
+       "agreement": 0.97488,
+       "iou": 0.82035
+      },
+      "rule": {
+       "agreement": 0.98676,
+       "iou": 0.7254
+      }
+     },
+     "2022-34B": {
+      "pages": 2,
+      "stamp": {
+       "agreement": 0.99987,
+       "iou": 0.0
+      },
+      "dark": {
+       "agreement": 0.95732,
+       "iou": 0.71415
+      },
+      "rule": {
+       "agreement": 0.97744,
+       "iou": 0.69898
+      }
+     },
+     "synthetic": {
+      "pages": 10,
+      "stamp": {
+       "agreement": 0.99459,
+       "iou": 0.0
+      },
+      "dark": {
+       "agreement": 0.9845,
+       "iou": 0.89071
+      },
+      "rule": {
+       "agreement": 0.98709,
+       "iou": 0.85328
+      }
+     }
+    }
+   },
+   "onnx_parity": [
+    {
+     "group": "2022-34A",
+     "pixels": 1158400,
+     "stamp": {
+      "max_abs": 1.2057483900207444e-08,
+      "mask_differs": 0
+     },
+     "dark": {
+      "max_abs": 1.0192394256591797e-05,
+      "mask_differs": 0
+     },
+     "rule": {
+      "max_abs": 2.0802021026611328e-05,
+      "mask_differs": 0
+     }
+    },
+    {
+     "group": "2022-34A",
+     "pixels": 1158400,
+     "stamp": {
+      "max_abs": 1.2057483900207444e-08,
+      "mask_differs": 0
+     },
+     "dark": {
+      "max_abs": 8.881092071533203e-06,
+      "mask_differs": 0
+     },
+     "rule": {
+      "max_abs": 2.9206275939941406e-05,
+      "mask_differs": 0
+     }
+    },
+    {
+     "group": "synthetic",
+     "pixels": 1180160,
+     "stamp": {
+      "max_abs": 1.2057483900207444e-08,
+      "mask_differs": 0
+     },
+     "dark": {
+      "max_abs": 3.3974647521972656e-06,
+      "mask_differs": 0
+     },
+     "rule": {
+      "max_abs": 1.3232231140136719e-05,
+      "mask_differs": 0
+     }
+    }
+   ]
+  }
+ }
+}

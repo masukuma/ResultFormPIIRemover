@@ -1,0 +1,670 @@
+{
+ "schema": "rfpii/nn-wsp-session/1",
+ "job": "write M3's rule stem from the pipeline's source (NEURAL.md \u00a75, write)",
+ "model": "Qwen3.5-4B Q4_K_M (GGUF, 2.74 GB), llama.cpp via llama-cpp-python 0.3.36, 4 CPU cores",
+ "pages": {
+  "training": 74,
+  "held_out": 32
+ },
+ "start": "every weight 0",
+ "session_1": {
+  "started": "Mon Nov  9 16:27:09 UTC 2026",
+  "stopped_after_seconds": 1270,
+  "turns": 3,
+  "tries_used": 1,
+  "think_budget": 900,
+  "answer_budget": 2000,
+  "why_stopped": "its three replies were the same 60-line cell, which re-created W from nothing each time"
+ },
+ "session_2": {
+  "started": "Mon Nov  9 16:49:18 UTC 2026",
+  "think_budget": 400,
+  "answer_budget": 2000,
+  "end": "done",
+  "turns": 126,
+  "seconds": 15104.7,
+  "tries_used": 39,
+  "tries_total": 50,
+  "probes": 0,
+  "answer": "submitted",
+  "reasons": "All weights are 0 except for grayscale conversion [0.299, 0.587, 0.114], Gaussian blur [0.09375, 0.1875, 0.09375], mean averaging [0.04], adaptive threshold [-0.001, 0.001] with bias -12, 3x3 morphological kernels [0.5, 0.5, 0.5; 0.5, 1, 0.5; 0.5, 0.5, 0.5], rule detection [1, 1] with bias 0, Lab conversion [0.4125, 0.3576, 0.1804], paper color [0.032], chroma tests [0.5], stamp_raw [1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0] with bias -1. Best test: stamp 0.54% IoU 0.005, dark 13.84% IoU 0.138, rule 7.22% IoU 0.072. No further optimization possible without more test runs.",
+  "weights_changed_from_start": 540,
+  "prompt_tokens": 56355,
+  "gen_tokens": 60772,
+  "prompt_tok_per_s": 51.6,
+  "gen_tok_per_s": 4.88,
+  "context_renewals": 2,
+  "isolation": {
+   "netns": true,
+   "nobody": true
+  },
+  "kernel_restarts": 0,
+  "tries": [
+   {
+    "try": 1,
+    "note": "Initial test",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 2,
+    "note": "Test 2",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 3,
+    "note": "Stamp test",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 4,
+    "note": "Stamp test 2",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 5,
+    "note": "Stamp test 3",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 6,
+    "note": "Stamp test 4",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 7,
+    "note": "Stamp test 5",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 8,
+    "note": "Stamp test 6",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 9,
+    "note": "Stamp test 7",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 10,
+    "note": "Stamp test 8",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 11,
+    "note": "Stamp test 9",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 12,
+    "note": "Stamp test 10",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 13,
+    "note": "Stamp test 11",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 14,
+    "note": "Stamp test 12",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 15,
+    "note": "Stamp test 13",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 16,
+    "note": "Stamp test 14",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 17,
+    "note": "Stamp test 15",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 18,
+    "note": "Stamp test 16",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 19,
+    "note": "Stamp test 17",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 20,
+    "note": "Stamp test 18",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 21,
+    "note": "Stamp test 19",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 22,
+    "note": "Stamp test 20",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 23,
+    "note": "Stamp test 21",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 24,
+    "note": "Stamp test 22",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 25,
+    "note": "Stamp test 23",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 26,
+    "note": "Stamp test 24",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 27,
+    "note": "Stamp test 25",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 28,
+    "note": "Stamp test 26",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 29,
+    "note": "Stamp test 27",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 30,
+    "note": "Stamp test 28",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 31,
+    "note": "Stamp test 29",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 32,
+    "note": "Stamp test 30",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 33,
+    "note": "Stamp test 31",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 34,
+    "note": "Stamp test 32",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 35,
+    "note": "Stamp test 33",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 36,
+    "note": "Check current weights",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 37,
+    "note": "Check current weights",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 38,
+    "note": "Check current weights",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   },
+   {
+    "try": 39,
+    "note": "Check current weights",
+    "stamp": {
+     "agreement": 0.00538,
+     "iou": 0.00538
+    },
+    "dark": {
+     "agreement": 0.13837,
+     "iou": 0.13837
+    },
+    "rule": {
+     "agreement": 0.07225,
+     "iou": 0.07225
+    }
+   }
+  ]
+ },
+ "answer_file": "written.npz"
+}

@@ -15,7 +15,10 @@ layer's weight is ``theta * out_scale / (in_scale * taps)`` and its bias
 ``theta_b * out_scale``, with 255 for channels of grey or colour levels, 1
 for the others, and an output scale of 10 logits for a sigmoid layer. The
 architecture and what it can compute are unchanged. ``theta`` starts from
-PyTorch's default convolution initialisation; biases start at zero.
+PyTorch's default convolution initialisation, then each sigmoid and relu
+layer is centred and scaled on a batch of crops (``data_init``): pixels sit
+near 200 of 255, and from a plain initialisation every sigmoid starts
+saturated and training stalls at the base rate.
 
 ``python3 -m rfpii_nn.stem_train --ink A --ink B --out nn/stems/trained.npz``
 """
@@ -91,6 +94,36 @@ def scaled_module(theta):
     return Scaled()
 
 
+def data_init(model, x, target_std=2.0):
+    """Data-dependent initialisation (as in weight normalisation): layer by
+    layer, on a batch, set each sigmoid or relu unit's bias so its
+    pre-activation starts centred and its weights so it starts with a
+    spread of ``target_std`` logits (relu: its input's spread), so no unit
+    starts saturated; pixels sit near 200 of 255, where random weights
+    would saturate every sigmoid and leave no gradient."""
+    import torch
+
+    with torch.no_grad():
+        for l in stem.LAYERS:
+            if l.act == "none":
+                continue
+            o = model.run(x, keep=list(l.inputs), logits=False)
+            acts = {**o}
+            inp = torch.stack([acts[c] if c not in stem.INPUTS else x[:, stem.INPUTS.index(c)] for c in l.inputs], 1)
+            p = model.params()
+            kh, kw = l.kernel
+            import torch.nn.functional as F
+            pad = F.pad(inp, (kw // 2, kw // 2, kh // 2, kh // 2), mode="replicate") if kh > 1 or kw > 1 else inp
+            z = F.conv2d(pad, p[l.name + ".w"], None, groups=len(l.inputs) if l.depthwise else 1)
+            mean = z.mean(dim=(0, 2, 3))
+            std = z.std(dim=(0, 2, 3)).clamp_min(1e-6)
+            gain = (target_std if l.act == "sigmoid" else float(inp.std())) / std
+            ws, bs = model.ws[l.name], model.bs[l.name]
+            model.theta[l.name + "__w"].mul_(gain.view(-1, 1, 1, 1))
+            model.theta[l.name + "__b"].copy_(-(mean * gain) / bs)
+    return model
+
+
 def load_pages(sets, side):
     imgs, masks = [], []
     for st, line in inkset.pages_of(sets, side):
@@ -120,10 +153,12 @@ def train(sets, steps, seed=0, size=224, margin=48, bsz=8, lr=0.03, log=None, mi
     imgs, masks = load_pages(sets, "train")
     size = min(size, *(m.shape[0] for m in masks), *(m.shape[1] for m in masks))
     margin = min(margin, size // 4)
+    rng = np.random.default_rng(seed)
     model = scaled_module(init_theta(seed))
+    x0, _ = batch(imgs, masks, rng, 8, size)
+    data_init(model, torch.from_numpy(x0))
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=lr, total_steps=steps, pct_start=0.05)
-    rng = np.random.default_rng(seed)
     t0 = time.time()
     hist = []
     step = 0
