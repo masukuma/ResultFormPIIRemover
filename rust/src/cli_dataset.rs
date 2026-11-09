@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
-use rfpii::dataset::{check, compare, synth, teacher};
+use rfpii::dataset::{check, compare, ink, synth, teacher};
 
 #[derive(Args)]
 pub struct DatasetArgs {
@@ -19,6 +19,9 @@ pub enum DatasetCmd {
     Synth(SynthArgs),
     /// The teacher's labels, from published manifests and their originals
     Build(BuildArgs),
+    /// The pipeline's own ink masks (dark ink, rules, stamp ink) of any
+    /// pages, for scoring a network against the rules (M3's rule stem)
+    Ink(InkArgs),
     /// Check a dataset: hashes, schemas, boxes inside images, masks' sizes
     Check {
         dataset: PathBuf,
@@ -110,6 +113,33 @@ pub struct BuildArgs {
     workers: usize,
 }
 
+#[derive(Args)]
+pub struct InkArgs {
+    /// Ink set folder to write (new, or with --append an existing one)
+    #[arg(long)]
+    out: PathBuf,
+    /// Pages are made at most this many px on the long side
+    #[arg(long, default_value_t = 1280)]
+    max_side: i32,
+    /// JSON lines, one page each: {"source", "page", "key", "group"}
+    #[arg(long)]
+    list: Option<PathBuf>,
+    /// Files, folders or zips: every page of each (or the first --pages)
+    sources: Vec<String>,
+    #[arg(long)]
+    pages: Option<usize>,
+    /// Group recorded for the pages of `sources`
+    #[arg(long, default_value = "")]
+    group: String,
+    /// The pages hold personal data (real forms): recorded in inkset.json
+    #[arg(long)]
+    personal_data: bool,
+    #[arg(long)]
+    append: bool,
+    #[arg(long, default_value_t = workers())]
+    workers: usize,
+}
+
 pub fn run(a: DatasetArgs) -> Result<i32> {
     match a.cmd {
         DatasetCmd::Synth(s) => {
@@ -151,6 +181,29 @@ pub fn run(a: DatasetArgs) -> Result<i32> {
                 eprintln!("warning: {} source(s) not found under --originals", meta["parameters"]["sources_missing"]);
             }
             Ok(if r["failed"].as_u64().unwrap_or(0) > 0 { 2 } else { 0 })
+        }
+        DatasetCmd::Ink(i) => {
+            let mut jobs = match &i.list {
+                Some(l) => ink::read_list(l)?,
+                None => Vec::new(),
+            };
+            jobs.extend(ink::jobs_for(&i.sources, i.pages, &i.group)?);
+            if jobs.is_empty() {
+                anyhow::bail!("no pages: give sources or --list");
+            }
+            let o = ink::InkOptions {
+                out: i.out.clone(),
+                max_side: i.max_side,
+                append: i.append,
+                personal_data: i.personal_data,
+                workers: i.workers,
+            };
+            let (meta, failed) = ink::run(&jobs, &o)?;
+            println!("{}: {} pages written, {} failed, {} in the set; {}s", i.out.display(), meta["this_run"]["pages"], failed.len(), meta["pages"], meta["this_run"]["seconds"]);
+            for f in &failed {
+                eprintln!("FAILED  {}", f);
+            }
+            Ok(if failed.is_empty() { 0 } else { 2 })
         }
         DatasetCmd::Check { dataset } => {
             let (problems, n) = check::check(&dataset)?;

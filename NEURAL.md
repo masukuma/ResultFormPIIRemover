@@ -5,8 +5,8 @@ does the redaction, and how that network is brought, round by round, to
 give the same results the current pipeline gives, then better ones: by
 weight-space programming (a local language model reading and writing the
 network's weights directly, §5) where it works, and by training where it
-doesn't. This is a design; its first milestone, the data, is built
-(§12, "Where it stands").
+doesn't. This is a design; its first two milestones, the data and the
+weight-space tools with their first test, are built (§12, "Where it stands").
 
 ## 0. Why, and what "the same results" means
 
@@ -488,7 +488,9 @@ templates stop being needed for new printings.
 Each milestone ends with its round's scores on the gold set, written up
 in this document as DESIGN.md does for the pipeline.
 
-## 12. Where it stands (milestone 1)
+## 12. Where it stands
+
+### Milestone 1: the data
 
 Built (9 November 2026), as nn/README.md describes:
 
@@ -580,12 +582,188 @@ in ten. `build` labels 5.6 pages a second, the rules' ink mask included;
 `rfpii redact` itself ran at 0.34 pages a second.
 
 **What remains for milestone 1**: the teacher datasets and the reference
-set need the real corpus (the 215 Forms 34A of 2022, the 2013 and 2017
-forms and the pages they held), which is not on this machine: run
-`rfpii dataset build` over each published run, then `gold.py plan` and
-`make-synthetic` (nn/README.md). No person labels the gold set (§6.1).
+set, from the real corpus. It is on this machine (this section said
+otherwise until milestone 2), outside the repository: the 2013 originals
+and their latest published run with its manifests, the 2022 Forms 34B as
+published with their originals, a run of 2022 Forms 34A, and the forms
+downloaded from the owner's Dropbox archive (the Forms 34A of 2022, a zip
+per county) and the IEBC portal, each file in the provenance file beside
+them (§3). Run `rfpii dataset build` over each published run, then
+`gold.py plan` and `make-synthetic` (nn/README.md). No person labels the gold set (§6.1).
 Layout C pages published before the template's fix (above) are relabelled
 by running them again.
+
+### Milestone 2: the weight-space tools and the rule stem
+
+Built (9 November 2026), as nn/README.md describes:
+
+- **The local language model**: Qwen3.5-4B (Qwen, February 2026), the
+  newest Qwen of about 4 B parameters (Qwen 3.6 and 3.8 come at 27 B and
+  up, which 15 GB can't hold), quantised to Q4_K_M as GGUF (Unsloth's
+  file): 2.74 GB, kept outside the repository and checked against Hugging
+  Face's SHA-256. It runs on llama.cpp, through llama-cpp-python 0.3.36
+  built for this CPU. On the 4 cores it loads in 6 s, reads a prompt at 86
+  tokens a second and writes 6.6 to 7.0 tokens a second with a short
+  context (4.9 on average over a session, as the context grows); with a
+  65,536-token context it holds 9 GB. Qwen3.5-9B at the same quantisation
+  (5.7 GB) did not fit the disk left and would write about half as fast.
+  Hugging Face now serves model files from us.aws.cdn.hf.co, which the
+  environment did not allow; it was added.
+- **The tools** (`nn/rfpii_nn/`): the printer, probe, try (50 a session)
+  and diff of §5 (`wsp.py`); the sandbox the model's code runs in
+  (`sandbox.py`: its own folder, no network namespace, the user `nobody`,
+  who can't read the pages' folders, a clean environment, limits on
+  memory, files and time, and an audit hook against sockets, processes,
+  native libraries and files outside its folder); and the session driver
+  (`session.py`), which logs every prompt, reply, cell, tool call and
+  score. Probes return numbers (quantiles, counts, values at random pixels
+  without their positions), never images (§10).
+- **The rule stem** (`stem.py`): 684 weights in 20 layers, as §2 has it:
+  grey (1x1), the 3x3 Gaussian, the 25x25 mean (1x25 then 25x1), the
+  threshold (1x1, sigmoid), the 2x2 opening (two 3x3 layers); the rules'
+  openings by a 32 px line each way (1x33 and 33x1, twice each) and their
+  union; Lab by a 1x1 layer of 16 units and a 1x1 layer of 3; the paper's
+  colour by 31 px each way (depthwise 1x31 and 31x1) in place of the
+  median; 16 tests on the difference from the paper (1x1), their
+  combination (1x1) and the 2x2 opening. A numpy reference, PyTorch and
+  ONNX (opset 17, edge padding): ONNX Runtime gives the reference's masks
+  on the pages checked (for the hand-written stem, whose thresholds are
+  steep, they differ on 2 of 3.5 million pixels, where a value sits on the
+  threshold; the others agree to 3e-5 and on every pixel).
+- **The pipeline's masks** (`rfpii dataset ink`): each page at 1,280 px,
+  stored as PNG, with the pipeline's own `dark_ink`, `color_ink` and
+  `rule_lines` (newly a function of its own, out of `ink_mask`) computed
+  on those pixels. A Python replica with OpenCV gives the same masks (IoU
+  1.000), so the rules are understood exactly.
+- **The pages**: 106, at 1,280 px: 48 synthetic (`rfpii dataset synth`,
+  seeds 7000–7047) and 58 real (22 of the 2013 Forms 34, scanned; 10 of
+  the 2022 Forms 34B; 26 of the 2022 Forms 34A, KIEMS), from 40
+  constituencies; split by constituency (synthetic pages by seed) into 74
+  training pages and 32 held out. The real pages are personal data and
+  stay outside the repository.
+
+**The test** (§11.2): every mask at 99% pixel agreement with the
+pipeline's on the training pages. Agreement, then IoU of the ink class:
+
+| Agreement / IoU | written by the local model | written by hand | trained |
+|---|---|---|---|
+| *training pages (74)* | | | |
+| stamp ink (0.54% of pixels) | 0.54% / 0.005 | 99.70% / 0.58 | 99.46% / 0.00 |
+| dark ink (13.8%) | 13.8% / 0.14 | 99.89% / 0.992 | 97.76% / 0.85 |
+| rules (7.2%) | 7.2% / 0.07 | 99.92% / 0.989 | 98.43% / 0.81 |
+| every mask at 99% | no | **yes** | no |
+| *held-out pages (32)* | | | |
+| stamp ink (0.78%) | 0.78% / 0.008 | 99.80% / 0.77 | 99.22% / 0.00 |
+| dark ink (14.4%) | 14.4% / 0.14 | 99.87% / 0.991 | 97.45% / 0.84 |
+| rules (6.8%) | 6.8% / 0.07 | 99.93% / 0.990 | 98.39% / 0.79 |
+| every mask at 99% | no | **yes** | no |
+
+Written by hand: from the rules and OpenCV's definitions, every weight
+(`stem_hand.py`); the colour layer is fitted to OpenCV's Lab formula on
+colours, not pages. Trained: 8,000 steps of Adam on crops of the training
+pages, 39 minutes on the 4 cores, from a data-centred initialisation (two
+runs from a plain one stalled at the base rate); it never learned stamp
+ink, a half of one per cent of pixels, and marks none. By group, held out,
+written by hand: dark-ink IoU 0.98 to 0.996 and rules 0.98 to 0.994 in
+every group (2013 scans, 2022 Forms 34A and 34B, synthetic); trained: dark
+0.71 to 0.89, rules 0.70 to 0.85. The scores are in
+`nn/stems/scores.json`.
+
+**What the IoU says.** Agreement of 99% is reached by a stem that marks no
+stamp ink at all (the pipeline marks 0.5% of pixels as stamp ink), so the
+test only means something for dark ink (14% of pixels) and rules (7%).
+There, written by hand from the rules, the stem reproduces the pipeline:
+IoU 0.99, training and held out, every group of pages. Stamp ink is
+different: IoU 0.58 on the training pages and 0.77 held out, by hand, and
+the cause is the architecture, not the weights: with exact Lab and a 31x31
+mean in place of the median, the IoU is 0.59 on the training pages
+(measured with OpenCV); the median keeps the paper's colour inside a
+stamp's dense ink, where a mean takes on the ink's. A coarse median (7x7
+over the page at a quarter size) reaches 0.86, but a median is not a
+convolution. By group, stamp IoU is 0.88 to 0.92 on the 2013 scans (strong
+colour), 0.30 to 0.49 on synthetic pages and the 2022 Forms 34B; the 2022
+Forms 34A are grey scans with no colour ink at all (the pipeline's own
+stamp-ink mask is empty there), so they say nothing about it. For M3 the
+stamp channel is a hint to the U-Net, which sees the image too, not a copy
+of the rule.
+
+**The session.** Two sessions ran, each with the 74 training pages, a
+budget of 50 test runs and a blank stem (every weight 0) to write. In the
+first, the model's thinking restated the architecture, and its three
+replies were the same 60-line cell, which re-created `W` from nothing each
+time; it was stopped after 20 minutes. The driver then gained what agent
+loops usually need with a small model: after each cell, the layers of `W`
+still all zero; a cell that repeats the last one is not run again; a
+400-token thinking budget; the complete lines of a reply cut off at its
+token limit are run. The second session ran **4 h 12 min: 126 turns, 39 of
+the 50 test runs, no probe**. It wrote the layers in order, a few a reply.
+Five of the 20 came out as a person writes them: grey, the 25x25 mean's
+two passes and the paper's two passes. The rest did not: the Gaussian sums
+to 1.5, the threshold has a gain of 0.001 a grey level, and every erosion
+and dilation is a kernel of positive weights with no bias, so each output
+is above 0.5 on every pixel. Its first test run, at turn 22, showed
+exactly that (each output's agreement equal to the pipeline's ink share);
+it never probed, and spent 38 more runs adjusting the colour layers behind
+outputs that could not change, every one scoring the same, before
+submitting ("no further optimization possible without more test runs") as
+its time ran out. A sixth of its cells failed on shapes or indices; seven
+times `W` was refused as not a stem; seven cells repeated the last and
+weren't run. It wrote 60,772 tokens at 4.9 a second on average (6.7 at the
+start, less as the context grew to 52,000 tokens; it was renewed twice).
+At that pace a session that used all 50 runs would take about 5 h 30 min.
+Every prompt, reply, cell and score is in the session's log, outside the
+repository with the pages; `nn/stems/session.json` keeps its summary.
+
+**Which way it went.** The written stem misses the test by far, so, as
+§11.2 says, **the stem is trained**. But the trained stem misses the test
+too (dark ink 97.8%, rules 98.4%, no stamp ink at all), while the stem
+written by hand from the same source passes it, training pages and held
+out, with IoU 0.99 on dark ink and rules. So the test is passable and the
+rules can be written into these weights; what failed is the writer (the
+reports in §5 used frontier models, and the one local model there, of 27
+B, did less well than they did), and 40 minutes of training on this CPU is
+not enough to rediscover thresholds the source states. Proposed, for the
+owner to decide: M3's stem starts from the hand-written weights (written
+from the source alone, no page or trained weight shown to anyone) and is
+trained with the U-Net from there, as §0 has the programmable parts start
+from the pipeline's rules.
+
+**What it means for repair (milestone 4).** Repair asks more of the model
+than writing did (read weights, find the fault, change few), and this
+model could not keep a plan of five layers, misread its own arrays, and
+drew no conclusion from 39 identical scores. So, for milestone 4: measure
+repair first on faults planted in the hand-written stem (a threshold
+moved, an input silenced, a kernel shifted), whose answers are known,
+before real ones; use a stronger local model where the machine allows it
+(here the next step is Qwen3.5-9B at 5.7 GB, if the disk has room; the 27
+B reference needs a 24 GB GPU or about 20 GB of memory); keep the driver's
+status line and repeat guard, which turned a copying loop into steady
+work; tell the model, after two test runs with the same score, what its
+outputs mark (the share above 0.5), since it never asked; and stop a
+session after several unchanged runs rather than at its budget. The test
+runs were never what ran out: turns did. §5's tally of whether it earns
+its place starts at nought for one.
+
+**Two things found in the pipeline.**
+
+- **The ink masks sit a pixel off the ink.** OpenCV opens with an even
+  kernel by eroding and dilating with the same anchor, so the result moves
+  a pixel down and to the right: `dark_ink`'s and `color_ink`'s 2x2
+  openings put each mask one pixel lower and to the right of the ink it
+  marks (checked: a square at rows 2–4, columns 3–8 comes out at rows 3–5,
+  columns 4–9), `ink_mask`'s 2x2 opening does the same, and an opening by
+  an even line (`rule_lines`, `own_rule`'s 150 px) moves it a pixel along
+  the line. At 8x8 blocks this rarely matters, and the leak check rereads
+  with the same rule; the stamp finder's rings are fitted on these maps,
+  off by a pixel at their working scale. Opening with an odd kernel, or
+  dilating with the kernel reflected, would centre them, but every
+  manifest's masks would change, so it is left for the owner to decide.
+- **Stamp ink on the 2022 Forms 34A is never found by colour**: the KIEMS
+  scans are grey (the largest colour difference on any of the 26 pages is
+  5 levels), so `color_ink` finds nothing and the stamp finder works from
+  dark ink alone there. Not a bug, but the stamp search's colour cue is
+  absent for these forms (KIEMS scans, from the Dropbox archive and the
+  portal alike).
 
 ## 13. Open decisions
 

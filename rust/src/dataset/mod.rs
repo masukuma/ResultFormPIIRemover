@@ -13,12 +13,14 @@
 //!
 //! `rfpii dataset synth` writes synthetic forms with exact labels (`synth`),
 //! `rfpii dataset build` the teacher's labels from published manifests
-//! (`teacher`), `check` verifies a dataset and `stats` counts it.
+//! (`teacher`), `check` verifies a dataset and `stats` counts it; `ink`
+//! writes the pipeline's own ink masks of any pages (an ink set).
 
 pub mod check;
 pub mod compare;
 pub mod draw;
 pub mod glyphs;
+pub mod ink;
 pub mod layout;
 pub mod look;
 pub mod redacted;

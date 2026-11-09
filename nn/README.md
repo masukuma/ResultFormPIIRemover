@@ -2,8 +2,11 @@
 
 The data side of NEURAL.md, milestone 1: datasets of labelled pages for
 training and measuring the local networks, a gold set they are measured
-on and never trained on, and a read-only viewer to look at both. Training
-recipes come in later milestones.
+on and never trained on, and a read-only viewer to look at both. And
+milestone 2: M3's rule stem, the weight-space programming tools (printer,
+probe, try, diff, a sandbox and a session driver for a local language
+model), and the stem trained by gradient descent as a baseline
+([below](#milestone-2-the-rule-stem-and-weight-space-programming)).
 
 What is here:
 
@@ -15,10 +18,21 @@ What is here:
 | `rfpii_nn/dataset.py` | read a dataset: index, labels, images, masks, splits |
 | `rfpii_nn/gold.py` | plan the gold set; the exclusion every training reader must use |
 | `rfpii_nn/view.py` | the local, read-only viewer |
-| `tests/` | `python3 -m unittest discover -s nn/tests -t nn` (from the repository root) |
+| `rfpii dataset ink` | the pipeline's own ink masks (dark ink, rules, stamp ink) of any pages: an ink set |
+| `rfpii_nn/stem.py` | M3's rule stem: the architecture, the numpy reference, PyTorch, ONNX |
+| `rfpii_nn/inkset.py` | read an ink set; score a stem against it (agreement and IoU) |
+| `rfpii_nn/wsp.py` | the weight-space tools: print, probe, try (with its budget), diff; `score`, `export` |
+| `rfpii_nn/sandbox.py`, `sandbox_kernel.py` | the isolated Python kernel the language model's code runs in |
+| `rfpii_nn/session.py` | a weight-space session with the local language model (or a stub) |
+| `rfpii_nn/stem_hand.py`, `stem_train.py` | the stem written by hand from the rules; trained by gradient descent |
+| `stems/` | the three stems' weights (`written.npz` by the local model, `hand.npz`, `trained.npz`; 8–11 kB each), their scores (`scores.json`) and the session's summary (`session.json`) |
+| `tests/` | `python3 -m pytest -q` (in `nn/`); or `python3 -m unittest discover -s nn/tests -t nn` from the root |
 
-Python: the standard library, numpy and Pillow; nothing else, and nothing
-fetched from the network.
+Python, milestone 1: the standard library, numpy and Pillow; nothing else,
+and nothing fetched from the network. Milestone 2 adds PyTorch (CPU),
+`onnx` and `onnxruntime` (for the stem; the tests that need them skip
+without them) and `llama-cpp-python` (for a session with the local model;
+the tests use a stub).
 
 ## Quick start
 
@@ -275,6 +289,143 @@ refused), answers only requests addressed to it (Host, and Origin when
 present), only GET and HEAD, sends `Cache-Control: no-store` and a
 Content Security Policy that allows nothing but its own files, and loads
 nothing from anywhere else.
+
+## Milestone 2: the rule stem and weight-space programming
+
+NEURAL.md §5 and §11.2. M3's **rule stem** (`rfpii_nn/stem.py`): 684
+weights in 20 small convolutions that approximate, from the colour page,
+the pipeline's three ink rules: stamp ink (`stamps::color_ink`), dark ink
+(`stamps::dark_ink`) and long thin rules (`masking::rule_lines` over the
+dark ink). The architecture is fixed; its weights are written three ways
+and scored the same way: by a local language model in a weight-space
+session, by hand from the rules, and by gradient descent.
+
+### The pipeline's masks: ink sets
+
+```sh
+B=rust/target/release/rfpii
+# every page of some sources, or a list of chosen pages (JSON lines: source, page, key, group)
+$B dataset ink --out nn/data/ink-synth nn/data/synth/pages --max-side 1280
+$B dataset ink --out nn/data/ink-real --list pages.jsonl --max-side 1280 --personal-data
+```
+
+Each page is made 1,280 px on its long side (`INTER_AREA`, as the stamp
+finder makes its working copy) and stored as a PNG, so a network reads
+exactly the pixels the masks come from. `masks/<id>.png` has bit 1 for
+dark ink, 2 for rules (an opening of the dark ink with a line a fortieth
+of the long side, 32 px), 4 for stamp ink: each the pipeline's own
+function. `index.jsonl` records the source, page, split key and split (the
+datasets' rule: by constituency for real forms, by seed for synthetic
+ones); `train` is for training and test runs, `val` and `test` together
+are the held-out pages. Real pages are personal data (§10): keep their
+ink sets out of the repository (`nn/data/` or a scratch folder).
+
+### The stem and its scores
+
+```sh
+cd nn
+python3 -m rfpii_nn.stem_hand --out stems/hand.npz                 # written by hand from the rules
+python3 -m rfpii_nn.stem_train --ink A --ink B --out stems/trained.npz --minutes 45   # gradient descent
+python3 -m rfpii_nn.wsp score stems/hand.npz --ink A --ink B --json scores.json       # training and held-out
+python3 -m rfpii_nn.wsp export stems/hand.npz --out hand.onnx --ink A                # ONNX, checked
+python3 -m rfpii_nn.wsp print stems/hand.npz --layer dark_raw                       # the printer
+python3 -m rfpii_nn.wsp diff stems/hand.npz SESSION_DIR/written.npz
+```
+
+Training (`stem_train.py`) goes through a fixed rescaling of each layer,
+so Adam moves every weight on its own scale, and starts from a
+data-centred initialisation: pixels sit near 200 of 255, and from a plain
+one every sigmoid starts saturated and training stalls at the base rate.
+
+`score` reports, per output and per group of pages, the **agreement**
+(the share of pixels where the stem and the pipeline agree; the test is
+99% on every output) and the **IoU** of the ink class (pixels both mark /
+pixels either marks), with recall and precision. Ink is a small share of a
+page (stamp ink about 0.5%), so agreement alone says little: a stem that
+marks no stamp ink at all agrees on 99.5% of pixels.
+
+The ONNX file takes `image` (N, 3, H, W) float32, R, G, B 0-255, any size,
+and gives `ink` (N, 3, H, W): stamp, dark and rule probabilities (a pixel
+is marked above 0.5). Every convolution pads by repeating the edge pixels
+(ONNX `Pad`, mode `edge`). The numpy reference (`stem.forward_numpy`) is
+the definition; the tests check PyTorch and ONNX Runtime against it.
+
+### The tools
+
+In `rfpii_nn/wsp.py`, over the stem (any small part can be described the
+same way):
+
+- **print** (`wsp.text`): each layer's name, kind, kernel, activation and
+  shapes, what it computes, the meaning of each input channel, and its
+  weights to 4 significant figures (kernels as rows, 1x1 layers as a
+  matrix with the bias); a layer of zeros in one line. In the sandbox the
+  same weights are numpy arrays (`W`), and `SPEC` the layers as data.
+- **probe** (`wsp.probe`): a candidate's activations on chosen training
+  pages, as numbers: each channel's quantiles, mean and share above 0.5;
+  the outputs' counts against the pipeline (tp, fp, fn, tn); and, with
+  `where="fn:stamp"` (or tp, fp, tn, pipe, nopipe, stem, nostem) and
+  `samples` (at most 256), the channels' values at that many such pixels,
+  picked at random, without their positions. Never an image.
+- **try** (`wsp.Budget`): one test run, on a copy of the candidate, scored
+  on every training page: agreement, IoU, recall and precision per output,
+  IoU by group; 50 a session, then refused.
+- **diff** (`wsp.diff`): how many weights two versions differ in, per
+  layer, and the largest changes, old and new.
+
+### A session
+
+```sh
+python3 -m rfpii_nn.session --ink A --ink B --model /home/user/nn-models/qwen3.5-4b/Qwen3.5-4B-Q4_K_M.gguf \
+    --out SESSION_DIR --tries 50 --hours 4.5
+python3 -m rfpii_nn.wsp score SESSION_DIR/written.npz --ink A --ink B
+```
+
+The model is given the goal, the pipeline's source (the Rust functions,
+read from this repository when the session starts, with their thresholds),
+OpenCV's documented definitions of the calls they make, the stem as the
+printer shows it, and the sandbox's tools. Each reply's last `python`
+block runs in the sandbox, and what it printed comes back as the next
+message, with the test runs left and the best so far. It ends when the
+model calls `submit(W, reasons)` and writes DONE, when the test runs are
+used up after a submission, or at the time or turn limit; the answer is the
+stem submitted last, or else the best tried.
+
+The model runs here, with llama.cpp (`llama-cpp-python`, built for the
+CPU), driven token by token so its context only grows (Qwen3.5 has
+recurrent layers, whose state can't be rolled back), with a budget of
+thinking tokens per reply (`--think`, 400 by default, then it is told to
+write its code) and of answer tokens (`--answer`); when the context nears
+its end it is renewed with a summary of the test runs and the current
+weights. Nothing is sent anywhere.
+
+**The sandbox** (`sandbox.py`) is a persistent Python kernel in a
+separate process: its own new folder; a network namespace with no
+interfaces (`unshare -n`); the user `nobody` (`setpriv`), who can't read
+the scratch folders the pages are in; a clean environment (no proxy, no
+keys); limits on memory (4 GB), file size and open files; a time limit per
+cell (the kernel is restarted with the weights last kept); and an audit
+hook that refuses sockets, new processes, native libraries and any file
+outside its folder and Python's own. It has numpy, `W`, `SPEC` and the
+tools; test runs and probes are answered by the parent, which holds the
+pages. Where a layer isn't available (not root, no `unshare`), the session
+records which ones were used.
+
+**The log** (in SESSION_DIR): `session.jsonl` (every prompt, reply, cell
+and its output, tool call, test run and its scores, with token counts,
+times and speeds), `transcript.md` (the same, to read), `tries/try_NN.npz`
+(each candidate tried), `submitted.npz`, `written.npz` (the answer) and
+`summary.json`. Logs hold numbers, never page pixels; their scores are of
+pages that may be personal data, so keep them with the ink sets.
+
+`--stub replies.json` drives the same loop with canned replies; the tests
+do so (`tests/test_session.py`), so no language model is needed to test.
+
+What milestone 2's session reached, and the three stems' scores, are in
+NEURAL.md §12 ("Milestone 2"): with Qwen3.5-4B on this CPU, a session ran
+4 h 12 min and 126 turns, used 39 test runs, and handed in a stem that
+marks every pixel; the stem written by hand passes the test (every mask at
+99% agreement, IoU 0.99 for dark ink and rules); the trained one, after 39
+minutes, does not.
 
 ## Personal data (NEURAL.md §10)
 

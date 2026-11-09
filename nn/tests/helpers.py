@@ -73,3 +73,41 @@ class TempDir:
 
     def __exit__(self, *a):
         shutil.rmtree(self.path, ignore_errors=True)
+
+
+def fake_inkset(path, n=3, size=(128, 96), groups=("synthetic",)):
+    """An ink set of small drawn pages: paper, a long dark rule, a short dark
+    stroke and a violet patch, with masks marking them (bits: 1 dark, 2
+    rule, 4 stamp). Not the pipeline's masks: for the tools' tests."""
+    import numpy as np
+    w, h = size
+    for sub in ("pages", "masks"):
+        os.makedirs(os.path.join(path, sub), exist_ok=True)
+    lines = []
+    for i in range(n):
+        img = np.full((h, w, 3), (236, 234, 228), np.uint8)
+        bits = np.zeros((h, w), np.uint8)
+        y = 20 + 7 * i
+        img[y:y + 3, 8:w - 8] = 30
+        bits[y:y + 3, 8:w - 8] |= 1 | 2
+        img[60:66, 20 + i:24 + i] = 40
+        bits[60:66, 20 + i:24 + i] |= 1
+        img[70:80, 60:72] = (120, 70, 170)
+        bits[70:80, 60:72] |= 4
+        pid = "p%02d" % i
+        for sub, arr in (("pages", img), ("masks", bits)):
+            buf = io.BytesIO()
+            Image.fromarray(arr).save(buf, "PNG")
+            with open(os.path.join(path, sub, pid + ".png"), "wb") as f:
+                f.write(buf.getvalue())
+        key = "seed:%d" % i
+        lines.append({"id": pid, "source": "drawn", "page": 1, "group": groups[i % len(groups)], "split_key": key,
+                      "split": "train" if i < n - 1 else "test", "width": w, "height": h,
+                      "image": "pages/%s.png" % pid, "mask": "masks/%s.png" % pid})
+    lines[0]["split"] = "train"
+    with open(os.path.join(path, "index.jsonl"), "w") as f:
+        for l in lines:
+            f.write(json.dumps(l) + "\n")
+    with open(os.path.join(path, "inkset.json"), "w") as f:
+        json.dump({"schema": "rfpii/nn-inkset/1", "max_side": max(size), "pages": n, "personal_data": False}, f)
+    return path
