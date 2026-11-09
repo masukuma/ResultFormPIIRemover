@@ -271,6 +271,15 @@ released form against 5 free forms (once per account), then against form credits
 in packages of 100 at $0.35 a form, plus the card fee and VAT
 ([PRICING.md](PRICING.md)). See [API.md](API.md).
 
+## A local neural network (design)
+
+[NEURAL.md](NEURAL.md) designs four small CNNs, run on the CPU with ONNX
+Runtime, that find the fields, stamps, ink and characters the pipeline
+masks. They are trained round by round against this pipeline's results
+until they match them, then promoted stage by stage from a shadow, to a
+local replacement for the cloud review, to the primary reader. Not built
+yet.
+
 ## Adding a form type
 
 1. **Reference image:** pick a flat, sharp photo of the form and **erase the
