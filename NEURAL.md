@@ -49,7 +49,8 @@ pipeline's own rules written into weights, so the first network already
 gives the pipeline's results where those rules apply; between training
 rounds, faults that sit in one place (a threshold, a silenced input) are
 repaired in the weights directly; and before each promotion the language
-model reads the small parts and says what they respond to. Training does
+model reads the small parts and says what they respond to, as a pointer
+for tests, not a verdict. Training does
 the rest, and every change, programmed or trained, passes the same gate.
 
 ## 1. What does not change
@@ -83,7 +84,7 @@ PyTorch, exported to ONNX.
 
 **Each model in two parts.** A **backbone**, trained by gradient descent,
 turns pixels into features: millions of weights, too many to read. On top
-of it, a few **programmable parts** of about 10,000 weights or fewer each,
+of it, a few **programmable parts** of about 20,000 weights or fewer each,
 small enough to show a language model whole (§5):
 
 | Model | Programmable parts |
@@ -142,71 +143,126 @@ made them, so a fixed pipeline bug can relabel exactly what it touched.
 
 ## 5. Weight-space programming
 
-**What it is.** A language model is given a network's raw weights as text,
-with a goal in plain words, and answers with new weights: it reads what
-the weights do and edits them, or writes a network from nothing, without
-a training loop. The term comes from *Sparks of Weight-Space Programming*
-(Takehi, Teoh, Zhang and Khattab, MIT CSAIL, 2 November 2026, a report not
-yet peer-reviewed). Reported so far:
+**What it is.** A language model is given a network's raw weights, as
+text or in a Python session, with a goal in plain words, and answers with
+new weights: it works out what the weights compute and edits them, or
+writes a network from a specification, without a training loop. The term
+comes from Takehi, Teoh, Zhang and Khattab (MIT CSAIL, 2 November 2026), a
+report the authors call a blog post, not peer-reviewed.
 
-- naming which game a small policy network was trained on from its
-  weights alone, and patching a broken policy;
-- editing 0.016% of the weights of a 0.8 B-parameter language model to
-  stop its reasoning loops (a maths score from 7.9% to 48.1%);
-- in small clinical decision networks, finding and repairing flaws that
-  silence an input or shift a threshold, but **not certifying that a
-  network is correct** (Nusrat and Nusrat, 3 November 2026);
-- a 27 B model on a laptop (Qwen 3.8 27B) naming the game behind three of
-  four policy networks from their weights, and missing the fourth.
+**What has been shown**, all on MLPs and transformers (none on a
+convolutional network yet):
 
-So: real on small networks and on faults that sit in one place; unproven
-on whole perception networks; never a proof. The design uses it where
-that holds and nowhere else.
+| | Network | Setting | Result |
+|---|---|---|---|
+| Read | 4 game policies, MLP, 17,253 weights each | GPT-6 Astra, all weights as text, no tools | named the game of all 4 |
+| Read | middle blocks of 3 character-level transformers, 7.2 M weights | Python over the weights, no running them | named each one's language; found every copying head and no other |
+| Read | 2 fine-tunes of Gemma 3 270M, one sycophantic | weights and Python | **could not tell** which, in 4 attempts, until shown attention patterns |
+| Fix | a car-control policy, 171,664 weights, stuck in a local minimum | weights, the scene, one episode, no tools, one reply | 1,024 of 1,024 episodes succeed, up from 0, by changing 3.5% of the weights |
+| Write | 3 game policies, 600→32→32→6 | the game's rules and source code, no data, no tools | beat PPO trained for 100 M steps in all 3 |
+| Write | a Go network, 1.48 M weights | a Python sandbox, up to 50 test runs | beat an equal-sized PPO network trained on 20 M games |
+| Fix | Qwen3.5-0.8B, reasoning loops | a Python kernel, 10, 25 or 50 test runs | 131,072 weights (0.016%) changed; MATH-500 7.9% to 12.3%, 14.1%, **48.1%** with 50 runs |
+| Fix | Gemma 3 270M, which doesn't loop | a Python kernel, 5 test runs | **no gain** (6.8% to 7.0%): it fixes a defect, it doesn't add ability |
+| Audit | 18 small clinical networks with planted flaws, 433 to 4,801 weights (Nusrat and Nusrat, 3 November 2026) | Claude Opus 5.5, blind, no tools | named the broken rule in 16 of 18 and repaired each by changing a median of **3 weights** (fine-tuning changed nearly all of them); but **cleared only 2 of 5 healthy networks** and **found 1 of 3 hidden triggers**; testing against the protocol found every flaw, and plain black-box testing found the confounds and the shift faster |
+| Local | the 4 game policies above | Qwen 3.8 27B (17 GB) on a laptop, as text, no tools (Willison, 3 November 2026) | named 3 of 4, missed Freeway; **46 to 65 minutes** each (43,506 reasoning tokens for one); needed a long context |
 
-**What it does here.** Three jobs, all on the programmable parts (§2),
-never on a backbone:
+Critics point out that the report mixes two things: reading weights with
+no tools, and editing them with code, where the language model takes the
+steps an ML researcher would (Honnibal, Goedecke, as cited by Willison).
+
+So: reading and repairing small networks works; writing a network from a
+specification works; a defect that sits in one place can be fixed by
+changing very few weights, even in a large model, given a sandbox and
+enough test runs; it adds no ability a network lacks; its audits raise
+false alarms and miss hidden triggers; and **testing finds what it finds,
+faster**. The design takes each of these as given.
+
+**Two modes.**
+
+- **Whole, as text, no tools**: the part's weights in the prompt. For
+  reading and small repairs, on parts of up to about 20,000 weights (what
+  the no-tools experiments read).
+- **Sandbox**: a Python session over the weights (numpy, no GPU), plus a
+  budget of test runs, each a forward pass of the candidate on a set of
+  pages, scored. For writing a part, and for repairs that need checking.
+  The 0.8B fix needed 50 runs, and 10 or 25 barely helped, so a session gets
+  50 runs.
+
+**What it does here.** Three jobs, on the programmable parts (§2):
 
 | Job | When | Goal given | Done by |
 |---|---|---|---|
-| **Write** | round 0 | "compute, as M3's rule stem, the stamp-ink, dark-ink and rule masks `stamps.rs` and `masking.rs` compute today", with that code and its thresholds | writing the stem's weights so its outputs match the pipeline's masks on the training pages; scored pixel by pixel against the pipeline's masks |
-| **Patch** | between training rounds | a fault from the disagreement report, in words and with its pages ("M2 scores signatures on stamped pages too low: 41 misses, all with a ring under them") | editing the fewest weights that fix those pages without changing others |
-| **Audit** | before each promotion | "say what each output of this part responds to, and flag any input it ignores, any shortcut (the QR code, the page border, the KIEMS header) and any threshold far from its neighbours" | a written reading of every programmable part, kept in the model card |
+| **Write** | round 0 | "compute, as M3's rule stem, the stamp-ink, dark-ink and rule masks `stamps.rs` and `masking.rs` compute today", with that source code and its thresholds, as the game experiments gave rules and source code | sandbox mode; scored pixel by pixel against the pipeline's masks |
+| **Repair** | between training rounds | a fault from the disagreement report, in words and with its pages ("M2 scores signatures on stamped pages too low: 41 misses, all with a ring under them") | the fewest weights that fix those pages and change no others; at most 1% of the part's weights, or it is treated as needing training |
+| **Read** | before each promotion | "say what each output of this part responds to, and name any input it ignores or any feature it shouldn't use (the QR code, the page border, the KIEMS header)" | no tools; the reading goes into the model card |
+
+Repair is for **defects**: a threshold off, an input silenced, a
+class swapped. A new printing of a form, or a kind of page never seen, is
+a gap in the data, and only training fills it.
+
+**The reading is a pointer, never a verdict.** In the clinical study it
+flagged 3 of 5 healthy networks and found 1 of 3 hidden triggers, and tests
+found everything it found. So:
+
+- each claim it makes is turned into a test before anyone acts on it (a
+  claim that M2 relies on the QR code becomes an occlusion test: cover the
+  QR code on the gold set and measure the change);
+- the same checks run automatically every round, as plain statistics, which
+  the clinical study found catch the same faults: an input channel whose
+  weights have shrunk to near zero (silenced), a unit that never fires, a
+  bias or threshold far from its neighbours;
+- shortcut tests run every round whatever the reading says: occlusion of
+  the QR code, the header, the page border and the stamps, and pages from a
+  county the round never trained on;
+- a reading can't clear a model for promotion, and its flags block one only
+  once a test confirms them.
 
 **How a session runs.**
 
-1. A tool prints the part's weights as text: layer names, shapes, values to
-   4 significant figures, with the meaning of each input channel and each
-   output written beside them.
-2. The language model gets the goal, that text and three tools: **probe**
-   (the part's activations on chosen pages, as numbers), **try** (apply a
-   proposed edit to a copy and score it on the round's regression set),
-   and **diff** (what changed, weight by weight).
-3. It answers with an edit: the weights changed, their new values, and its
+1. A tool prints the part's weights: layer names, shapes, values to 4
+   significant figures, the meaning of each input channel and output
+   written beside them; in sandbox mode, the same as arrays.
+2. The language model gets the goal, the weights and, in sandbox mode,
+   **probe** (the part's activations on chosen pages, as numbers), **try**
+   (one test run: apply a candidate edit to a copy and score it on the
+   round's regression set; counted against the 50) and **diff**.
+3. It answers with an edit: the weights changed, their new values and its
    reasons.
-4. The edit is applied to a new model version and goes through the whole
-   gate (§6.2) like a trained one. Nothing it writes reaches a published
-   form any other way.
+4. The edit becomes a new model version and goes through the whole gate
+   (§6.2) like a trained one. Nothing it writes reaches a published form
+   any other way. Its diff, usually a few weights, is kept beside the model
+   card, where a person can read it.
 
 **The language model runs on this machine.** Weights trained on real
-forms are derived from personal data (§10): they are not sent to a cloud
-model. A 27 B open model (Qwen 3.8 27B, or its successor) on a 24 GB GPU is
-the reference; a session takes minutes to an hour, which a round can
-afford. Parts trained only on synthetic forms could be shown to a stronger
-cloud model, if the owner wants that.
+forms are derived from personal data (§10), so they are not sent to a
+cloud model. The reference is an open model of the Qwen 3.8 27B class:
+17 GB, so it fits a 24 GB GPU (the training GPU), with a context of at least
+128,000 tokens. A reading of a 17,000-weight part takes about an hour, so a
+round affords a handful of sessions. The published results used frontier
+cloud models (GPT-6 Astra, Claude Opus 5.5), and the local model did less
+well (3 of 4); parts trained only on synthetic forms could be shown to a
+frontier cloud model, if the owner wants that.
 
-**Keeping a patch.** A patch fixes the weights now; the next training
-round would undo it. So every patch also adds its pages to the training
+**Backbones.** Not by default. The 0.8B fix shows that a defect traced to
+one direction inside a large network can be removed in the sandbox; if a
+reading and a test point to such a defect in a backbone, a sandbox repair
+may be tried as an experiment, behind the same gate. Otherwise backbones
+are trained.
+
+**Keeping a repair.** A repair fixes the weights now; the next training
+round would undo it. So every repair also adds its pages to the training
 set and to a **regression set** that every later version must pass, and the
-patched part is the starting point of the next round's training of that
-part. A patch that keeps being undone is a sign the fault is in the data,
-not the part.
+repaired part is the starting point of the next round's training of that
+part. A repair that keeps being undone means the fault is in the data, not
+the part.
 
-**Whether it earns its place.** Each round records how many faults were
-patched, how many patches passed the gate, how many survived the next
-training round, and the hours it took against a training round's. If,
-after three rounds, patches pass the gate less often than retraining
-fixes the same faults, patching stops and the design is training alone:
-nothing else depends on it.
+**Whether it earns its place.** Each round records the faults repaired,
+the repairs that passed the gate, those that survived the next training
+round, the test runs and hours spent, against a training round's. If,
+after three rounds, repairs pass the gate less often than retraining
+fixes the same faults, repair stops and the design is training alone; if
+the written rule stem misses its test (§11), the stem is trained. Nothing
+else depends on weight-space programming.
 
 ## 6. The iterative process
 
@@ -222,18 +278,20 @@ round k   1. harvest   labels: the teacher's outputs + settled pages + synthetic
           6. settle    rules first, then people, for the top of the list
           7. diagnose  sort the settled faults: a gap in the data, or a fault
                        in one place
-          8. patch     faults in one place: weight-space programming on the
-                       part they sit in (§5, patch) -> S_k'
+          8. repair    defects in one place: weight-space programming on the
+                       part they sit in (§5, repair) -> S_k'
           9. fix       relabel; fix the teacher where it was wrong; add the
-                       patched pages to the training and regression sets
-         10. audit     read every programmable part (§5, audit)
+                       repaired pages to the training and regression sets
+         10. read      read every programmable part (§5, read); turn each
+                       claim into a test; run the statistics and shortcut
+                       tests
          11. gate      promote S_k' (or S_k) one stage if its scores pass (§7)
           until S_k matches T on the gold set two rounds running and
           disagreements fall below 0.5% of fields
 ```
 
-Patches are fast (hours) and narrow; training is slow (a day or more) and
-broad. A round can end after step 8 with a patched model and go straight to
+Repairs are fast (hours) and narrow; training is slow (a day or more) and
+broad. A round can end after step 8 with a repaired model and go straight to
 step 3 again, without training, when only faults in one place were found.
 
 Both sides get better: a disagreement the teacher loses is a pipeline bug
@@ -308,7 +366,8 @@ targets of §6.2 met on the gold set and a sample of live output checked by
 a person. A version made by weight-space programming is promoted by the
 same gate as a trained one, never on the language model's word: it can
 find and repair faults but cannot certify a network (§5). Stage E also
-needs the audit (§5) to have found no shortcut in any programmable part.
+needs every shortcut test (§5) passed, and every flag of the reading
+either tested and dismissed or fixed.
 
 | Stage | The network… | Can it hide less than today? |
 |---|---|---|
@@ -347,13 +406,16 @@ templates stop being needed for new printings.
   miss can't hide less than today; at stage E, the gates, the leak check
   and the job's random sample stay in force.
 - **Floating point across machines.** Handled by recording outputs (§4).
-- **Weight-space programming is a week old.** One unreviewed report and
-  one abstract; the large-model result may mostly fix reasoning loops
-  rather than teach anything new, and a local 27 B model missed one of four
-  networks in the reading test. So it only touches small parts, every edit
-  passes the full gate, and the design works without it (§5).
-- **A patch that fits its pages and breaks others.** The regression set
-  and the whole gold set are scored for every patch, not only the pages it
+- **Weight-space programming is a week old.** One unreviewed report, one
+  preprint and one blog test; nothing yet on convolutional networks; the
+  0.8B result fixed a defect (reasoning loops) and added no ability; the
+  clinical audits raised false alarms and missed hidden triggers; and the
+  local model was slower and weaker than the frontier ones (3 of 4, an hour
+  each). So it works on small parts and defects, every edit passes the full
+  gate, its readings are tested before they count, and the design works
+  without it (§5).
+- **A repair that fits its pages and breaks others.** The regression set
+  and the whole gold set are scored for every repair, not only the pages it
   was made for.
 
 ## 10. Personal data in training
@@ -386,12 +448,12 @@ templates stop being needed for new printings.
    probe, try and diff tools, the local language model, and M3's rule stem
    written from the pipeline's rules (§5, write). The test: do the written
    stem's masks agree with the pipeline's on at least 99% of the pixels of
-   the training pages? If not, the stem is trained instead, and patching
+   the training pages? If not, the stem is trained instead, and repair
    is tried later on smaller parts first.
 3. **M1 and M2, stage A:** shadow runs on the corpus, the first
    disagreement report.
 4. **Rounds to stage B and C:** the local reviewer replaces the cloud
-   review, with patching measured each round (§5).
+   review, with repair measured each round (§5).
 5. **M3 and M4, stage D:** held pages read locally.
 6. **Stage E:** primary reader, templates as checks.
 
@@ -412,23 +474,24 @@ in this document as DESIGN.md does for the pipeline.
 - **The weight-programming model:** a local open model (a 27 B model needs
   a 24 GB GPU, which can be the training GPU), and may parts trained on
   synthetic forms alone be shown to a stronger cloud model?
-- **Patches between trainings:** may a patched version be promoted before
+- **Repairs between trainings:** may a repaired version be promoted before
   a training round has confirmed it (it passes the same gate either way),
   or only up to stage D?
 
 ## Sources on weight-space programming
 
-Read through search summaries; the primary pages (`rikiyat.github.io`,
-`arxiv.org`, `simonwillison.net`) were outside this environment's network
-policy, so check them before relying on the figures.
+Read in full on 9 November 2026; the figures in §5 are from these.
 
 - R. Takehi, J. Teoh, A. Zhang, O. Khattab, *Sparks of Weight-Space
   Programming: LLMs can natively read & write neural network weights*,
   MIT CSAIL, 2 November 2026, https://rikiyat.github.io/blog/weight-space-programming/
   (logs and prompts: GitHub `RikiyaT/lm_understand-logs`).
 - H. Nusrat, O. Nusrat, *Weight-space programming for auditing clinical
-  decision networks*, arXiv 2611.05341, 3 November 2026.
+  decision networks*, arXiv 2611.05341 [physics.med-ph], 3 November 2026,
+  https://arxiv.org/abs/2611.05341 (code, networks and every model answer
+  in its ancillary files).
 - S. Willison, *Qwen 3.8 27B on my laptop can interpret model weights, too*,
   3 November 2026, https://simonwillison.net/2026/Nov/3/qwen-can-interpret-model-weights/
+  (which also cites the criticism by Matthew Honnibal and Sean Goedecke).
 - Not to be confused with *weight-space learning*, the older field of
   networks that take other networks' weights as input.
