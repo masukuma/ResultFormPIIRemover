@@ -54,6 +54,11 @@ class SandboxTest(unittest.TestCase):
         r = self.run_cell("open('mine.txt', 'w').write('ok'); print(open('mine.txt').read())")
         self.assertEqual(r["out"].strip(), "ok")
 
+    def test_w_is_put_back_in_shape(self):
+        self.run_cell("W['gray.w'] = [0.299, 0.587, 0.114]")
+        r = self.run_cell("print(W['gray.w'].shape, W['gray.w'].dtype)")
+        self.assertEqual(r["out"].strip(), "(1, 3, 1, 1) float32")
+
     def test_a_bad_w_is_not_kept_and_a_stuck_cell_is_stopped(self):
         self.run_cell("W['blur.w'][0, 0, 1, 1] = 1.0")
         r = self.run_cell("W['blur.w'] = np.zeros(3)")  # the wrong size

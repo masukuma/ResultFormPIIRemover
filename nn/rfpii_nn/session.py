@@ -107,7 +107,8 @@ HOW TO REPLY: think briefly (don't restate the architecture or the source), then
 most about 60 lines. It runs in the sandbox; you get back what it printed (print what you need). A reply is cut off
 after {answer} tokens. Each reply should make progress: write or fix a few layers, check them with forward() on small
 test images, measure with try_run() when a whole output is ready. Arrays of the right size are reshaped to their
-layer's shape. When you are done, or when your test runs are used up, call submit(W, "your reasons") and write DONE.
+layer's shape (after each reply W holds every array in its layer's shape). When you are done, or when your test
+runs are used up, call submit(W, "your reasons") and write DONE.
 
 The convolution, in every layer: out[o, y, x] = b[o] + sum over inputs c and kernel cells (i, j) of
 w[o, c, i, j] * in[c, y + i - kh//2, x + j - kw//2], the image padded by repeating its edge pixels; a depthwise

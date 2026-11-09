@@ -182,7 +182,10 @@ while True:
             err = "".join(traceback.format_exc().splitlines(True)[-12:])
     w_ok = None
     try:
-        np.savez(os.path.join(WORK, "current.npz"), **stem.clean(G.get("W", {})))
+        kept = stem.clean(G.get("W", {}))
+        np.savez(os.path.join(WORK, "current.npz"), **kept)
+        if isinstance(G.get("W"), dict):
+            G["W"].update(kept)  # every array back in its layer's shape, in place
         w_ok = True
     except Exception as e:  # W is not a valid stem: keep the last one
         w_ok = f"W is not a valid stem and was not kept: {e}"[:600]
