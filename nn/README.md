@@ -25,7 +25,7 @@ What is here:
 | `rfpii_nn/sandbox.py`, `sandbox_kernel.py` | the isolated Python kernel the language model's code runs in |
 | `rfpii_nn/session.py` | a weight-space session with the local language model (or a stub) |
 | `rfpii_nn/stem_hand.py`, `stem_train.py` | the stem written by hand from the rules; trained by gradient descent |
-| `stems/` | the stems' weights, under 10 kB each: `hand.npz` (and, once milestone 2's runs are done, `trained.npz`, `written.npz` and their scores) |
+| `stems/` | the three stems' weights (`written.npz` by the local model, `hand.npz`, `trained.npz`; 8–11 kB each), their scores (`scores.json`) and the session's summary (`session.json`) |
 | `tests/` | `python3 -m pytest -q` (in `nn/`); or `python3 -m unittest discover -s nn/tests -t nn` from the root |
 
 Python, milestone 1: the standard library, numpy and Pillow; nothing else,
@@ -332,6 +332,11 @@ python3 -m rfpii_nn.wsp print stems/hand.npz --layer dark_raw                   
 python3 -m rfpii_nn.wsp diff stems/hand.npz SESSION_DIR/written.npz
 ```
 
+Training (`stem_train.py`) goes through a fixed rescaling of each layer,
+so Adam moves every weight on its own scale, and starts from a
+data-centred initialisation: pixels sit near 200 of 255, and from a plain
+one every sigmoid starts saturated and training stalls at the base rate.
+
 `score` reports, per output and per group of pages, the **agreement**
 (the share of pixels where the stem and the pipeline agree; the test is
 99% on every output) and the **IoU** of the ink class (pixels both mark /
@@ -388,10 +393,10 @@ stem submitted last, or else the best tried.
 The model runs here, with llama.cpp (`llama-cpp-python`, built for the
 CPU), driven token by token so its context only grows (Qwen3.5 has
 recurrent layers, whose state can't be rolled back), with a budget of
-thinking tokens per reply (`--think`, then it is told to write its code)
-and of answer tokens (`--answer`); when the context nears its end it is
-renewed with a summary of the test runs and the current weights. Nothing
-is sent anywhere.
+thinking tokens per reply (`--think`, 400 by default, then it is told to
+write its code) and of answer tokens (`--answer`); when the context nears
+its end it is renewed with a summary of the test runs and the current
+weights. Nothing is sent anywhere.
 
 **The sandbox** (`sandbox.py`) is a persistent Python kernel in a
 separate process: its own new folder; a network namespace with no
@@ -414,6 +419,13 @@ pages that may be personal data, so keep them with the ink sets.
 
 `--stub replies.json` drives the same loop with canned replies; the tests
 do so (`tests/test_session.py`), so no language model is needed to test.
+
+What milestone 2's session reached, and the three stems' scores, are in
+NEURAL.md §12 ("Milestone 2"): with Qwen3.5-4B on this CPU, a session ran
+4 h 12 min and 126 turns, used 39 test runs, and handed in a stem that
+marks every pixel; the stem written by hand passes the test (every mask at
+99% agreement, IoU 0.99 for dark ink and rules); the trained one, after 39
+minutes, does not.
 
 ## Personal data (NEURAL.md §10)
 
