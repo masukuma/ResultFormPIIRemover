@@ -44,14 +44,14 @@ zones:
     action: partial
     rule: phone
     digits: 10
-    rect: [1844, 202, 314, 69]
+    rect: [1525, 202, 314, 69]   # "Tel. Contact": between the rules at x 1520-1524 and 1839-1843
     rows: 3
     row_step: 69
     search: [4, 4]   # the Returning Officer's name starts right below the table
     region: agents
   - name: agent_signatures
     action: signature
-    rect: [2164, 202, 319, 69]
+    rect: [1844, 202, 315, 69]   # "Signature": between the rules at x 1839-1843 and 2159-2163
     rows: 3
     row_step: 69
     search: [6, 20]
