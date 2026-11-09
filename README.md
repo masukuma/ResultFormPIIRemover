@@ -275,10 +275,12 @@ in packages of 100 at $0.35 a form, plus the card fee and VAT
 
 [NEURAL.md](NEURAL.md) designs four small CNNs, run on the CPU with ONNX
 Runtime, that find the fields, stamps, ink and characters the pipeline
-masks. They are trained round by round against this pipeline's results
-until they match them, then promoted stage by stage from a shadow, to a
-local replacement for the cloud review, to the primary reader. Not built
-yet.
+masks. Their small parts are written and repaired by weight-space
+programming (a local language model reading and editing their weights),
+starting from the pipeline's own rules; the rest is trained. Round by
+round they are brought to this pipeline's results, then promoted stage by
+stage from a shadow, to a local replacement for the cloud review, to the
+primary reader. Not built yet.
 
 ## Adding a form type
 
