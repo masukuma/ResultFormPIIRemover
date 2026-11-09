@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rfpii pages</title>
+<link rel="stylesheet" href="/static/view.css">
+</head>
+<body>
+<header>
+  <strong id="title">rfpii pages</strong>
+  <button id="prev" title="previous page (left arrow, k)">&larr;</button>
+  <span id="where">0 / 0</span>
+  <button id="next" title="next page (right arrow, j)">&rarr;</button>
+  <label>show pages <select id="filter"></select></label>
+  <button id="fit" title="fit the page (0)">fit</button>
+  <label title="the ink mask (m)"><input type="checkbox" id="mask"> mask</label>
+  <label title="the boxes (b)"><input type="checkbox" id="boxes" checked> boxes</label>
+</header>
+<main>
+  <div id="stage"><canvas id="canvas"></canvas></div>
+  <aside>
+    <section id="classes"><h2>Classes</h2></section>
+    <section><h2>Page</h2><dl id="facts"></dl></section>
+    <!-- Milestone 3: disagreement flags (student against teacher) are listed
+         here, read-only, from labels.flags. Nobody settles them on this page:
+         disagreements are only flagged. -->
+    <section><h2>Flags</h2><ul id="flags"><li class="none">none</li></ul></section>
+    <section><h2>Boxes</h2><ol id="list"></ol></section>
+    <p class="help">Drag to pan, wheel or +/- to zoom, 0 to fit; left/right or j/k for the previous and next page; m mask, b boxes. Read-only.</p>
+  </aside>
+</main>
+<script src="/static/view.js"></script>
+</body>
+</html>

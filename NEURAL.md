@@ -5,7 +5,8 @@ does the redaction, and how that network is brought, round by round, to
 give the same results the current pipeline gives, then better ones: by
 weight-space programming (a local language model reading and writing the
 network's weights directly, §5) where it works, and by training where it
-doesn't. This is a design: nothing in it is built yet.
+doesn't. This is a design; its first milestone, the data, is built
+(§12, "Where it stands").
 
 ## 0. Why, and what "the same results" means
 
@@ -106,13 +107,18 @@ minimisation (s.25(d)) asks for no more.
 | **The teacher**: the current pipeline's published pages | from each manifest: the masks (with zone, mode and role), the stamps (circle and polygon), the protected results regions, the vision review's finds and spot masks, the template, the turn | boxes good; ink masks only approximate (the pipeline's own ink extraction) |
 | **Synthetic forms** | `synthetic.rs` extended: handwriting-like strokes, digits and signatures drawn on blank forms of each printing, stamps in several inks, folds, photos at an angle, blur, JPEG; every pixel's class known exactly | exact, but not real |
 | **Adjudicated pages** | the disagreements of each round, settled (§6) | the best; few |
-| **Gold set** | about 300 pages, labelled by people, never trained on | the measure (§6.1) |
+| **Gold set** | a synthetic gold set from its own seeds, and a reference sample of the teacher's pages; never trained on | the measure: of truth, and of agreement with the pipeline (§6.1) |
 
 The corpus to start from: the 215 Forms 34A of 2022, the 6,608 published
 pages of the 2013 Forms 34, the 2017 forms, and the pages each of them
 held. The IEBC portal serves tens of thousands more forms per election;
 downloading them for training is a new processing activity the DPIA must
-cover (§10).
+cover (§10). Decided (9 November 2026): forms are downloaded for training
+from the IEBC portal (forms.iebc.or.ke) and from the owner's Dropbox
+archive. They are kept outside the repository, and a provenance file beside
+them records each file's source, address, election, county, size, SHA-256
+and time of retrieval, so a file can be traced, removed on an erasure
+request, or excluded from a round.
 
 Splits are by constituency, so no polling station or officer is in both
 training and test. A page's labels carry the version of the teacher that
@@ -233,15 +239,16 @@ found everything it found. So:
    any other way. Its diff, usually a few weights, is kept beside the model
    card, where a person can read it.
 
-**The language model runs on this machine.** Weights trained on real
-forms are derived from personal data (§10), so they are not sent to a
-cloud model. The reference is an open model of the Qwen 3.8 27B class:
+**The language model runs on this machine** (the owner's decision, 9
+November 2026, for every part, those trained on synthetic forms included).
+Weights trained on real forms are derived from personal data (§10). The reference is an open model of the Qwen 3.8 27B class:
 17 GB, so it fits a 24 GB GPU (the training GPU), with a context of at least
 128,000 tokens. A reading of a 17,000-weight part takes about an hour, so a
 round affords a handful of sessions. The published results used frontier
 cloud models (GPT-6 Astra, Claude Opus 5.5), and the local model did less
-well (3 of 4); parts trained only on synthetic forms could be shown to a
-frontier cloud model, if the owner wants that.
+well (3 of 4). No part is shown to a cloud model. Training runs on this
+instance's CPU with 15 GB of memory (§6.4), where a 27 B model doesn't fit:
+milestone 2 picks the largest local model that does, and measures it.
 
 **Backbones.** Not by default. The 0.8B fix shows that a defect traced to
 one direction inside a large network can be removed in the sandbox; if a
@@ -255,6 +262,12 @@ set and to a **regression set** that every later version must pass, and the
 repaired part is the starting point of the next round's training of that
 part. A repair that keeps being undone means the fault is in the data, not
 the part.
+
+**A repair is promoted only after training confirms it** (the owner's
+decision, 9 November 2026). A repaired version is scored and shadowed like
+any other, but the gate (§6, step 11) promotes it only once the next
+training round, started from the repaired part, has kept the fix and passes
+the gate itself; what is promoted is that trained version.
 
 **Whether it earns its place.** Each round records the faults repaired,
 the repairs that passed the gate, those that survived the next training
@@ -275,7 +288,7 @@ round k   1. harvest   labels: the teacher's outputs + settled pages + synthetic
           3. score     S_k and T on the gold set and the regression set
           4. shadow    run S_k beside the pipeline on the whole corpus
           5. compare   list every disagreement, ranked by risk
-          6. settle    rules first, then people, for the top of the list
+          6. settle    rules settle what they can; the rest is flagged
           7. diagnose  sort the settled faults: a gap in the data, or a fault
                        in one place
           8. repair    defects in one place: weight-space programming on the
@@ -285,26 +298,39 @@ round k   1. harvest   labels: the teacher's outputs + settled pages + synthetic
          10. read      read every programmable part (§5, read); turn each
                        claim into a test; run the statistics and shortcut
                        tests
-         11. gate      promote S_k' (or S_k) one stage if its scores pass (§7)
+         11. gate      promote S_k one stage if its scores pass (§7); a
+                       repaired S_k' is promoted only once training has
+                       confirmed it (§5, keeping a repair)
           until S_k matches T on the gold set two rounds running and
           disagreements fall below 0.5% of fields
 ```
 
 Repairs are fast (hours) and narrow; training is slow (a day or more) and
 broad. A round can end after step 8 with a repaired model and go straight to
-step 3 again, without training, when only faults in one place were found.
+step 3 again, without training, when only faults in one place were found;
+the repaired model is then measured, not promoted, until a training round
+confirms it.
 
 Both sides get better: a disagreement the teacher loses is a pipeline bug
 to fix, as every review round has been so far.
 
 ### 6.1 The gold set
 
-About 300 pages, drawn across years, forms, printings, scans and photos,
-published and held. Each is labelled by a person, with a second person
-checking a quarter of them: every signature, ID, phone number, name,
-stamp and results region, as boxes, and pixel masks for the pen on 60 of
-them. It is never used for training, and it changes only by adding pages,
-each change versioned, so scores stay comparable across rounds.
+No person labels pages (the owner's decision), so the gold set has two
+parts, planned in `gold/plan.json` (nn/README.md):
+
+- **the synthetic gold set**: synthetic forms made from a seed range of
+  their own (by default 1,000,000,000 to 1,000,000,300), across every
+  printing with a template, photos and scans, with exact labels and pen
+  masks. It measures truth, on synthetic forms.
+- **the reference set**: about 300 real pages sampled from the teacher's
+  datasets, across templates and years, KIEMS photos, scans and photos,
+  published and held. Its labels are the teacher's, so it measures
+  agreement with the pipeline, not truth.
+
+Neither is ever used for training (every training reader goes through the
+gold set's exclusion), and the plan changes only by adding pages, each
+change versioned, so scores stay comparable across rounds.
 
 ### 6.2 What a round measures
 
@@ -333,28 +359,28 @@ Kinds, in order of risk:
 4. **Masks that overlap but differ in extent.**
 
 Rules settle what they can: whether a box overlaps a results region, what
-the leak check says, whether a stamp's ring is intact. People settle the
-rest in a local review page (a browser on the same machine): the page, both
-proposals, three buttons (student, teacher, neither) and a pen to draw the
-box. Nothing goes to a cloud model; the vision review is not a judge here,
-since the network is meant to replace it.
-
-What it costs per round: the first rounds will raise thousands of
-disagreements, mostly kind 4; only kinds 1 to 3 and a random tenth of
-kind 4 go to people. Expect 2–4 hours of a reviewer per round at first,
-falling as the student converges.
+the leak check says, whether a stamp's ring is intact. No person settles
+the rest (the owner's decision): it is flagged, listed in the round's
+report by kind and page, and shown read-only in the local viewer
+(nn/README.md). Nothing goes to a cloud model; the vision review is not a
+judge here, since the network is meant to replace it. How flagged
+disagreements count against a stage's gate is for milestone 3 to set.
 
 ### 6.4 Training, locally
 
 - A `nn/` folder in the repository: the dataset builder (reads manifests,
   sources and synthetic forms), the four training recipes, ONNX export,
-  the gold-set scorer and the review page.
+  the gold-set scorer and the read-only viewer.
 - A recipe is code plus a config with its seed. A round records the data
   list (file SHA-256s), the recipe's commit and the library versions; the
   same inputs give the same weights where the libraries allow.
 - **Hardware.** One local GPU with 16–24 GB trains each model in hours;
   M1 and M4 train on a CPU in a day, M2 and M3 are impractical without a
-  GPU. Inference needs only the CPU.
+  GPU at full size. Inference needs only the CPU. Decided: training runs
+  on the project's cloud instance, CPU only (4 cores, 15 GB of memory,
+  about 5 GB of disk, not kept between sessions), so datasets are kept
+  compact (JPEG pages, PNG masks, pages made 1,280 px long where that is
+  enough) and M2 and M3 are trained small and at reduced size.
 - Each model gets a **model card**: data, scores on the gold set, known
   failures, the round it came from. A registry (`nn/registry.json`) lists
   every version and its stage.
@@ -426,14 +452,15 @@ templates stop being needed for new printings.
   names the purpose.
 - It stays on the local machine: an encrypted disk, access for named
   people, and a retention schedule (`rfpii retain`) for the label store.
-- **Weights trained on real forms stay internal.** Detectors and
-  segmenters don't reproduce their inputs the way generative models can,
-  but this is not proven for every input, so such weights are not
-  published or shared without an assessment. Weights trained on synthetic
-  forms only can be published.
+- **Weights may leave the machine** (the owner's decision, 9 November
+  2026), those trained on real forms included: they can be stored and
+  shared elsewhere. Detectors and segmenters don't reproduce their inputs
+  the way generative models can, but this is not proven for every input,
+  so the DPIA annex records the decision and its reasoning, and each model
+  card says whether real forms were in its training data.
 - M4 never reads characters (§2), and no model outputs text.
 - The language model that reads and writes weights runs on this machine
-  (§5); weights trained on real forms are never sent to a cloud model. A
+  (§5); no cloud model reads or writes them. A
   probe shows it activations of chosen pages, numbers, not images; it never
   sees a page.
 - An erasure request reaches the training set too: the form's labels are
@@ -442,8 +469,9 @@ templates stop being needed for new printings.
 ## 11. Milestones
 
 1. **Data:** the dataset builder from manifests, the synthetic generator
-   extended, the gold set labelled (the review page doubles as the
-   labelling tool).
+   extended (also to redacted pages that say what still shows, for the
+   local reviewer), the gold set planned (synthetic and reference), and a
+   read-only viewer of labelled pages.
 2. **Weight-space tools and the first test of them:** the weight printer,
    probe, try and diff tools, the local language model, and M3's rule stem
    written from the pipeline's rules (§5, write). The test: do the written
@@ -460,23 +488,121 @@ templates stop being needed for new printings.
 Each milestone ends with its round's scores on the gold set, written up
 in this document as DESIGN.md does for the pipeline.
 
-## 12. Open decisions
+## 12. Where it stands (milestone 1)
 
-- **Hardware for training:** a local GPU (16–24 GB), or CPU only (M1 and
-  M4 only, at first)?
-- **More data:** may forms be downloaded from the IEBC portal for training,
-  under an updated DPIA?
-- **Reviewers:** who settles disagreements and labels the gold set, and
-  how many hours a round can they give?
-- **The target stage:** C (no cloud models in ordinary jobs), D (none at
-  all) or E (no templates)?
-- **Weights:** may weights trained on real forms ever leave the machine?
-- **The weight-programming model:** a local open model (a 27 B model needs
-  a 24 GB GPU, which can be the training GPU), and may parts trained on
-  synthetic forms alone be shown to a stronger cloud model?
-- **Repairs between trainings:** may a repaired version be promoted before
-  a training round has confirmed it (it passes the same gate either way),
-  or only up to stage D?
+Built (9 November 2026), as nn/README.md describes:
+
+- **`rfpii dataset synth`** (`rust/src/dataset/`): synthetic forms on the
+  four printings with a template (Form 34A; the Form 34B blocks of layouts
+  A, B and C), drawn on the templates' reference images, with exact boxes,
+  character slots and ink masks (print, pen, stamp ink drawn on separate
+  layers), photographed or scanned, some turned, folded, blurred; and
+  negatives (results pages, unfilled forms, blank pages, pages that are
+  not forms). A seed gives the same files, byte for byte.
+- **`synth --redacted`**: the same pages redacted by the pipeline itself,
+  some masks then undone or cut back on purpose, every field labelled with
+  what it still shows (`masked_ok`, `leak_signature`, `leak_number`): the
+  training data for stage C, the local reviewer.
+- **`rfpii dataset build`**: the teacher's labels from published manifests
+  and their originals, and the held pages as an unlabelled pool;
+  **`check`**, **`stats`**, **`compare`**.
+- **`nn/`**: the dataset reader, the gold set's plan (synthetic gold set and
+  reference set, §6.1) with the exclusion every training reader goes
+  through, and a read-only viewer on 127.0.0.1.
+
+**How good the teacher's labels are, where the truth is known.** 100
+synthetic pages of each kind (about 25 per printing), redacted with
+`rfpii redact`, labelled with `rfpii dataset build` and compared with the
+truth they were drawn with (`rfpii dataset compare`), over all four
+printings, layout C included. Light scans ("clean"), and photos and scans
+as they come ("mixed": 41 photos, 12 pages turned). "Found" is recall at
+the IoU given; "mean best IoU" averages, over the true boxes, the best
+overlap any teacher box of the class has with each:
+
+| | clean | mixed |
+|---|---|---|
+| pages published by the pipeline | 92 of 100 | 90 of 100 |
+| agents table, comments, declaration: mean IoU | 0.99 | 0.99 |
+| results regions: found; median best IoU | 0.70; 0.98 | 0.73; 0.99 |
+| ID numbers: found at IoU 0.5 / 0.3; mean best IoU | 0.71 / 0.80; 0.57 | 0.69 / 0.83; 0.56 |
+| phone numbers | 0.75 / 0.86; 0.58 | 0.72 / 0.82; 0.55 |
+| signatures | 0.69 / 0.88; 0.54 | 0.66 / 0.86; 0.54 |
+| stamps: found at IoU 0.5; mean best IoU (precision) | 0.88; 0.84 (0.69) | 0.83; 0.77 (0.76) |
+| numbers with slots on both: same count; mean boundary error | 90%; 16.5 px | 91%; 17.9 px |
+
+So the teacher places fields where they are, but its boxes are coarse:
+they are drawn from whole 8×8 blocks, a signature's from its band (the
+middle half, grown back to full height), a partly hidden number's from its
+hidden characters, and a cell the masking found empty is the whole cell.
+A detector trained on them should be scored at IoU 0.3 for fields, and
+character slots should come from synthetic forms (M4), not the teacher.
+The teacher's stamps include the IEBC logo in the 34A header and other
+rings its search favours (it favours recall, by design); the synthetic
+truth labels the stamp printed on the 34A reference, which the stamp
+finder also finds. The results regions the truth has and the teacher
+doesn't are the typed results tables above a Form 34B block, which no
+template protects.
+
+**Two things the measurement found in the pipeline itself.**
+
+- **Layout C's phone column is not masked.** The `form34b_2022_block_c`
+  template's `agent_phone` zone (x 1844–2158) lies on the printed
+  "Signature" column and its `agent_signatures` zone (2164–2483) on the
+  "Date" column; the printed "Tel. Contact" column is 1524–1839, and no
+  zone covers it. On synthetic pages written in the printed columns, none
+  of 54 phone numbers was found (recall 0.00, both runs), and on redacted
+  pages all 18 were published whole; 27 of 63 signatures were only partly
+  hidden. The other three templates' zones match their printed columns.
+  The one published layout C document (Daadab) should be checked.
+- **Faint numbers can be published whole.** Outside layout C, on 89
+  redacted synthetic pages the pipeline's own masks (none cut back) left
+  37 of 589 fields showing by the rules of nn/README.md: 6 of 204 IDs (3
+  of them with no character hidden at all), 3 of 148 phone numbers and 28
+  of 237 signatures (their middle not hidden along enough of them). In the
+  teacher comparison, the written numbers the masking read as empty were,
+  looked at one by one, mostly thin, light writing, published whole. The leak check rereads with the same ink rule, so a
+  stroke too faint for one is too faint for the other (DESIGN.md, "Known
+  limits"). How often real pens are that faint is not known; these are the
+  misses the local reviewer is for.
+
+**Size and speed** (4 cores): `synth` writes 5.2–5.7 pages a second at full
+size or at 1,280 px; a page takes 1.1 MB at full size and 212 kB at
+1,280 px (10,000 pages: about 2.1 GB). `synth --redacted` runs the pipeline
+on every page: 0.27 pages a second, and the pipeline holds about one page
+in ten. `build` labels 5.6 pages a second, the rules' ink mask included;
+`rfpii redact` itself ran at 0.34 pages a second.
+
+**What remains for milestone 1**: the teacher datasets and the reference
+set need the real corpus (the 215 Forms 34A of 2022, the 2013 and 2017
+forms and the pages they held), which is not on this machine: run
+`rfpii dataset build` over each published run, then `gold.py plan` and
+`make-synthetic` (nn/README.md). No person labels the gold set (§6.1).
+The layout C template needs correcting before its pages are trusted as
+teacher labels.
+
+## 13. Open decisions
+
+Decided by the owner on 9 November 2026:
+
+- **Training hardware:** this cloud instance, CPU only (§6.4).
+- **Reviewers:** none. No person labels pages or settles disagreements;
+  disagreements are flagged (§6.1, §6.3).
+- **Target:** stage C, the local reviewer on published, redacted pages
+  (§7).
+- **More data:** yes, from the IEBC portal and the owner's Dropbox archive,
+  with each file's provenance recorded (§3).
+- **Weights:** they may leave the machine, those trained on real forms
+  included (§10).
+- **The weight-programming model:** it must run locally, for every part
+  (§5).
+- **Repairs:** a repaired version is not promoted before a training round
+  confirms it (§5).
+
+Still open:
+
+- **A person's check before promotion:** §7 asks for a sample of live
+  output checked by a person at each stage; with no reviewers, what
+  replaces it?
 
 ## Sources on weight-space programming
 

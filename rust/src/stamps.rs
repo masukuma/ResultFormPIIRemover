@@ -104,14 +104,14 @@ impl Stamp {
 }
 
 /// Dark marks: print, pen and (dark) stamp ink.
-fn dark_ink(gray: &Mat) -> Result<Mat> {
+pub fn dark_ink(gray: &Mat) -> Result<Mat> {
     let ink = util::adaptive_inv(&util::gaussian(gray, 3)?, 25, 12.0)?;
     util::morph(&ink, imgproc::MORPH_OPEN, &util::ones_kernel(2, 2)?)
 }
 
 /// Coloured marks: stamp ink (violet, blue, red) differs in colour from the
 /// paper around it. The green security print and most black print are left out.
-fn color_ink(color: &Mat) -> Result<Mat> {
+pub fn color_ink(color: &Mat) -> Result<Mat> {
     let mut lab8 = Mat::default();
     imgproc::cvt_color_def(color, &mut lab8, imgproc::COLOR_BGR2Lab)?;
     let mut med = Mat::default();
