@@ -553,7 +553,14 @@ template protects.
   of 54 phone numbers was found (recall 0.00, both runs), and on redacted
   pages all 18 were published whole; 27 of 63 signatures were only partly
   hidden. The other three templates' zones match their printed columns.
-  The one published layout C document (Daadab) should be checked.
+  The one published layout C document (Daadab) leaked nothing: its agents
+  table is struck through and empty. **Fixed** (9 November 2026): the two
+  zones now lie between the printed rules (phone x 1525–1839, signature
+  1844–2159). On 30 synthetic layout C pages redacted with the same seeds,
+  phone numbers published whole fell from 37 of 37 to 2 of 37, both cut
+  back on purpose by the generator, and agents' signatures left showing
+  from 32 of 33 to 8, 3 of them cut back on purpose; the other 5 have
+  64–74% of their middle hidden, against the 75% the rule asks.
 - **Faint numbers can be published whole.** Outside layout C, on 89
   redacted synthetic pages the pipeline's own masks (none cut back) left
   37 of 589 fields showing by the rules of nn/README.md: 6 of 204 IDs (3
@@ -577,8 +584,8 @@ set need the real corpus (the 215 Forms 34A of 2022, the 2013 and 2017
 forms and the pages they held), which is not on this machine: run
 `rfpii dataset build` over each published run, then `gold.py plan` and
 `make-synthetic` (nn/README.md). No person labels the gold set (§6.1).
-The layout C template needs correcting before its pages are trusted as
-teacher labels.
+Layout C pages published before the template's fix (above) are relabelled
+by running them again.
 
 ## 13. Open decisions
 
