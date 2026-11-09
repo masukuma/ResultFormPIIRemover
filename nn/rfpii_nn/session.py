@@ -85,7 +85,8 @@ ink (marked pixels shared with the pipeline / marked by either) as high as you c
 
 THE SANDBOX (numpy only; no files outside your folder, no network, no other programs). Defined for you:
 - W: dict of the current weights, numpy float32 arrays: W["<layer>.w"], W["<layer>.b"]. It starts {start}.
-  W is kept from one reply to the next; it is your candidate.
+  W is kept from one reply to the next; it is your candidate. Never write W = {{}} or redefine SPEC or the tools:
+  that throws your work away. Change W's arrays in place, e.g. W["gray.w"][0, :, 0, 0] = [0.299, 0.587, 0.114].
 - SPEC: the layers as a list of dicts (name, inputs, outputs, kernel, act, depthwise, what, w_shape, b_shape);
   CHANNELS, OUTPUTS: channel names.
 - show(W, layers=None) -> str: the printer (values to 4 significant figures, with each channel's meaning).
@@ -303,12 +304,46 @@ def cut_code(reply):
     return None
 
 
+def zero_layers(w):
+    """The layers whose weights and bias are all zero, in order."""
+    return [l.name for l in stem.LAYERS if not np.any(w[l.name + ".w"]) and not np.any(w[l.name + ".b"])]
+
+
+def trim_traceback(err):
+    """A cell's traceback without the kernel's own frames."""
+    lines, out, skip = err.splitlines(), [], 0
+    for ln in lines:
+        if skip:
+            skip -= 1
+            continue
+        if "sandbox_kernel.py" in ln and ln.strip().startswith("File"):
+            skip = 2 if lines and "~" in "".join(lines) else 1
+            continue
+        if set(ln.strip()) <= set("~^") and ln.strip():
+            continue
+        out.append(ln)
+    return "\n".join(out)
+
+
+def same_code(a, b):
+    """Whether two cells are (nearly) the same code."""
+    import difflib
+
+    if not a or not b:
+        return False
+    na, nb = " ".join(a.split()), " ".join(b.split())
+    if na == nb:
+        return True
+    # a long cell copied with a few edits (a small model's loop); a short one must match exactly
+    return min(len(na), len(nb)) > 600 and difflib.SequenceMatcher(None, na, nb, autojunk=False).ratio() > 0.97
+
+
 def done_of(reply):
     return bool(re.search(r"\bDONE\b", reply.split("</think>")[-1].replace("```", "\n")))
 
 
 class Session:
-    def __init__(self, backend, sets, out, tries=50, hours=4.0, max_turns=120, start=None, think=1200, answer=1800,
+    def __init__(self, backend, sets, out, tries=50, hours=4.0, max_turns=120, start=None, think=400, answer=1800,
                  cell_timeout=900.0, isolation="auto", compact_at=0.8):
         self.backend = backend
         self.out = Path(out)
@@ -367,7 +402,7 @@ class Session:
         else:
             parts.append("(nothing printed)")
         if r.get("error"):
-            parts.append("Error:\n" + r["error"].rstrip())
+            parts.append("Error:\n" + trim_traceback(r["error"]).rstrip())
         if r.get("w_ok") not in (True, None):
             parts.append(str(r["w_ok"]))
         b = self.budget.best()
@@ -376,7 +411,10 @@ class Session:
             best = " Best test run so far: #{} ({}).".format(
                 b["try"], ", ".join(f"{n} {b[n]['agreement']*100:.2f}% / IoU {b[n]['iou']:.3f}" for n in stem.OUTPUTS))
         left_h = self.hours - (time.time() - self.t0) / 3600
-        parts.append(f"[Turn {turn}. Test runs left: {self.budget.left} of {self.budget.total}.{best} "
+        zero = zero_layers(self.sandbox.weights)
+        status = (f"Layers of W still all zero ({len(zero)} of {len(stem.LAYERS)}): {', '.join(zero)}." if zero
+                  else "Every layer of W has weights.")
+        parts.append(f"[Turn {turn}. {status} Test runs left: {self.budget.left} of {self.budget.total}.{best} "
                      f"Time left: {max(left_h, 0) * 60:.0f} min.{' Submitted: yes.' if self.submitted else ''}]")
         if self.budget.left == 0 and not self.submitted:
             parts.append("No test runs are left: call submit(W, reasons) with your best stem now, then write DONE.")
@@ -401,10 +439,11 @@ class Session:
                   "think": self.think, "answer": self.answer})
         self.log({"event": "prompt", "role": "system", "text": sysmsg})
         self.note("system", sysmsg)
-        first = "Begin. Write the stem's weights."
+        first = ("Begin. Write the stem's weights, a few layers per reply, in the order of SPEC; check each with forward() "
+                 "on a small test image you make.")
         ps = self.backend.append(f"<|im_start|>system\n{sysmsg}<|im_end|>\n<|im_start|>user\n{first}<|im_end|>\n<|im_start|>assistant\n<think>\n")
         self.log({"event": "prompt_eval", **ps})
-        turn, reason = 0, "max turns"
+        turn, reason, last_code = 0, "max turns", None
         stats = {"prompt_tokens": ps["tokens"], "prompt_seconds": ps["seconds"], "gen_tokens": 0, "gen_seconds": 0.0, "renewals": 0}
         try:
             while turn < self.max_turns:
@@ -422,7 +461,13 @@ class Session:
                     cut = cut_code(reply)
                     if cut:
                         code = cut[0]
-                if code:
+                if code and same_code(code, last_code):
+                    fb = self._feedback({"out": "", "error": "This is the same code as your last reply, so it was not run again: W "
+                                                              "already holds what it did. Do something different: write the next layers, "
+                                                              "or fix what the last result showed."}, turn)
+                    self.log({"event": "repeat", "turn": turn})
+                elif code:
+                    last_code = code
                     r = self.sandbox.run(code)
                     self.log({"event": "cell", "turn": turn, "code": code, "cut": cut[1] if cut else None, **r})
                     fb = self._feedback(r, turn)
@@ -493,7 +538,7 @@ def main(argv=None):
     ap.add_argument("--tries", type=int, default=50)
     ap.add_argument("--hours", type=float, default=4.0)
     ap.add_argument("--turns", type=int, default=120)
-    ap.add_argument("--think", type=int, default=1200, help="thinking tokens a reply may use")
+    ap.add_argument("--think", type=int, default=400, help="thinking tokens a reply may use")
     ap.add_argument("--answer", type=int, default=1800, help="tokens a reply's answer may use")
     ap.add_argument("--ctx", type=int, default=65536)
     ap.add_argument("--threads", type=int, default=4)

@@ -488,7 +488,9 @@ templates stop being needed for new printings.
 Each milestone ends with its round's scores on the gold set, written up
 in this document as DESIGN.md does for the pipeline.
 
-## 12. Where it stands (milestone 1)
+## 12. Where it stands
+
+### Milestone 1: the data
 
 Built (9 November 2026), as nn/README.md describes:
 
@@ -580,10 +582,14 @@ in ten. `build` labels 5.6 pages a second, the rules' ink mask included;
 `rfpii redact` itself ran at 0.34 pages a second.
 
 **What remains for milestone 1**: the teacher datasets and the reference
-set need the real corpus (the 215 Forms 34A of 2022, the 2013 and 2017
-forms and the pages they held), which is not on this machine: run
-`rfpii dataset build` over each published run, then `gold.py plan` and
-`make-synthetic` (nn/README.md). No person labels the gold set (§6.1).
+set, from the real corpus. It is on this machine (this section said
+otherwise until milestone 2), outside the repository: the 2013 originals
+and their latest published run with its manifests, the 2022 Forms 34B as
+published with their originals, a run of 2022 Forms 34A, and the forms
+downloaded from the owner's Dropbox archive (the Forms 34A of 2022, a zip
+per county) and the IEBC portal, each file in the provenance file beside
+them (§3). Run `rfpii dataset build` over each published run, then
+`gold.py plan` and `make-synthetic` (nn/README.md). No person labels the gold set (§6.1).
 Layout C pages published before the template's fix (above) are relabelled
 by running them again.
 
