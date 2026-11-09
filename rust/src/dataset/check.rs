@@ -76,10 +76,10 @@ pub fn check_labels(l: &Value, w: f64, h: f64) -> Vec<String> {
                 _ => p.push(format!("{}: character box {} outside the image", at, c)),
             }
         }
-        if let Some(s) = b["redaction"]["status"].as_str() {
-            if !STATUSES.contains(&s) {
-                p.push(format!("{}: redaction status {}", at, s));
-            }
+        if let Some(s) = b["redaction"]["status"].as_str()
+            && !STATUSES.contains(&s)
+        {
+            p.push(format!("{}: redaction status {}", at, s));
         }
     }
     p

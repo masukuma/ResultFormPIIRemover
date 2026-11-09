@@ -20,3 +20,7 @@ api/target/
 
 # what the API's image is built from (api/Dockerfile)
 dist/
+
+# datasets and the gold set of the local networks (nn/README.md): never commit
+nn/data/
+gold/

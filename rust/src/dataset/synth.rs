@@ -307,8 +307,8 @@ fn signature_strokes(g: &mut Gen, cell: [f64; 4], may_leave: bool) -> (Vec<Poly>
         }
     }
     let run = (x0 + sw - start).max(0.2 * sw);
-    let n = if style >= 5 && style < 7 { g.int(10, 22) } else { g.int(5, 12) } as usize;
-    let amp = if style >= 5 && style < 7 { sh * g.u(0.15, 0.35) } else { sh / 2.0 };
+    let n = if (5..7).contains(&style) { g.int(10, 22) } else { g.int(5, 12) } as usize;
+    let amp = if (5..7).contains(&style) { sh * g.u(0.15, 0.35) } else { sh / 2.0 };
     let mut pts = Vec::new();
     let mut up = g.p(0.5);
     for i in 0..n {
@@ -566,29 +566,29 @@ fn fill(t: &Template, lay: Option<&Layout>, off: [f64; 2], unfilled: bool, l: &m
                 }
             }
         }
-        if g.p(0.2) {
-            if let Some(c) = next(g) {
-                let who = person(g);
-                let (boxes, owners) = write_text(l, g, [c[0], c[1], c[2] * 0.6, c[3]], &who, officer_pen, false, true)?;
-                items.push(Item { class: "name", zone: format!("{}:name", name), role: Some("officer"), rect: union(&boxes), cell: None, empty: false, struck: false, chars: vec![], owners, rule: None, circle: None, polygon: None });
-            }
+        if g.p(0.2)
+            && let Some(c) = next(g)
+        {
+            let who = person(g);
+            let (boxes, owners) = write_text(l, g, [c[0], c[1], c[2] * 0.6, c[3]], &who, officer_pen, false, true)?;
+            items.push(Item { class: "name", zone: format!("{}:name", name), role: Some("officer"), rect: union(&boxes), cell: None, empty: false, struck: false, chars: vec![], owners, rule: None, circle: None, polygon: None });
         }
-        if g.p(0.15) {
-            if let Some(c) = next(g) {
-                let phone = g.p(0.5);
-                let text = if phone { phone_number(g) } else { id_number(g) };
-                let (chars, owners) = write_text(l, g, [c[0], c[1], c[2] * 0.45, c[3]], &text, officer_pen, true, true)?;
-                let mut it = number_item(&format!("{}:number", name), "officer", if phone { "phone" } else { "id" }, c, chars, owners);
-                it.cell = None;
-                items.push(it);
-            }
+        if g.p(0.15)
+            && let Some(c) = next(g)
+        {
+            let phone = g.p(0.5);
+            let text = if phone { phone_number(g) } else { id_number(g) };
+            let (chars, owners) = write_text(l, g, [c[0], c[1], c[2] * 0.45, c[3]], &text, officer_pen, true, true)?;
+            let mut it = number_item(&format!("{}:number", name), "officer", if phone { "phone" } else { "id" }, c, chars, owners);
+            it.cell = None;
+            items.push(it);
         }
-        if g.p(0.35) {
-            if let Some(c) = next(g) {
-                let cell = [c[0] + c[2] * g.u(0.3, 0.6), c[1], w * g.u(0.15, 0.25), line_h * 1.3];
-                let (b, owners) = draw_signature(l, g, cell, false, officer_pen)?;
-                items.push(Item { class: "signature", zone: format!("{}:signature", name), role: Some("officer"), rect: b, cell: None, empty: false, struck: false, chars: vec![], owners, rule: None, circle: None, polygon: None });
-            }
+        if g.p(0.35)
+            && let Some(c) = next(g)
+        {
+            let cell = [c[0] + c[2] * g.u(0.3, 0.6), c[1], w * g.u(0.15, 0.25), line_h * 1.3];
+            let (b, owners) = draw_signature(l, g, cell, false, officer_pen)?;
+            items.push(Item { class: "signature", zone: format!("{}:signature", name), role: Some("officer"), rect: b, cell: None, empty: false, struck: false, chars: vec![], owners, rule: None, circle: None, polygon: None });
         }
     }
     Ok(())
@@ -661,9 +661,9 @@ fn typed_table(l: &mut Layers, g: &mut Gen, r: [f64; 4], k: f64) -> Result<Item>
         l.typed(&code, (x + 0.01 * w) as i32, base, scale, thick)?;
         let st = format!("{} PRIMARY", place(g));
         l.typed(&st[..st.len().min(14)], (x + 0.31 * w) as i32, base, scale * 0.8, thick)?;
-        for c in 2..6 {
+        for &c in &cols[2..6] {
             let v = g.int(0, 700).to_string();
-            l.typed(&v, (x + (cols[c] + 0.02) * w) as i32, base, scale, thick)?;
+            l.typed(&v, (x + (c + 0.02) * w) as i32, base, scale, thick)?;
         }
     }
     Ok(Item::region("results_region", "typed_results", [x, y, x + w, y + rows as f64 * row_h]))
@@ -951,10 +951,10 @@ pub fn item_label(it: &Item, h: &H3, w: f64, hh: f64, stamps: &[[f64; 3]], turne
             v["polygon"] = rpoly(&map_poly(h, &quad(it.rect)));
         }
     }
-    if let Some(c) = it.cell {
-        if let Some(cb) = map_box(h, c, w, hh) {
-            v["cell"] = rbox(cb);
-        }
+    if let Some(c) = it.cell
+        && let Some(cb) = map_box(h, c, w, hh)
+    {
+        v["cell"] = rbox(cb);
     }
     if it.empty {
         v["empty"] = json!(true);

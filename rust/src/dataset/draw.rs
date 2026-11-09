@@ -103,6 +103,7 @@ impl Layers {
 
     /// Cursive writing (a Hershey script font) with its baseline at (x, y);
     /// returns its box (x0, y0, x1, y1).
+    #[allow(clippy::too_many_arguments)]
     pub fn pen_script(&mut self, s: &str, x: f64, y: f64, scale: f64, thick: i32, color: [u8; 3], owner: u16) -> Result<[f64; 4]> {
         let font = imgproc::FONT_HERSHEY_SCRIPT_SIMPLEX;
         let at = Point::new(x.round() as i32, y.round() as i32);

@@ -335,10 +335,10 @@ fn template_boxes(t: &Template, mp: &Value, w: f64, hh: f64, boxes: &mut Vec<Val
     }
     // the template's regions
     for (name, r) in &t.structure {
-        if name == "agents" {
-            if let Some(b) = img_box(*r) {
-                boxes.push(json!({"class": "agents_table", "box": rbox(b), "source": "template_zone", "zone": name, "polygon": rpoly(&on_page(&h, *r))}));
-            }
+        if name == "agents"
+            && let Some(b) = img_box(*r)
+        {
+            boxes.push(json!({"class": "agents_table", "box": rbox(b), "source": "template_zone", "zone": name, "polygon": rpoly(&on_page(&h, *r))}));
         }
     }
     for (name, r) in &t.free_text {
@@ -405,11 +405,11 @@ fn components(rc: &[(usize, usize)]) -> Vec<Vec<usize>> {
                     if nr < 0 || nc < 0 {
                         continue;
                     }
-                    if let Some(&j) = at.get(&(nr as usize, nc as usize)) {
-                        if !seen[j] {
-                            seen[j] = true;
-                            stack.push(j);
-                        }
+                    if let Some(&j) = at.get(&(nr as usize, nc as usize))
+                        && !seen[j]
+                    {
+                        seen[j] = true;
+                        stack.push(j);
                     }
                 }
             }
@@ -464,10 +464,10 @@ fn found_boxes(list: &Value, source: &str, w: f64, hh: f64, boxes: &mut Vec<Valu
             "id_number" => "id_number",
             _ => "signature",
         };
-        if b.len() == 4 {
-            if let Some(c) = clip([b[0], b[1], b[2], b[3]], w, hh) {
-                boxes.push(json!({"class": class, "box": rbox(c), "source": source, "role": "unknown"}));
-            }
+        if b.len() == 4
+            && let Some(c) = clip([b[0], b[1], b[2], b[3]], w, hh)
+        {
+            boxes.push(json!({"class": class, "box": rbox(c), "source": source, "role": "unknown"}));
         }
     }
 }
