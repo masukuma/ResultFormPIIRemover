@@ -113,7 +113,12 @@ The corpus to start from: the 215 Forms 34A of 2022, the 6,608 published
 pages of the 2013 Forms 34, the 2017 forms, and the pages each of them
 held. The IEBC portal serves tens of thousands more forms per election;
 downloading them for training is a new processing activity the DPIA must
-cover (§10).
+cover (§10). Decided (9 November 2026): forms are downloaded for training
+from the IEBC portal (forms.iebc.or.ke) and from the owner's Dropbox
+archive. They are kept outside the repository, and a provenance file beside
+them records each file's source, address, election, county, size, SHA-256
+and time of retrieval, so a file can be traced, removed on an erasure
+request, or excluded from a round.
 
 Splits are by constituency, so no polling station or officer is in both
 training and test. A page's labels carry the version of the teacher that
@@ -234,15 +239,16 @@ found everything it found. So:
    any other way. Its diff, usually a few weights, is kept beside the model
    card, where a person can read it.
 
-**The language model runs on this machine.** Weights trained on real
-forms are derived from personal data (§10), so they are not sent to a
-cloud model. The reference is an open model of the Qwen 3.8 27B class:
+**The language model runs on this machine** (the owner's decision, 9
+November 2026, for every part, those trained on synthetic forms included).
+Weights trained on real forms are derived from personal data (§10). The reference is an open model of the Qwen 3.8 27B class:
 17 GB, so it fits a 24 GB GPU (the training GPU), with a context of at least
 128,000 tokens. A reading of a 17,000-weight part takes about an hour, so a
 round affords a handful of sessions. The published results used frontier
 cloud models (GPT-6 Astra, Claude Opus 5.5), and the local model did less
-well (3 of 4); parts trained only on synthetic forms could be shown to a
-frontier cloud model, if the owner wants that.
+well (3 of 4). No part is shown to a cloud model. Training runs on this
+instance's CPU with 15 GB of memory (§6.4), where a 27 B model doesn't fit:
+milestone 2 picks the largest local model that does, and measures it.
 
 **Backbones.** Not by default. The 0.8B fix shows that a defect traced to
 one direction inside a large network can be removed in the sandbox; if a
@@ -256,6 +262,12 @@ set and to a **regression set** that every later version must pass, and the
 repaired part is the starting point of the next round's training of that
 part. A repair that keeps being undone means the fault is in the data, not
 the part.
+
+**A repair is promoted only after training confirms it** (the owner's
+decision, 9 November 2026). A repaired version is scored and shadowed like
+any other, but the gate (§6, step 11) promotes it only once the next
+training round, started from the repaired part, has kept the fix and passes
+the gate itself; what is promoted is that trained version.
 
 **Whether it earns its place.** Each round records the faults repaired,
 the repairs that passed the gate, those that survived the next training
@@ -286,14 +298,18 @@ round k   1. harvest   labels: the teacher's outputs + settled pages + synthetic
          10. read      read every programmable part (§5, read); turn each
                        claim into a test; run the statistics and shortcut
                        tests
-         11. gate      promote S_k' (or S_k) one stage if its scores pass (§7)
+         11. gate      promote S_k one stage if its scores pass (§7); a
+                       repaired S_k' is promoted only once training has
+                       confirmed it (§5, keeping a repair)
           until S_k matches T on the gold set two rounds running and
           disagreements fall below 0.5% of fields
 ```
 
 Repairs are fast (hours) and narrow; training is slow (a day or more) and
 broad. A round can end after step 8 with a repaired model and go straight to
-step 3 again, without training, when only faults in one place were found.
+step 3 again, without training, when only faults in one place were found;
+the repaired model is then measured, not promoted, until a training round
+confirms it.
 
 Both sides get better: a disagreement the teacher loses is a pipeline bug
 to fix, as every review round has been so far.
@@ -436,14 +452,15 @@ templates stop being needed for new printings.
   names the purpose.
 - It stays on the local machine: an encrypted disk, access for named
   people, and a retention schedule (`rfpii retain`) for the label store.
-- **Weights trained on real forms stay internal.** Detectors and
-  segmenters don't reproduce their inputs the way generative models can,
-  but this is not proven for every input, so such weights are not
-  published or shared without an assessment. Weights trained on synthetic
-  forms only can be published.
+- **Weights may leave the machine** (the owner's decision, 9 November
+  2026), those trained on real forms included: they can be stored and
+  shared elsewhere. Detectors and segmenters don't reproduce their inputs
+  the way generative models can, but this is not proven for every input,
+  so the DPIA annex records the decision and its reasoning, and each model
+  card says whether real forms were in its training data.
 - M4 never reads characters (§2), and no model outputs text.
 - The language model that reads and writes weights runs on this machine
-  (§5); weights trained on real forms are never sent to a cloud model. A
+  (§5); no cloud model reads or writes them. A
   probe shows it activations of chosen pages, numbers, not images; it never
   sees a page.
 - An erasure request reaches the training set too: the form's labels are
@@ -565,22 +582,27 @@ teacher labels.
 
 ## 13. Open decisions
 
-Decided (9 November 2026): training on the cloud instance's CPU (§6.4);
-no person labels or reviews (§6.1, §6.3); the target is stage C, the
-local reviewer on published, redacted pages (§7).
+Decided by the owner on 9 November 2026:
 
-- **More data:** may forms be downloaded from the IEBC portal for training,
-  under an updated DPIA?
+- **Training hardware:** this cloud instance, CPU only (§6.4).
+- **Reviewers:** none. No person labels pages or settles disagreements;
+  disagreements are flagged (§6.1, §6.3).
+- **Target:** stage C, the local reviewer on published, redacted pages
+  (§7).
+- **More data:** yes, from the IEBC portal and the owner's Dropbox archive,
+  with each file's provenance recorded (§3).
+- **Weights:** they may leave the machine, those trained on real forms
+  included (§10).
+- **The weight-programming model:** it must run locally, for every part
+  (§5).
+- **Repairs:** a repaired version is not promoted before a training round
+  confirms it (§5).
+
+Still open:
+
 - **A person's check before promotion:** §7 asks for a sample of live
   output checked by a person at each stage; with no reviewers, what
   replaces it?
-- **Weights:** may weights trained on real forms ever leave the machine?
-- **The weight-programming model:** a local open model (a 27 B model needs
-  a 24 GB GPU, which can be the training GPU), and may parts trained on
-  synthetic forms alone be shown to a stronger cloud model?
-- **Repairs between trainings:** may a repaired version be promoted before
-  a training round has confirmed it (it passes the same gate either way),
-  or only up to stage D?
 
 ## Sources on weight-space programming
 
