@@ -577,6 +577,14 @@ fn destripe(bw: &Mat) -> Result<Mat> {
     util::subtract(bw, &thin)
 }
 
+/// Long thin rules in binary ink (255): what an opening with a horizontal
+/// line `hlen` px long, or a vertical one `vlen` px long, keeps.
+pub fn rule_lines(bw: &Mat, hlen: i32, vlen: i32) -> Result<Mat> {
+    let l1 = util::morph(bw, imgproc::MORPH_OPEN, &util::rect_kernel(hlen, 1)?)?;
+    let l2 = util::morph(bw, imgproc::MORPH_OPEN, &util::rect_kernel(1, vlen)?)?;
+    util::bitor(&l1, &l2)
+}
+
 /// Binary ink of a rectified strip, with rules, strike lines and the
 /// security-print background removed.
 pub fn ink_mask(strip: &Mat, row_h: f64, signature: bool) -> Result<Mat> {
@@ -584,9 +592,7 @@ pub fn ink_mask(strip: &Mat, row_h: f64, signature: bool) -> Result<Mat> {
     let (h, w) = (bw.rows(), bw.cols());
     let rh = (row_h as i32).max(10);
     let rule_len = if signature { (0.8 * w as f64) as i32 } else { (w / 3).max(15) };
-    let l1 = util::morph(&bw, imgproc::MORPH_OPEN, &util::rect_kernel(rule_len, 1)?)?;
-    let l2 = util::morph(&bw, imgproc::MORPH_OPEN, &util::rect_kernel(1, (rh as f64 * 1.6) as i32)?)?;
-    let lines = util::bitor(&l1, &l2)?;
+    let lines = rule_lines(&bw, rule_len, (rh as f64 * 1.6) as i32)?;
     let mut ink = util::subtract(&bw, &util::dilate(&lines, &util::ones_kernel(3, 3)?)?)?;
     ink = util::morph(&ink, imgproc::MORPH_OPEN, &util::ones_kernel(2, 2)?)?;
     let mut segs = Vector::<core::Vec4i>::new();
