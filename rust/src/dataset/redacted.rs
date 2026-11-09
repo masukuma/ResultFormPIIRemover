@@ -13,10 +13,13 @@
 //!   characters hidden (an ID), or `hide` of a phone number's last
 //!   `phone_tail` digits; a character is hidden when at least half its ink
 //!   is under black. Otherwise `leak_number`.
-//! - a signature is `masked_ok` when its middle is hidden: along it, in
-//!   pieces 32 px long, the ink between the 40% and 60% of its height is at
-//!   least 80% under black, in pieces holding at least 90% of its ink.
-//!   Otherwise `leak_signature`.
+//! - a signature is `masked_ok` when the middle of its body is hidden:
+//!   along it, in pieces 32 px long, the ink between the 40% and 60% of its
+//!   height is at least 80% under black, in pieces holding at least 75% of
+//!   the body's ink, and at least a quarter of its ink is under black.
+//!   Otherwise `leak_signature`. A flourish (a stroke sweeping back under
+//!   it, out of its cell) is not judged: the pipeline's band follows the
+//!   body. Both shares are recorded, so the bar can be set again.
 //!
 //! The pipeline's own misses are labelled the same way: no mask was undone
 //! there (`perturbed` is null), but the ink still shows.
@@ -244,9 +247,11 @@ pub fn redact(rd: &Redactor, templates: &[Template], jpeg: &[u8], shot: &Shot, q
         let it = &items[boxes[k].0];
         let how = changed.iter().find(|c| c.0 == k).map(|c| c.1);
         let rec = if it.class == "signature" {
+            let body = &ink.pts[it.owners[0] as usize];
             let p: Vec<(i32, i32, bool)> = it.owners.iter().flat_map(|&o| ink.pts[o as usize].iter().copied()).collect();
-            let (middle, all) = signature_hidden(&p, across);
-            let ok = middle >= 0.9 && all >= 0.25;
+            let (middle, _) = signature_hidden(body, across);
+            let all = share_black(&p);
+            let ok = middle >= 0.75 && all >= 0.25;
             json!({"status": if ok { "masked_ok" } else { "leak_signature" }, "ink_hidden": (all * 1000.0).round() / 1000.0, "middle_hidden": (middle * 1000.0).round() / 1000.0, "perturbed": how})
         } else {
             let hidden: Vec<bool> = it.owners.iter().filter(|&&o| !ink.pts[o as usize].is_empty()).map(|&o| share_black(&ink.pts[o as usize]) >= 0.5).collect();

@@ -103,8 +103,8 @@ pub struct Item {
     pub struck: bool,
     /// each character's box, for numbers
     pub chars: Vec<[f64; 4]>,
-    /// the ink drawn for it: one owner per character of a number, one for a
-    /// signature or name
+    /// the ink drawn for it: one owner per character of a number; a
+    /// signature's body, then its flourish if it has one; a name's one
     pub owners: Vec<u16>,
     pub rule: Option<&'static str>,
     pub circle: Option<[f64; 3]>,
@@ -284,9 +284,9 @@ fn spline(p: &[[f64; 2]]) -> Poly {
 /// A signature in `cell` (x, y, w, h), in one of three hands: a running
 /// line of loops and peaks, initials followed by a trailing stroke, or a
 /// tight scrawl. Some start with a big loop, some end in a flourish that
-/// leaves the cell, some have a dot or a dash. Returns its strokes and
-/// width.
-fn signature_strokes(g: &mut Gen, cell: [f64; 4], may_leave: bool) -> (Vec<Poly>, i32) {
+/// leaves the cell, some have a dot or a dash. Returns its body's strokes,
+/// its flourish's, and their width.
+fn signature_strokes(g: &mut Gen, cell: [f64; 4], may_leave: bool) -> (Vec<Poly>, Vec<Poly>, i32) {
     let [x, y, w, h] = cell;
     let sw = w * g.u(0.3, 0.85);
     let sh = (h * g.u(0.6, 1.4)).min(1.2 * sw);
@@ -341,18 +341,33 @@ fn signature_strokes(g: &mut Gen, cell: [f64; 4], may_leave: bool) -> (Vec<Poly>
         pts.splice(0..0, lp);
     }
     strokes.push(spline(&pts));
+    let mut flourish = Vec::new();
     if may_leave && g.p(0.25) {
-        // a flourish: back under the signature, out past the cell
+        // back under the signature, out past the cell
         let end = *pts.last().unwrap();
         let fl = vec![end, [end[0] + 0.15 * sw, end[1] + 0.3 * sh], [x0 + 0.5 * sw, cy + 0.7 * sh], [x0 - g.u(0.0, 0.25) * w, cy + sh * g.u(0.4, 0.9)]];
-        strokes.push(spline(&fl));
+        flourish.push(spline(&fl));
     }
     if g.p(0.3) {
         let (dx, dy) = (x0 + sw * g.u(0.2, 0.9), cy - sh * g.u(0.5, 0.8));
         strokes.push(vec![[dx, dy], [dx + g.u(2.0, 8.0), dy + g.u(-1.0, 2.0)]]);
     }
     let thick = (((h / 18.0).sqrt() * g.u(1.4, 2.4)).round() as i32).clamp(1, 6);
-    (strokes, thick)
+    (strokes, flourish, thick)
+}
+
+/// Draw a signature: its body and its flourish each by their own owner
+/// (the body first). Returns its box and owners.
+fn draw_signature(l: &mut Layers, g: &mut Gen, cell: [f64; 4], may_leave: bool, pen: [u8; 3]) -> Result<([f64; 4], Vec<u16>)> {
+    let (body, flourish, thick) = signature_strokes(g, cell, may_leave);
+    let mut owners = vec![g.owner()];
+    l.pen(&body, thick, pen, owners[0])?;
+    if !flourish.is_empty() {
+        owners.push(g.owner());
+        l.pen(&flourish, thick, pen, owners[1])?;
+    }
+    let all: Vec<Poly> = body.into_iter().chain(flourish).collect();
+    Ok((glyphs::bbox(&all, thick), owners))
 }
 
 /// A cell as a box (x0, y0, x1, y1).
@@ -441,11 +456,8 @@ fn fill(t: &Template, lay: Option<&Layout>, off: [f64; 2], unfilled: bool, l: &m
         }
         match class {
             "signature" => {
-                let (strokes, thick) = signature_strokes(g, cell, true);
-                let o = g.owner();
-                l.pen(&strokes, thick, pen, o)?;
-                let b = glyphs::bbox(&strokes, thick);
-                items.push(Item { class, zone: z.name.clone(), role: Some(role_s), rect: b, cell: Some(cell_box(cell)), empty: false, struck: false, chars: vec![], owners: vec![o], rule: None, circle: None, polygon: None });
+                let (b, owners) = draw_signature(l, g, cell, true, pen)?;
+                items.push(Item { class, zone: z.name.clone(), role: Some(role_s), rect: b, cell: Some(cell_box(cell)), empty: false, struck: false, chars: vec![], owners, rule: None, circle: None, polygon: None });
             }
             _ => {
                 let text = if rule == Some("phone") { phone_number(g) } else { id_number(g) };
@@ -574,10 +586,8 @@ fn fill(t: &Template, lay: Option<&Layout>, off: [f64; 2], unfilled: bool, l: &m
         if g.p(0.35) {
             if let Some(c) = next(g) {
                 let cell = [c[0] + c[2] * g.u(0.3, 0.6), c[1], w * g.u(0.15, 0.25), line_h * 1.3];
-                let (strokes, thick) = signature_strokes(g, cell, false);
-                let o = g.owner();
-                l.pen(&strokes, thick, officer_pen, o)?;
-                items.push(Item { class: "signature", zone: format!("{}:signature", name), role: Some("officer"), rect: glyphs::bbox(&strokes, thick), cell: None, empty: false, struck: false, chars: vec![], owners: vec![o], rule: None, circle: None, polygon: None });
+                let (b, owners) = draw_signature(l, g, cell, false, officer_pen)?;
+                items.push(Item { class: "signature", zone: format!("{}:signature", name), role: Some("officer"), rect: b, cell: None, empty: false, struck: false, chars: vec![], owners, rule: None, circle: None, polygon: None });
             }
         }
     }
@@ -850,6 +860,15 @@ pub fn draw(ctx: &Ctx, g: &mut Gen, owner: bool) -> Result<Drawn> {
             }
             for r in lay.map(|l| l.declaration).unwrap_or(&[]) {
                 items.push(Item::region("declaration", "declaration", [r[0] + off[0], r[1] + off[1], r[0] + r[2] + off[0], r[1] + r[3] + off[1]]));
+            }
+            // the stamp printed on the reference: its ink is print, but it is a stamp
+            for s in lay.map(|l| l.reference_stamps).unwrap_or(&[]) {
+                let spec = StampSpec { cx: s[0] + off[0], cy: s[1] + off[1], r: s[2], color: [0, 0, 0], opacity: 0.0, top: String::new(), bottom: String::new(), middle: vec![] };
+                let poly = spec.polygon();
+                let mut it = Item::region("stamp", "reference_stamp", super::bounds(&poly));
+                it.circle = Some([spec.cx, spec.cy, spec.r]);
+                it.polygon = Some(poly);
+                items.push(it);
             }
             fill(t, lay, off, unfilled, &mut l, g, &mut items)?;
             if !unfilled || g.p(0.3) {

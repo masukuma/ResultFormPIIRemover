@@ -44,6 +44,11 @@ pub struct Layout {
     pub columns: &'static [(&'static str, f64, f64)],
     /// what the stamp's top ring says
     pub stamp_title: &'static str,
+    /// stamps printed on the reference itself (the remains of the stamp on
+    /// the copy it was made from): centre and radius. Found by the
+    /// pipeline's stamp finder near the zones (`stamps::near`); the IEBC
+    /// logo, which its ring search also takes for one, is not a stamp.
+    pub reference_stamps: &'static [[f64; 3]],
 }
 
 const fn c(kind: Kind, zone: &'static str, rect: [f64; 4], rows: usize, step: f64, role: &'static str) -> Cells {
@@ -65,6 +70,7 @@ pub const LAYOUTS: &[Layout] = &[
         stamp_spots: &[[1180.0, 1395.0], [1050.0, 1420.0], [1300.0, 2060.0], [900.0, 1650.0]],
         columns: &[],
         stamp_title: "PRESIDING OFFICER",
+        reference_stamps: &[[1291.0, 1333.0, 92.0]],
     },
     Layout {
         template: "form34b_2022_block",
@@ -85,6 +91,7 @@ pub const LAYOUTS: &[Layout] = &[
         stamp_spots: &[[1000.0, 700.0], [900.0, 1600.0], [1950.0, 1600.0], [1300.0, 300.0]],
         columns: &[],
         stamp_title: "RETURNING OFFICER",
+        reference_stamps: &[],
     },
     Layout {
         template: "form34b_2022_block_b",
@@ -100,6 +107,7 @@ pub const LAYOUTS: &[Layout] = &[
         stamp_spots: &[[1300.0, 1300.0], [900.0, 1330.0], [2000.0, 1000.0]],
         columns: &[],
         stamp_title: "RETURNING OFFICER",
+        reference_stamps: &[],
     },
     Layout {
         template: "form34b_2022_block_c",
@@ -119,6 +127,7 @@ pub const LAYOUTS: &[Layout] = &[
         // agent_signatures rect (2164-2483) on the Date column.
         columns: &[("agent_phone", 1526.0, 1837.0), ("agent_signatures", 1846.0, 2157.0)],
         stamp_title: "RETURNING OFFICER",
+        reference_stamps: &[],
     },
 ];
 
@@ -164,3 +173,4 @@ mod tests {
     }
 
 }
+
