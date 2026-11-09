@@ -8,6 +8,7 @@
 pub mod align;
 pub mod annex;
 pub mod bundle;
+pub mod dataset;
 pub mod generic;
 pub mod io;
 pub mod job;

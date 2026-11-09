@@ -7,7 +7,9 @@
 //!     rfpii preview templates/form34a_2022 -o preview.png
 //!     rfpii inventory Forms/ --json
 //!     rfpii job job.yaml
+//!     rfpii dataset synth --templates templates --out nn/data/synth --count 200
 
+mod cli_dataset;
 mod cli_job;
 mod cli_legal;
 
@@ -90,6 +92,9 @@ enum Cmd {
     Propose(ProposeArgs),
     /// Learn each printing's layout from its forms and write it as a template
     Learn(LearnArgs),
+    /// Training data for the local networks: synthetic forms, the teacher's
+    /// labels, checks and counts (nn/README.md)
+    Dataset(cli_dataset::DatasetArgs),
     /// Generate a sample template and synthetic scans
     Demo {
         directory: PathBuf,
@@ -990,6 +995,7 @@ fn main() {
         Cmd::Preview { template, output } => cmd_preview(&template, &output),
         Cmd::Propose(a) => cmd_propose(a),
         Cmd::Learn(a) => cmd_learn(a),
+        Cmd::Dataset(a) => cli_dataset::run(a),
         Cmd::Demo { directory, count } => cmd_demo(&directory, count),
     };
     match r {
